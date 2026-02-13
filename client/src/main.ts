@@ -286,7 +286,7 @@ worldAny.on(
 );
 
 /* ===============================
-   Picking helpers (mine vs place)
+   Picking helpers (stable Minecraft-style)
 ================================ */
 
 type PickResult = {
@@ -302,29 +302,42 @@ function getPick(maxDist = 6): PickResult | null {
   const hit = pickFn.call(noa, null, null, maxDist, null);
   if (!hit) return null;
 
-  const pos = hit.position ?? hit.pos;
-  if (!pos) return null;
+  const n = hit.normal ?? { x: 0, y: 0, z: 0 };
+  const nx0 = Array.isArray(n) ? n[0] : n.x;
+  const ny0 = Array.isArray(n) ? n[1] : n.y;
+  const nz0 = Array.isArray(n) ? n[2] : n.z;
 
-  const px = Array.isArray(pos) ? pos[0] : pos.x;
-  const py = Array.isArray(pos) ? pos[1] : pos.y;
-  const pz = Array.isArray(pos) ? pos[2] : pos.z;
+  const nx = Math.sign(Math.round(nx0));
+  const ny = Math.sign(Math.round(ny0));
+  const nz = Math.sign(Math.round(nz0));
 
-  const normal = hit.normal;
-  const nx = normal ? (Array.isArray(normal) ? normal[0] : normal.x) : 0;
-  const ny = normal ? (Array.isArray(normal) ? normal[1] : normal.y) : 0;
-  const nz = normal ? (Array.isArray(normal) ? normal[2] : normal.z) : 0;
+  const voxel = hit.voxel ?? hit.voxelCoords;
 
-  const eps = 0.01;
+  let bx: number;
+  let by: number;
+  let bz: number;
 
-  // Block we are looking at: nudge INTO surface
-  const bx = Math.floor(px - nx * eps);
-  const by = Math.floor(py - ny * eps);
-  const bz = Math.floor(pz - nz * eps);
+  if (voxel) {
+    bx = Math.floor(Array.isArray(voxel) ? voxel[0] : voxel.x);
+    by = Math.floor(Array.isArray(voxel) ? voxel[1] : voxel.y);
+    bz = Math.floor(Array.isArray(voxel) ? voxel[2] : voxel.z);
+  } else {
+    const p = hit.position ?? hit.pos;
+    if (!p) return null;
 
-  // Place position: nudge OUT of surface (adjacent voxel)
-  const px2 = Math.floor(px + nx * eps);
-  const py2 = Math.floor(py + ny * eps);
-  const pz2 = Math.floor(pz + nz * eps);
+    const px = Array.isArray(p) ? p[0] : p.x;
+    const py = Array.isArray(p) ? p[1] : p.y;
+    const pz = Array.isArray(p) ? p[2] : p.z;
+
+    const eps = 0.001;
+    bx = Math.floor(px - nx * eps);
+    by = Math.floor(py - ny * eps);
+    bz = Math.floor(pz - nz * eps);
+  }
+
+  const px2 = bx + nx;
+  const py2 = by + ny;
+  const pz2 = bz + nz;
 
   return {
     block: { x: bx, y: by, z: bz },
@@ -332,58 +345,6 @@ function getPick(maxDist = 6): PickResult | null {
     normal: { x: nx, y: ny, z: nz },
   };
 }
-
-/* ===============================
-   Mining + Building
-================================ */
-
-function tryMine() {
-  if (!room) return;
-
-  const pick = getPick(6);
-  if (!pick) return;
-
-  const id = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
-  if (id === 0) return;
-
-  room.send("mineBlock", { x: pick.block.x, y: pick.block.y, z: pick.block.z });
-}
-
-function tryPlace() {
-  if (!room) return;
-
-  const pick = getPick(6);
-  if (!pick) return;
-
-  // Must be aiming at a real block face
-  const targetId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
-  if (targetId === 0) return;
-
-  // Place only into air
-  const placeIdNow = noa.world.getBlockID(pick.place.x, pick.place.y, pick.place.z);
-  if (placeIdNow !== 0) return;
-
-  const selected = hotbar[selectedHotbarIndex];
-
-  room.send("placeBlock", {
-    x: pick.place.x,
-    y: pick.place.y,
-    z: pick.place.z,
-    id: selected.id,
-  });
-}
-
-// Left click mine, Right click place
-document.addEventListener("mousedown", (e) => {
-  if (e.button === 0) {
-    tryMine();
-  } else if (e.button === 2) {
-    tryPlace();
-  }
-});
-
-// Stop browser context menu on right click
-document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 /* ===============================
    Colyseus connect + handlers
@@ -395,16 +356,13 @@ async function connectToServer() {
     renderOverlay(`Connected ✔ (${room.sessionId})`);
     console.log("Connected:", room.name, room.sessionId);
 
-    // Apply authoritative block updates
     room.onMessage("blockUpdate", (msg: any) => {
       if (!msg) return;
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
     });
 
-    // No self-corrections (prevents jitter)
     room.onMessage("playerTransform", (_data: any) => {});
 
-    // Debug
     room.onMessage("*", (messageType: string | number, payload: unknown) => {
       console.log("Server message:", messageType, payload);
     });
@@ -415,6 +373,60 @@ async function connectToServer() {
 }
 
 connectToServer();
+
+/* ===============================
+   Mining + Building
+================================ */
+
+function tryMine() {
+  if (!room) return;
+
+  const pick = getPick(6);
+  if (!pick) {
+    console.log("Pick: no hit");
+    return;
+  }
+
+  const hitId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
+  console.log("Mine pick:", pick, "hitId:", hitId);
+
+  if (hitId === 0) return;
+
+  room.send("mineBlock", { x: pick.block.x, y: pick.block.y, z: pick.block.z });
+}
+
+function tryPlace() {
+  if (!room) return;
+
+  const pick = getPick(6);
+  if (!pick) {
+    console.log("Pick: no hit");
+    return;
+  }
+
+  const hitId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
+  const placeId = noa.world.getBlockID(pick.place.x, pick.place.y, pick.place.z);
+  const selected = hotbar[selectedHotbarIndex];
+
+  console.log("Place pick:", pick, "hitId:", hitId, "placeId:", placeId, "placing:", selected);
+
+  if (hitId === 0) return;
+  if (placeId !== 0) return;
+
+  room.send("placeBlock", { x: pick.place.x, y: pick.place.y, z: pick.place.z, id: selected.id });
+}
+
+document.addEventListener("mousedown", (e) => {
+  if (e.button === 2) e.preventDefault();
+
+  if (e.button === 0) {
+    tryMine();
+  } else if (e.button === 2) {
+    tryPlace();
+  }
+});
+
+document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 /* ===============================
    Send position to server each tick (throttled)
