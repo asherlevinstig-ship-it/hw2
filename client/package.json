@@ -13,6 +13,8 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
-    "@colyseus/sdk": "^0.17.33"
+    "@babylonjs/core": "^6.49.0",
+    "@colyseus/sdk": "^0.17.33",
+    "noa-engine": "^0.33.0"
   }
 }
