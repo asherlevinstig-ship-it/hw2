@@ -249,21 +249,26 @@ worldAny.on(
 );
 
 /* ===============================
-   Mining (use noa.pick(...) in your NOA build)
+   Mining (correct binding for noa.pick)
 ================================ */
 
 function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | null {
   const pickFn = (noa as any).pick;
 
-  // In your build, noa.pick is a FUNCTION (not an object with pickBlock)
   if (typeof pickFn !== "function") {
     console.warn("NOA pick function not available:", pickFn);
     return null;
   }
 
-  // Signature you logged: pick(e=null, t=null, i=-1, s=null)
-  // The 3rd argument is max distance in your build.
-  const hit = pickFn(null, null, maxDist, null);
+  // IMPORTANT: bind `this` to noa so internal fields like _pickPos exist
+  let hit: any = null;
+  try {
+    hit = pickFn.call(noa, null, null, maxDist, null);
+  } catch (e) {
+    console.warn("NOA pick() failed:", e);
+    return null;
+  }
+
   if (!hit) return null;
 
   const v = hit.voxel ?? hit.voxelCoords ?? hit.position ?? hit.pos;
@@ -294,7 +299,7 @@ function tryMine() {
 }
 
 document.addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return; // left click
+  if (e.button !== 0) return;
   tryMine();
 });
 
@@ -317,7 +322,6 @@ async function connectToServer() {
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
     });
 
-    // Intentionally do NOT set our own position from server every tick (prevents jitter)
     room.onMessage("playerTransform", (_data: any) => {});
 
     room.onMessage("*", (messageType: string | number, payload: unknown) => {
@@ -344,7 +348,7 @@ noaAny.on("tick", () => {
   if (!room) return;
 
   const now = performance.now();
-  if (now - lastSend < 80) return; // ~12.5 updates/sec
+  if (now - lastSend < 80) return;
   lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
