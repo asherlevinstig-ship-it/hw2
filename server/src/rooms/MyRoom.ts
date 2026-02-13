@@ -3,14 +3,16 @@ import { Room, Client } from "colyseus";
 /**
  * MyRoom (message-based, no Schema yet)
  *
- * Supports:
- * - playerMove: store last known position, broadcast to others only (prevents self-jitter)
- * - mineBlock: validate distance against last known player position, broadcast blockUpdate (id=0 => air)
+ * Features:
+ * - playerMove: stores last known position, broadcasts to others only (prevents self jitter)
+ * - mineBlock: logs requests, validates basic payload, broadcasts blockUpdate (id=0 => air)
  * - ping/pong
  *
  * NOTE:
- * - This does NOT yet persist world state. It only broadcasts edits.
- *   Next step for MMO: maintain chunk store on server and send chunks on join/move.
+ * - This version intentionally RELAXES mining validation (distance/world-state)
+ *   so you can confirm the mining pipeline works end-to-end.
+ * - Next step (MMO-ready): store chunk data on server, validate block exists,
+ *   enforce reach/cooldowns/tools, and persist edits.
  */
 
 type Vec3 = { x: number; y: number; z: number };
@@ -37,11 +39,8 @@ export class MyRoom extends Room {
   // Movement packet rate limiting (~16 per second)
   private readonly minMoveIntervalMs = 60;
 
-  // Sanity bounds
+  // Sanity bounds for any incoming coords
   private readonly maxAbsCoord = 100000;
-
-  // Mining reach
-  private readonly mineReach = 6;
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
@@ -86,13 +85,14 @@ export class MyRoom extends Room {
 
     /**
      * Client -> Server: mineBlock { x, y, z }
-     * Server validates reach and broadcasts blockUpdate { x,y,z,id:0 }.
      *
-     * Later: validate block exists in server chunk store, tool checks, cooldowns, etc.
+     * Debug-friendly version:
+     * - Logs the request
+     * - Accepts the mine request (no reach/world validation yet)
+     * - Broadcasts blockUpdate to everyone: set block to air (id=0)
      */
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
-      const p = this.players.get(client.sessionId);
-      if (!p) return;
+      console.log("⛏ mineBlock from", client.sessionId, payload);
 
       if (typeof payload !== "object" || payload === null) return;
 
@@ -103,16 +103,7 @@ export class MyRoom extends Room {
       const y = Math.floor(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = Math.floor(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      // Distance check (use squared distance)
-      const dx = p.x - x;
-      const dy = p.y - y;
-      const dz = p.z - z;
-      const distSq = dx * dx + dy * dy + dz * dz;
-
-      if (distSq > this.mineReach * this.mineReach) return;
-
       // Broadcast the edit: set block to air (0)
-      // (No persistence yet - just tells clients to remove it)
       this.broadcast("blockUpdate", { x, y, z, id: 0 });
     });
 
@@ -150,9 +141,6 @@ export class MyRoom extends Room {
       { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z },
       { except: client }
     );
-
-    // NOTE: We intentionally do NOT force-set the joining client's position.
-    // If you want server-authoritative spawns, we'll add prediction + reconciliation.
   }
 
   onLeave(client: Client, code?: number) {

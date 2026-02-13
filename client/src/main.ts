@@ -42,7 +42,9 @@ overlay.style.background = "rgba(0,0,0,0.55)";
 overlay.style.color = "#fff";
 overlay.style.borderRadius = "8px";
 overlay.style.zIndex = "9999";
-overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connecting...`;
+overlay.innerHTML =
+  `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
+  `Endpoint: ${ENDPOINT}<br/>Connecting...`;
 document.body.appendChild(overlay);
 
 /* ===============================
@@ -254,30 +256,43 @@ function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | nu
   const pick = (noa as any).pick;
 
   if (!pick || typeof pick.pickBlock !== "function") {
+    console.warn("NOA pick.pickBlock not available:", pick);
     return null;
   }
 
   const hit = pick.pickBlock(maxDist);
   if (!hit) return null;
 
-  const pos = hit.voxel ?? hit.position;
-  if (!pos) return null;
+  const v = hit.voxel ?? hit.voxelCoords ?? hit.position ?? hit.pos;
+  if (!v) return null;
 
-  const x = Array.isArray(pos) ? pos[0] : pos.x;
-  const y = Array.isArray(pos) ? pos[1] : pos.y;
-  const z = Array.isArray(pos) ? pos[2] : pos.z;
+  const x = Math.floor(Array.isArray(v) ? v[0] : v.x);
+  const y = Math.floor(Array.isArray(v) ? v[1] : v.y);
+  const z = Math.floor(Array.isArray(v) ? v[2] : v.z);
 
-  return { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
+  return { x, y, z };
 }
 
-window.addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return; // left click
+function tryMine() {
   if (!room) return;
 
   const target = getTargetedBlock(6);
-  if (!target) return;
+  if (!target) {
+    console.log("Mine: no target (ray hit nothing)");
+    return;
+  }
+
+  const id = noa.world.getBlockID(target.x, target.y, target.z);
+  console.log("Mine target:", target, "blockID:", id);
+
+  if (id === 0) return;
 
   room.send("mineBlock", target);
+}
+
+document.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return; // left click
+  tryMine();
 });
 
 /* ===============================
@@ -288,13 +303,15 @@ async function connectToServer() {
   try {
     room = await colyseus.joinOrCreate("my_room");
 
-    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
+    overlay.innerHTML =
+      `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
+      `Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
     console.log("Connected:", room.name, room.sessionId);
 
     room.onMessage("blockUpdate", (msg: any) => {
+      console.log("blockUpdate:", msg);
       if (!msg) return;
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
-
     });
 
     // Intentionally do NOT set our own position from server every tick (prevents jitter)
@@ -305,7 +322,9 @@ async function connectToServer() {
     });
   } catch (err) {
     console.error("Failed to connect:", err);
-    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
+    overlay.innerHTML =
+      `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
+      `Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
   }
 }
 
