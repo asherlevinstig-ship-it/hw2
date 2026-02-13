@@ -42,7 +42,7 @@ overlay.style.background = "rgba(0,0,0,0.55)";
 overlay.style.color = "#fff";
 overlay.style.borderRadius = "8px";
 overlay.style.zIndex = "9999";
-overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connecting...`;
+overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connecting...`;
 document.body.appendChild(overlay);
 
 /* ===============================
@@ -247,6 +247,40 @@ worldAny.on(
 );
 
 /* ===============================
+   Mining (ray-pick block and request server to remove it)
+================================ */
+
+function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | null {
+  const pick = (noa as any).pick;
+
+  if (!pick || typeof pick.pickBlock !== "function") {
+    return null;
+  }
+
+  const hit = pick.pickBlock(maxDist);
+  if (!hit) return null;
+
+  const pos = hit.voxel ?? hit.position;
+  if (!pos) return null;
+
+  const x = Array.isArray(pos) ? pos[0] : pos.x;
+  const y = Array.isArray(pos) ? pos[1] : pos.y;
+  const z = Array.isArray(pos) ? pos[2] : pos.z;
+
+  return { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
+}
+
+window.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return; // left click
+  if (!room) return;
+
+  const target = getTargetedBlock(6);
+  if (!target) return;
+
+  room.send("mineBlock", target);
+});
+
+/* ===============================
    Colyseus connect + handlers
 ================================ */
 
@@ -254,33 +288,42 @@ async function connectToServer() {
   try {
     room = await colyseus.joinOrCreate("my_room");
 
-    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
+    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
     console.log("Connected:", room.name, room.sessionId);
 
-    room.onMessage("playerTransform", (data: any) => {
-      if (!data) return;
-      noa.ents.setPosition(noa.playerEntity, data.x, data.y, data.z);
+    room.onMessage("blockUpdate", (msg: any) => {
+      if (!msg) return;
+      noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
+
     });
+
+    // Intentionally do NOT set our own position from server every tick (prevents jitter)
+    room.onMessage("playerTransform", (_data: any) => {});
 
     room.onMessage("*", (messageType: string | number, payload: unknown) => {
       console.log("Server message:", messageType, payload);
     });
   } catch (err) {
     console.error("Failed to connect:", err);
-    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
+    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Left click mine<br/>Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
   }
 }
 
 connectToServer();
 
 /* ===============================
-   Send position to server each tick (temporary)
+   Send position to server each tick (throttled)
 ================================ */
 
 const noaAny = noa as any;
+let lastSend = 0;
 
 noaAny.on("tick", () => {
   if (!room) return;
+
+  const now = performance.now();
+  if (now - lastSend < 80) return; // ~12.5 updates/sec
+  lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
   room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });

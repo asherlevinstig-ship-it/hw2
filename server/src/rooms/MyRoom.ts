@@ -1,5 +1,18 @@
 import { Room, Client } from "colyseus";
 
+/**
+ * MyRoom (message-based, no Schema yet)
+ *
+ * Supports:
+ * - playerMove: store last known position, broadcast to others only (prevents self-jitter)
+ * - mineBlock: validate distance against last known player position, broadcast blockUpdate (id=0 => air)
+ * - ping/pong
+ *
+ * NOTE:
+ * - This does NOT yet persist world state. It only broadcasts edits.
+ *   Next step for MMO: maintain chunk store on server and send chunks on join/move.
+ */
+
 type Vec3 = { x: number; y: number; z: number };
 
 type PlayerInfo = {
@@ -21,17 +34,24 @@ function clamp(n: number, min: number, max: number): number {
 export class MyRoom extends Room {
   private players = new Map<string, PlayerInfo>();
 
-  // Anti-spam: min milliseconds between accepted movement packets per client
-  private readonly minMoveIntervalMs = 50; // 20 msgs/sec
+  // Movement packet rate limiting (~16 per second)
+  private readonly minMoveIntervalMs = 60;
 
-  // Basic sanity bounds
+  // Sanity bounds
   private readonly maxAbsCoord = 100000;
+
+  // Mining reach
+  private readonly mineReach = 6;
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
     this.maxClients = 32;
 
+    /**
+     * Client -> Server: playerMove { x, y, z }
+     * Server stores last known position and broadcasts to others only.
+     */
     this.onMessage("playerMove", (client: Client, payload: unknown) => {
       const now = Date.now();
 
@@ -43,8 +63,8 @@ export class MyRoom extends Room {
 
       // Validate payload
       if (typeof payload !== "object" || payload === null) return;
-
       const maybe = payload as Partial<Vec3>;
+
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
 
       const x = clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord);
@@ -56,10 +76,7 @@ export class MyRoom extends Room {
       p.z = z;
       p.lastMoveAt = now;
 
-      // Echo back authoritative confirmation
-      client.send("playerTransform", { x, y, z });
-
-      // Broadcast to everyone else
+      // Broadcast to others (do NOT send back to sender to avoid jitter)
       this.broadcast(
         "playerTransformOther",
         { id: client.sessionId, x, y, z },
@@ -67,7 +84,41 @@ export class MyRoom extends Room {
       );
     });
 
-    // Optional ping/pong
+    /**
+     * Client -> Server: mineBlock { x, y, z }
+     * Server validates reach and broadcasts blockUpdate { x,y,z,id:0 }.
+     *
+     * Later: validate block exists in server chunk store, tool checks, cooldowns, etc.
+     */
+    this.onMessage("mineBlock", (client: Client, payload: unknown) => {
+      const p = this.players.get(client.sessionId);
+      if (!p) return;
+
+      if (typeof payload !== "object" || payload === null) return;
+
+      const maybe = payload as Partial<Vec3>;
+      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
+
+      const x = Math.floor(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const y = Math.floor(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const z = Math.floor(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
+
+      // Distance check (use squared distance)
+      const dx = p.x - x;
+      const dy = p.y - y;
+      const dz = p.z - z;
+      const distSq = dx * dx + dy * dy + dz * dz;
+
+      if (distSq > this.mineReach * this.mineReach) return;
+
+      // Broadcast the edit: set block to air (0)
+      // (No persistence yet - just tells clients to remove it)
+      this.broadcast("blockUpdate", { x, y, z, id: 0 });
+    });
+
+    /**
+     * Optional ping/pong
+     */
     this.onMessage("ping", (client: Client, payload: unknown) => {
       client.send("pong", payload);
     });
@@ -79,22 +130,19 @@ export class MyRoom extends Room {
     const spawn: PlayerInfo = {
       id: client.sessionId,
       x: 0,
-      y: 20,
+      y: 8,
       z: 0,
       lastMoveAt: 0,
     };
 
     this.players.set(client.sessionId, spawn);
 
-    // Send existing players to the new client
+    // Send existing players to new client
     const existingPlayers = Array.from(this.players.values())
-      .filter((p) => p.id !== client.sessionId)
-      .map((p) => ({ id: p.id, x: p.x, y: p.y, z: p.z }));
+      .filter((pl) => pl.id !== client.sessionId)
+      .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z }));
 
     client.send("existingPlayers", existingPlayers);
-
-    // Send spawn position for this client
-    client.send("playerTransform", { x: spawn.x, y: spawn.y, z: spawn.z });
 
     // Notify others that a new player joined
     this.broadcast(
@@ -102,12 +150,11 @@ export class MyRoom extends Room {
       { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z },
       { except: client }
     );
+
+    // NOTE: We intentionally do NOT force-set the joining client's position.
+    // If you want server-authoritative spawns, we'll add prediction + reconciliation.
   }
 
-  /**
-   * Colyseus (your version) uses: onLeave(client, code?)
-   * where code is a number (WebSocket close code) or undefined.
-   */
   onLeave(client: Client, code?: number) {
     console.log("➖ onLeave", client.sessionId, "code:", code);
 
