@@ -1,30 +1,16 @@
 import { Engine } from "noa-engine";
+import { Client, Room } from "@colyseus/sdk";
 
-/**
- * Minimal NOA boot:
- * - Flat terrain at y <= 0
- * - Two block types: grass + stone (simple colors)
- * - Default NOA player movement + mouse look
- */
+const ENDPOINT =
+  import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
 
-const noa = new Engine({
-  debug: true,
-  // Start above the terrain so you fall onto it
-  playerStart: [0, 20, 0],
+const colyseus = new Client(ENDPOINT);
+let room: Room | null = null;
 
-  // These are safe defaults to keep it light while testing
-  tickRate: 30,
-  maxRenderRate: 0, // uncapped
-  // You can tweak these later once it’s running
-  // (they’re consumed by child modules too)
-});
-
-// --- Make the page fill the screen nicely ---
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
 document.body.style.margin = "0";
 
-// Optional: show a tiny overlay
 const overlay = document.createElement("div");
 overlay.style.position = "fixed";
 overlay.style.left = "10px";
@@ -36,22 +22,49 @@ overlay.style.background = "rgba(0,0,0,0.55)";
 overlay.style.color = "#fff";
 overlay.style.borderRadius = "8px";
 overlay.style.zIndex = "9999";
-overlay.innerHTML = `Click to lock mouse • WASD move • Space jump • Shift sprint`;
+overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connecting...`;
 document.body.appendChild(overlay);
 
-// --- Register materials (simple colors) ---
-noa.registry.registerMaterial("grass", {
-  // [R,G,B] or [R,G,B,A] floats 0..1
-  color: [0.25, 0.75, 0.25],
-});
-
-noa.registry.registerMaterial("stone", {
-  color: [0.55, 0.55, 0.58],
-});
-
-// --- Register blocks (IDs must be 1..65535; 0 is air) ---
+const AIR_ID = 0;
 const GRASS_ID = 1;
 const STONE_ID = 2;
+
+const noa = new Engine({
+  debug: true,
+  playerStart: [0, 20, 0],
+  tickRate: 30,
+  maxRenderRate: 0,
+
+  worldDataNeeded: (id: any, data: any, _x: number, y: number, _z: number) => {
+    const shape: [number, number, number] = data.shape;
+
+    for (let i = 0; i < shape[0]; i++) {
+      for (let j = 0; j < shape[1]; j++) {
+        for (let k = 0; k < shape[2]; k++) {
+          const wy = y + j - 1;
+
+          let block = AIR_ID;
+          if (wy <= 0) block = GRASS_ID;
+          if (wy <= -3) block = STONE_ID;
+
+          data.set(i, j, k, block);
+        }
+      }
+    }
+
+    noa.world.setChunkData(id, data);
+  },
+
+  tick: () => {
+    if (!room) return;
+
+    const pos = noa.ents.getPosition(noa.playerEntity);
+    room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });
+  },
+});
+
+noa.registry.registerMaterial("grass", { color: [0.25, 0.75, 0.25] });
+noa.registry.registerMaterial("stone", { color: [0.55, 0.55, 0.58] });
 
 noa.registry.registerBlock(GRASS_ID, {
   material: "grass",
@@ -65,38 +78,27 @@ noa.registry.registerBlock(STONE_ID, {
   opaque: true,
 });
 
-// --- World generation ---
-// NOA asks you for chunk voxel data via `worldDataNeeded`.
-// Fill the provided `data` (includes 1-voxel padding all around), then call setChunkData.
-noa.world.on("worldDataNeeded", (chunkId: any, data: any, x: number, y: number, z: number) => {
-  const shape: [number, number, number] = data.shape; // e.g. [chunkSize+2, chunkSize+2, chunkSize+2]
+async function connectToServer() {
+  try {
+    room = await colyseus.joinOrCreate("my_room");
 
-  for (let i = 0; i < shape[0]; i++) {
-    for (let j = 0; j < shape[1]; j++) {
-      for (let k = 0; k < shape[2]; k++) {
-        // data includes 1-voxel padding, so subtract 1 to map to world coords
-        const wx = x + i - 1;
-        const wy = y + j - 1;
-        const wz = z + k - 1;
+    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
+    console.log("Connected:", room.name, room.sessionId);
 
-        // Simple flat world:
-        // - stone below -3
-        // - grass from -3..0
-        // - air above 0
-        let id = 0; // air
-        if (wy <= 0) id = GRASS_ID;
-        if (wy <= -3) id = STONE_ID;
+    room.onMessage("playerTransform", (data: any) => {
+      if (!data) return;
+      noa.ents.setPosition(noa.playerEntity, data.x, data.y, data.z);
+    });
 
-        data.set(i, j, k, id);
-      }
-    }
+    room.onMessage("*", (messageType: string | number, payload: unknown) => {
+      console.log("Server message:", messageType, payload);
+    });
+  } catch (err) {
+    console.error("Failed to connect:", err);
+    overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
   }
+}
 
-  noa.world.setChunkData(chunkId, data);
-});
+connectToServer();
 
-// Optional: add a little "tick" log if you want
-// noa.on("tick", (dt: number) => {});
-
-// You should now see terrain generate and be able to move.
-console.log("NOA started", noa.version);
+console.log("NOA + Colyseus client started.");
