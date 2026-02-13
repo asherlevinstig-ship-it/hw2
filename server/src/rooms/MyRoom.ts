@@ -5,12 +5,13 @@ import { Room, Client } from "colyseus";
  *
  * Features:
  * - playerMove: stores last known position, broadcasts to others only (prevents self jitter)
- * - mineBlock: logs requests, validates basic payload, broadcasts blockUpdate (id=0 => air)
+ * - mineBlock: validates basic payload, broadcasts blockUpdate (id=0 => air)
+ * - placeBlock: validates basic payload, broadcasts blockUpdate (id=block id)
  * - ping/pong
  *
  * NOTE:
- * - This version intentionally RELAXES mining validation (distance/world-state)
- *   so you can confirm the mining pipeline works end-to-end.
+ * - This version intentionally RELAXES validation (distance/world-state)
+ *   so you can confirm the pipeline works end-to-end.
  * - Next step (MMO-ready): store chunk data on server, validate block exists,
  *   enforce reach/cooldowns/tools, and persist edits.
  */
@@ -41,6 +42,10 @@ export class MyRoom extends Room {
 
   // Sanity bounds for any incoming coords
   private readonly maxAbsCoord = 100000;
+
+  // Allowed block ids for debug build (0=air, 1..6 from your client hotbar)
+  private readonly minBlockId = 0;
+  private readonly maxBlockId = 6;
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
@@ -105,6 +110,33 @@ export class MyRoom extends Room {
 
       // Broadcast the edit: set block to air (0)
       this.broadcast("blockUpdate", { x, y, z, id: 0 });
+    });
+
+    /**
+     * Client -> Server: placeBlock { x, y, z, id }
+     *
+     * Debug-friendly version:
+     * - Logs the request
+     * - Validates basic payload (coords + id)
+     * - Broadcasts blockUpdate to everyone: set block to id
+     */
+    this.onMessage("placeBlock", (client: Client, payload: unknown) => {
+      console.log("🧱 placeBlock from", client.sessionId, payload);
+
+      if (typeof payload !== "object" || payload === null) return;
+
+      const maybe = payload as Partial<Vec3> & { id?: unknown };
+
+      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
+      if (!isFiniteNumber(maybe.id)) return;
+
+      const x = Math.floor(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const y = Math.floor(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const z = Math.floor(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
+
+      const id = Math.floor(clamp(maybe.id, this.minBlockId, this.maxBlockId));
+
+      this.broadcast("blockUpdate", { x, y, z, id });
     });
 
     /**
