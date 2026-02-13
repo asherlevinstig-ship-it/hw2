@@ -52,7 +52,7 @@ document.body.appendChild(overlay);
 const noa = new Engine({
   debug: true,
   container: appEl,
-  playerStart: [0, 10, 0],
+  playerStart: [0, 10, 0], // Start high, fall down to the generated floor
   tickRate: 30,
   maxRenderRate: 0,
 });
@@ -125,55 +125,54 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   World generation hook (FAST air fill)
+   FIXED: World generation hook
+   Generates a floor at Y=0 so you don't fall forever
 ================================ */
 
 const worldAny = noa.world as any;
-let testPlatformBuilt = false;
 
 if (worldAny && typeof worldAny.on === "function") {
   worldAny.on(
     "worldDataNeeded",
-    (requestID: any, dataArr: any, _chunkX: number, _chunkY: number, _chunkZ: number) => {
+    // We prefix _x and _z with underscore to suppress "unused variable" warnings
+    (id: string, data: any, _x: number, y: number, _z: number) => {
       worldDataNeededCount++;
 
-      // Fast-path: entire chunk is AIR
-      noa.world.setChunkData(requestID, dataArr, null, AIR_ID);
-
-      // Build a client-side scaffold platform once, after first chunk request
-      if (!testPlatformBuilt) {
-        testPlatformBuilt = true;
-        setTimeout(buildTestPlatform, 0);
+      // Populate chunk data
+      // 'data' is an ndarray, but we can access it via .set(x, y, z, val)
+      // Chunk size is usually 32
+      for (let i = 0; i < 32; i++) {
+        for (let j = 0; j < 32; j++) {
+          for (let k = 0; k < 32; k++) {
+            
+            // Calculate global height
+            const globalY = y * 32 + j;
+            
+            if (globalY === 0) {
+                // Grass floor
+                data.set(i, j, k, GRASS_ID);
+            } else if (globalY < 0 && globalY >= -5) {
+                // Dirt layer
+                data.set(i, j, k, DIRT_ID);
+            } else if (globalY < -5) {
+                // Stone base
+                data.set(i, j, k, STONE_ID);
+            } else {
+                // Air (implicit, but good to be explicit if reusing arrays)
+                data.set(i, j, k, AIR_ID);
+            }
+          }
+        }
       }
+
+      // Tell engine chunk is ready
+      noa.world.setChunkData(id, data);
     }
   );
 }
 
 /* ===============================
-   TEST PLATFORM (client-only scaffold)
-================================ */
-
-function buildTestPlatform() {
-  const yTop = 2;
-
-  for (let x = -20; x <= 20; x++) {
-    for (let z = -20; z <= 20; z++) {
-      noa.world.setBlockID(DIRT_ID, x, yTop - 1, z);
-      noa.world.setBlockID(GRASS_ID, x, yTop, z);
-
-      if (x === 0 && z === 0) {
-        for (let y = yTop + 1; y <= yTop + 4; y++) {
-          noa.world.setBlockID(STONE_ID, x, y, z);
-        }
-      }
-    }
-  }
-
-  console.log("✅ Test platform placed (client voxels) at y=2");
-}
-
-/* ===============================
-   Picking helpers (use noa.targetedBlock)
+   Picking helpers (noa.targetedBlock)
 ================================ */
 
 type PickResult = {
@@ -196,17 +195,6 @@ function getPick(): PickResult | null {
   const [px, py, pz] = adj;
   const [nx, ny, nz] = norm;
 
-  if (
-    typeof bx !== "number" ||
-    typeof by !== "number" ||
-    typeof bz !== "number" ||
-    typeof px !== "number" ||
-    typeof py !== "number" ||
-    typeof pz !== "number"
-  ) {
-    return null;
-  }
-
   return {
     block: { x: bx, y: by, z: bz },
     place: { x: px, y: py, z: pz },
@@ -220,64 +208,71 @@ function getPick(): PickResult | null {
 
 function tryMine() {
   const pick = getPick();
-  if (!pick) {
-    console.log("Pick: no hit");
-    return;
-  }
+  if (!pick) return;
 
   const hitId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
-  console.log("Mine pick:", pick, "hitId:", hitId);
-
+  
   if (hitId === AIR_ID) return;
 
-  // Optimistic local edit (instant feel)
+  console.log("⛏ Mine request:", pick.block, "ID:", hitId);
+
+  // Optimistic local edit
   noa.world.setBlockID(AIR_ID, pick.block.x, pick.block.y, pick.block.z);
 
-  // Tell server (server broadcasts blockUpdate back)
+  // Tell server
   room?.send("mineBlock", { x: pick.block.x, y: pick.block.y, z: pick.block.z });
 }
 
 function tryPlace() {
   const pick = getPick();
-  if (!pick) {
-    console.log("Pick: no hit");
-    return;
-  }
+  if (!pick) return;
 
-  const hitId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
   const placeId = noa.world.getBlockID(pick.place.x, pick.place.y, pick.place.z);
   const selected = hotbar[selectedHotbarIndex];
 
-  console.log("Place pick:", pick, "hitId:", hitId, "placeId:", placeId, "placing:", selected);
+  if (placeId !== AIR_ID) return; // Can't place inside a block
 
-  if (hitId === AIR_ID) return;
-  if (placeId !== AIR_ID) return;
-
-  // Prevent placing inside player's current voxel (simple guard)
+  // Prevent placing inside player
   const ppos = noa.ents.getPosition(noa.playerEntity);
   const px0 = Math.floor(ppos[0]);
   const py0 = Math.floor(ppos[1]);
   const pz0 = Math.floor(ppos[2]);
-  if (pick.place.x === px0 && pick.place.y === py0 && pick.place.z === pz0) return;
+  
+  // Simple hitbox check (feet + head)
+  if ((pick.place.x === px0 && pick.place.z === pz0) && 
+      (pick.place.y === py0 || pick.place.y === py0 + 1)) {
+      return; 
+  }
+
+  console.log("🧱 Place request:", pick.place, "Item:", selected.name);
 
   // Optimistic local edit
   noa.world.setBlockID(selected.id, pick.place.x, pick.place.y, pick.place.z);
 
-  // Tell server (server MUST implement placeBlock handler)
+  // Tell server
   room?.send("placeBlock", { x: pick.place.x, y: pick.place.y, z: pick.place.z, id: selected.id });
 }
 
-document.addEventListener("mousedown", (e) => {
-  if (e.button === 2) e.preventDefault();
+/* ===============================
+   FIXED: Input Handling
+   Using noa.inputs ensures clicks work during pointer lock
+================================ */
 
-  if (e.button === 0) {
-    tryMine();
-  } else if (e.button === 2) {
-    tryPlace();
-  }
+// Bind actions
+noa.inputs.bind('fire', 'H'); // Dummy key, we use mouse binding below
+noa.inputs.bind('alt-fire', 'J'); // Dummy key
+
+noa.inputs.down.on('fire', () => {
+    if (noa.container.hasPointerLock) {
+        tryMine();
+    }
 });
 
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+noa.inputs.down.on('alt-fire', () => {
+    if (noa.container.hasPointerLock) {
+        tryPlace();
+    }
+});
 
 /* ===============================
    Colyseus connect + handlers
@@ -297,33 +292,27 @@ async function connectToServer() {
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
     });
 
-    // Server -> Client: other players' transforms (placeholder, no unused param warning)
+    // Server -> Client: other players' transforms
     room.onMessage("playerTransformOther", (_data: any) => {
-      // Later: update remote player entities here
+      // TODO: Implement remote player entities
     });
 
     room.onMessage("existingPlayers", (players: any) => {
       console.log("existingPlayers:", players);
-      // Later: spawn remote entities here
     });
 
     room.onMessage("playerJoined", (p: any) => {
       console.log("playerJoined:", p);
-      // Later: spawn remote entity for p.id
     });
 
     room.onMessage("playerLeft", (p: any) => {
       console.log("playerLeft:", p);
-      // Later: despawn remote entity for p.id
     });
 
     room.onMessage("pong", (payload: any) => {
       console.log("pong:", payload);
     });
 
-    room.onMessage("*", (messageType: string | number, payload: unknown) => {
-      console.log("Server message:", messageType, payload);
-    });
   } catch (err) {
     console.error("Failed to connect:", err);
     room = null;
@@ -334,7 +323,7 @@ async function connectToServer() {
 connectToServer();
 
 /* ===============================
-   Send position to server each tick (throttled)
+   Send position to server each tick
 ================================ */
 
 const noaAny = noa as any;
@@ -345,7 +334,7 @@ noaAny.on("tick", () => {
   if (!r) return;
 
   const now = performance.now();
-  if (now - lastSend < 80) return;
+  if (now - lastSend < 50) return; // Throttled to ~20hz
   lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
