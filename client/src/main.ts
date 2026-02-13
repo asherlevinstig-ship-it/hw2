@@ -254,29 +254,39 @@ worldAny.on(
 
 function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | null {
   const pickFn = (noa as any).pick;
+  if (typeof pickFn !== "function") return null;
 
-  if (typeof pickFn !== "function") {
-    console.warn("NOA pick function not available:", pickFn);
-    return null;
-  }
-
-  // IMPORTANT: bind `this` to noa so internal fields like _pickPos exist
-  let hit: any = null;
-  try {
-    hit = pickFn.call(noa, null, null, maxDist, null);
-  } catch (e) {
-    console.warn("NOA pick() failed:", e);
-    return null;
-  }
-
+  // bind `this` correctly
+  const hit = pickFn.call(noa, null, null, maxDist, null);
   if (!hit) return null;
 
-  const v = hit.voxel ?? hit.voxelCoords ?? hit.position ?? hit.pos;
-  if (!v) return null;
+  // best case: explicit voxel coords
+  const voxel = hit.voxel ?? hit.voxelCoords;
+  if (voxel) {
+    const x = Math.floor(Array.isArray(voxel) ? voxel[0] : voxel.x);
+    const y = Math.floor(Array.isArray(voxel) ? voxel[1] : voxel.y);
+    const z = Math.floor(Array.isArray(voxel) ? voxel[2] : voxel.z);
+    return { x, y, z };
+  }
 
-  const x = Math.floor(Array.isArray(v) ? v[0] : v.x);
-  const y = Math.floor(Array.isArray(v) ? v[1] : v.y);
-  const z = Math.floor(Array.isArray(v) ? v[2] : v.z);
+  // fallback: use hit position + normal, nudge slightly "into" the surface
+  const pos = hit.position ?? hit.pos;
+  if (!pos) return null;
+
+  const px = Array.isArray(pos) ? pos[0] : pos.x;
+  const py = Array.isArray(pos) ? pos[1] : pos.y;
+  const pz = Array.isArray(pos) ? pos[2] : pos.z;
+
+  const normal = hit.normal;
+  const nx = normal ? (Array.isArray(normal) ? normal[0] : normal.x) : 0;
+  const ny = normal ? (Array.isArray(normal) ? normal[1] : normal.y) : 0;
+  const nz = normal ? (Array.isArray(normal) ? normal[2] : normal.z) : 0;
+
+  // subtract epsilon along normal to push point into the solid voxel
+  const eps = 0.01;
+  const x = Math.floor(px - nx * eps);
+  const y = Math.floor(py - ny * eps);
+  const z = Math.floor(pz - nz * eps);
 
   return { x, y, z };
 }
@@ -290,9 +300,20 @@ function tryMine() {
     return;
   }
 
-  const id = noa.world.getBlockID(target.x, target.y, target.z);
-  console.log("Mine target:", target, "blockID:", id);
+  let id = noa.world.getBlockID(target.x, target.y, target.z);
 
+  // Extra safety: if still air, try the block just below (often helps on slopes/edges)
+  if (id === 0) {
+    const below = { x: target.x, y: target.y - 1, z: target.z };
+    const belowId = noa.world.getBlockID(below.x, below.y, below.z);
+    if (belowId !== 0) {
+      console.log("Mine target (adjusted below):", below, "blockID:", belowId);
+      room.send("mineBlock", below);
+      return;
+    }
+  }
+
+  console.log("Mine target:", target, "blockID:", id);
   if (id === 0) return;
 
   room.send("mineBlock", target);
