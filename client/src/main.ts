@@ -197,9 +197,9 @@ function placeTree(
 ) {
   const h = 4 + Math.floor(hash2(baseWX, baseWZ) * 3);
 
-  const toI = (wx: number) => wx - chunkX + 1;
-  const toJ = (wy: number) => wy - chunkY + 1;
-  const toK = (wz: number) => wz - chunkZ + 1;
+  const toI = (wx: number) => wx - chunkX;
+  const toJ = (wy: number) => wy - chunkY;
+  const toK = (wz: number) => wz - chunkZ;
 
   const shape = dataArr.shape as [number, number, number];
   const inBounds = (i: number, j: number, k: number) =>
@@ -234,6 +234,8 @@ function placeTree(
 
 /* ===============================
    World generation hookup
+   IMPORTANT CHANGE:
+   - removed all "- 1" offsets (fixes mining/building hitId=0 misalignment)
 ================================ */
 
 const worldAny = noa.world as any;
@@ -246,13 +248,13 @@ worldAny.on(
 
     for (let i = 0; i < shape[0]; i++) {
       for (let k = 0; k < shape[2]; k++) {
-        const wx = chunkX + i - 1;
-        const wz = chunkZ + k - 1;
+        const wx = chunkX + i;
+        const wz = chunkZ + k;
 
         const h = terrainHeight(wx, wz);
 
         for (let j = 0; j < shape[1]; j++) {
-          const wy = chunkY + j - 1;
+          const wy = chunkY + j;
 
           let id = AIR_ID;
 
@@ -273,7 +275,7 @@ worldAny.on(
 
         if (treeChance(wx, wz)) {
           const baseY = h;
-          const baseInThisChunk = baseY >= chunkY && baseY < chunkY + (shape[1] - 2);
+          const baseInThisChunk = baseY >= chunkY && baseY < chunkY + shape[1];
           if (baseInThisChunk && h > seaLevel + 1) {
             placeTree(dataArr, wx, baseY, wz, chunkX, chunkY, chunkZ);
           }
