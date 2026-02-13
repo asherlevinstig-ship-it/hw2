@@ -186,24 +186,37 @@ function treeChance(wx: number, wz: number): boolean {
   return r > 0.985;
 }
 
-function placeTree(
+/**
+ * Tree placement that respects NOA chunk padding.
+ * The ndarray "dataArr" may have a 1-voxel border padding (common in NOA).
+ */
+function placeTreePadded(
   dataArr: any,
   baseWX: number,
   baseWY: number,
   baseWZ: number,
   chunkX: number,
   chunkY: number,
-  chunkZ: number
+  chunkZ: number,
+  padX: number,
+  padY: number,
+  padZ: number
 ) {
   const h = 4 + Math.floor(hash2(baseWX, baseWZ) * 3);
 
-  const toI = (wx: number) => wx - chunkX;
-  const toJ = (wy: number) => wy - chunkY;
-  const toK = (wz: number) => wz - chunkZ;
+  const toI = (wx: number) => wx - chunkX + padX;
+  const toJ = (wy: number) => wy - chunkY + padY;
+  const toK = (wz: number) => wz - chunkZ + padZ;
 
   const shape = dataArr.shape as [number, number, number];
+
   const inBounds = (i: number, j: number, k: number) =>
-    i >= 0 && j >= 0 && k >= 0 && i < shape[0] && j < shape[1] && k < shape[2];
+    i >= padX &&
+    j >= padY &&
+    k >= padZ &&
+    i < shape[0] - padX &&
+    j < shape[1] - padY &&
+    k < shape[2] - padZ;
 
   for (let t = 1; t <= h; t++) {
     const i = toI(baseWX);
@@ -233,51 +246,65 @@ function placeTree(
 }
 
 /* ===============================
-   World generation hookup
-   IMPORTANT CHANGE:
-   - removed all "- 1" offsets (fixes mining/building hitId=0 misalignment)
+   World generation hookup (PADDING-SAFE)
+   This is the key fix:
+   - detects chunk padding and writes terrain aligned to NOA world coords
 ================================ */
 
 const worldAny = noa.world as any;
 
 worldAny.on(
   "worldDataNeeded",
-  (requestID: any, dataArr: any, chunkX: number, chunkY: number, chunkZ: number, _worldName?: string) => {
+  (requestID: any, dataArr: any, chunkX: number, chunkY: number, chunkZ: number) => {
     const shape: [number, number, number] = dataArr.shape;
+
+    // If chunk arrays include a 1-voxel border padding, interior is (shape - 2).
+    // We'll assume padding is 1 if the array has room for it, otherwise 0.
+    const padX = shape[0] > 2 ? 1 : 0;
+    const padY = shape[1] > 2 ? 1 : 0;
+    const padZ = shape[2] > 2 ? 1 : 0;
+
     const seaLevel = 2;
 
+    // Clear to air
     for (let i = 0; i < shape[0]; i++) {
-      for (let k = 0; k < shape[2]; k++) {
-        const wx = chunkX + i;
-        const wz = chunkZ + k;
+      for (let j = 0; j < shape[1]; j++) {
+        for (let k = 0; k < shape[2]; k++) {
+          dataArr.set(i, j, k, AIR_ID);
+        }
+      }
+    }
+
+    // Fill interior only
+    for (let i = padX; i < shape[0] - padX; i++) {
+      for (let k = padZ; k < shape[2] - padZ; k++) {
+        const wx = chunkX + (i - padX);
+        const wz = chunkZ + (k - padZ);
 
         const h = terrainHeight(wx, wz);
 
-        for (let j = 0; j < shape[1]; j++) {
-          const wy = chunkY + j;
+        for (let j = padY; j < shape[1] - padY; j++) {
+          const wy = chunkY + (j - padY);
 
           let id = AIR_ID;
 
           if (wy <= h) {
             const depth = h - wy;
-
-            if (depth === 0) {
-              id = h <= seaLevel + 1 ? SAND_ID : GRASS_ID;
-            } else if (depth <= 3) {
-              id = h <= seaLevel + 1 ? SAND_ID : DIRT_ID;
-            } else {
-              id = STONE_ID;
-            }
+            if (depth === 0) id = h <= seaLevel + 1 ? SAND_ID : GRASS_ID;
+            else if (depth <= 3) id = h <= seaLevel + 1 ? SAND_ID : DIRT_ID;
+            else id = STONE_ID;
           }
 
           dataArr.set(i, j, k, id);
         }
 
+        // Trees: only attempt if baseY is in this chunk's vertical interior span
         if (treeChance(wx, wz)) {
           const baseY = h;
-          const baseInThisChunk = baseY >= chunkY && baseY < chunkY + shape[1];
+          const interiorHeight = shape[1] - 2 * padY;
+          const baseInThisChunk = baseY >= chunkY && baseY < chunkY + interiorHeight;
           if (baseInThisChunk && h > seaLevel + 1) {
-            placeTree(dataArr, wx, baseY, wz, chunkX, chunkY, chunkZ);
+            placeTreePadded(dataArr, wx, baseY, wz, chunkX, chunkY, chunkZ, padX, padY, padZ);
           }
         }
       }
@@ -363,6 +390,7 @@ async function connectToServer() {
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
     });
 
+    // We don't use server corrections for local player yet (prevents jitter)
     room.onMessage("playerTransform", (_data: any) => {});
 
     room.onMessage("*", (messageType: string | number, payload: unknown) => {
