@@ -2,7 +2,7 @@ import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 
 /* ===============================
-   Colyseus endpoint (Vercel + local fallback)
+   Colyseus endpoint
 ================================ */
 
 const ENDPOINT = import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
@@ -52,13 +52,13 @@ document.body.appendChild(overlay);
 const noa = new Engine({
   debug: true,
   container: appEl,
-  playerStart: [0, 10, 0], // Start high, fall down to the generated floor
+  playerStart: [0, 20, 0], // Start high so we don't spawn inside a hill
   tickRate: 30,
   maxRenderRate: 0,
 });
 
 /* ===============================
-   Block IDs + Materials + Blocks
+   Block IDs + Materials
 ================================ */
 
 const AIR_ID = 0;
@@ -84,7 +84,7 @@ noa.registry.registerBlock(WOOD_ID, { material: "wood", solid: true, opaque: tru
 noa.registry.registerBlock(LEAVES_ID, { material: "leaves", solid: true, opaque: true });
 
 /* ===============================
-   Hotbar (1-6)
+   Hotbar
 ================================ */
 
 type Placeable = { id: number; name: string };
@@ -125,8 +125,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   FIXED: World generation hook
-   Generates a floor at Y=0 so you don't fall forever
+   UPDATED: Terrain Generation
+   Creates rolling hills using Sine waves
 ================================ */
 
 const worldAny = noa.world as any;
@@ -134,45 +134,52 @@ const worldAny = noa.world as any;
 if (worldAny && typeof worldAny.on === "function") {
   worldAny.on(
     "worldDataNeeded",
-    // We prefix _x and _z with underscore to suppress "unused variable" warnings
-    (id: string, data: any, _x: number, y: number, _z: number) => {
+    (id: string, data: any, x: number, y: number, z: number) => {
       worldDataNeededCount++;
 
-      // Populate chunk data
-      // 'data' is an ndarray, but we can access it via .set(x, y, z, val)
-      // Chunk size is usually 32
+      // We loop through the 32x32x32 local chunk coordinates
       for (let i = 0; i < 32; i++) {
-        for (let j = 0; j < 32; j++) {
-          for (let k = 0; k < 32; k++) {
-            
-            // Calculate global height
+        for (let k = 0; k < 32; k++) {
+          
+          // Calculate Global X and Z for this column
+          const globalX = x * 32 + i;
+          const globalZ = z * 32 + k;
+
+          // Simple Terrain Formula: Sine waves
+          // Creates hills ranging roughly from height -10 to +10
+          const height = Math.floor(
+              Math.sin(globalX / 15) * 6 + 
+              Math.cos(globalZ / 15) * 6
+          );
+
+          for (let j = 0; j < 32; j++) {
+            // Calculate Global Y
             const globalY = y * 32 + j;
-            
-            if (globalY === 0) {
-                // Grass floor
-                data.set(i, j, k, GRASS_ID);
-            } else if (globalY < 0 && globalY >= -5) {
-                // Dirt layer
-                data.set(i, j, k, DIRT_ID);
-            } else if (globalY < -5) {
-                // Stone base
-                data.set(i, j, k, STONE_ID);
-            } else {
-                // Air (implicit, but good to be explicit if reusing arrays)
+
+            if (globalY > height) {
+                // Sky (Air)
                 data.set(i, j, k, AIR_ID);
+            } else if (globalY === height) {
+                // Top layer is grass
+                data.set(i, j, k, GRASS_ID);
+            } else if (globalY > height - 4) {
+                // Few layers below are dirt
+                data.set(i, j, k, DIRT_ID);
+            } else {
+                // Deep down is stone
+                data.set(i, j, k, STONE_ID);
             }
           }
         }
       }
 
-      // Tell engine chunk is ready
       noa.world.setChunkData(id, data);
     }
   );
 }
 
 /* ===============================
-   Picking helpers (noa.targetedBlock)
+   Picking helpers
 ================================ */
 
 type PickResult = {
@@ -191,19 +198,15 @@ function getPick(): PickResult | null {
 
   if (!Array.isArray(pos) || !Array.isArray(adj) || !Array.isArray(norm)) return null;
 
-  const [bx, by, bz] = pos;
-  const [px, py, pz] = adj;
-  const [nx, ny, nz] = norm;
-
   return {
-    block: { x: bx, y: by, z: bz },
-    place: { x: px, y: py, z: pz },
-    normal: { x: nx ?? 0, y: ny ?? 0, z: nz ?? 0 },
+    block: { x: pos[0], y: pos[1], z: pos[2] },
+    place: { x: adj[0], y: adj[1], z: adj[2] },
+    normal: { x: norm[0], y: norm[1], z: norm[2] },
   };
 }
 
 /* ===============================
-   Mining + Building (optimistic local + server broadcast)
+   Mining + Building
 ================================ */
 
 function tryMine() {
@@ -211,15 +214,13 @@ function tryMine() {
   if (!pick) return;
 
   const hitId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
-  
   if (hitId === AIR_ID) return;
 
-  console.log("⛏ Mine request:", pick.block, "ID:", hitId);
+  console.log("⛏ Mine:", pick.block);
 
   // Optimistic local edit
   noa.world.setBlockID(AIR_ID, pick.block.x, pick.block.y, pick.block.z);
-
-  // Tell server
+  // Network
   room?.send("mineBlock", { x: pick.block.x, y: pick.block.y, z: pick.block.z });
 }
 
@@ -230,91 +231,64 @@ function tryPlace() {
   const placeId = noa.world.getBlockID(pick.place.x, pick.place.y, pick.place.z);
   const selected = hotbar[selectedHotbarIndex];
 
-  if (placeId !== AIR_ID) return; // Can't place inside a block
+  if (placeId !== AIR_ID) return; // Occupied
 
-  // Prevent placing inside player
+  // Prevent self-clipping
   const ppos = noa.ents.getPosition(noa.playerEntity);
   const px0 = Math.floor(ppos[0]);
   const py0 = Math.floor(ppos[1]);
   const pz0 = Math.floor(ppos[2]);
   
-  // Simple hitbox check (feet + head)
   if ((pick.place.x === px0 && pick.place.z === pz0) && 
       (pick.place.y === py0 || pick.place.y === py0 + 1)) {
       return; 
   }
 
-  console.log("🧱 Place request:", pick.place, "Item:", selected.name);
+  console.log("🧱 Place:", pick.place, selected.name);
 
   // Optimistic local edit
   noa.world.setBlockID(selected.id, pick.place.x, pick.place.y, pick.place.z);
-
-  // Tell server
+  // Network
   room?.send("placeBlock", { x: pick.place.x, y: pick.place.y, z: pick.place.z, id: selected.id });
 }
 
 /* ===============================
-   FIXED: Input Handling
-   Using noa.inputs ensures clicks work during pointer lock
+   Input Handling (noa.inputs)
 ================================ */
 
-// Bind actions
-noa.inputs.bind('fire', 'H'); // Dummy key, we use mouse binding below
-noa.inputs.bind('alt-fire', 'J'); // Dummy key
+noa.inputs.bind('fire', 'H');
+noa.inputs.bind('alt-fire', 'J');
 
 noa.inputs.down.on('fire', () => {
-    if (noa.container.hasPointerLock) {
-        tryMine();
-    }
+    if (noa.container.hasPointerLock) tryMine();
 });
 
 noa.inputs.down.on('alt-fire', () => {
-    if (noa.container.hasPointerLock) {
-        tryPlace();
-    }
+    if (noa.container.hasPointerLock) tryPlace();
 });
 
 /* ===============================
-   Colyseus connect + handlers
+   Colyseus
 ================================ */
 
 async function connectToServer() {
   try {
     room = await colyseus.joinOrCreate("my_room");
     renderOverlay(`Connected ✔ (${room.sessionId})`);
-    console.log("Connected:", room.name, room.sessionId);
-
-    // Server -> Client: blockUpdate
+    
     room.onMessage("blockUpdate", (msg: any) => {
-      if (!msg) return;
-      if (typeof msg.x !== "number" || typeof msg.y !== "number" || typeof msg.z !== "number") return;
-      if (typeof msg.id !== "number") return;
-      noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
+      if (msg && typeof msg.id === "number") {
+          noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
+      }
     });
 
-    // Server -> Client: other players' transforms
-    room.onMessage("playerTransformOther", (_data: any) => {
-      // TODO: Implement remote player entities
-    });
-
-    room.onMessage("existingPlayers", (players: any) => {
-      console.log("existingPlayers:", players);
-    });
-
-    room.onMessage("playerJoined", (p: any) => {
-      console.log("playerJoined:", p);
-    });
-
-    room.onMessage("playerLeft", (p: any) => {
-      console.log("playerLeft:", p);
-    });
-
-    room.onMessage("pong", (payload: any) => {
-      console.log("pong:", payload);
-    });
+    room.onMessage("playerTransformOther", (_data: any) => { /* TODO: render others */ });
+    room.onMessage("existingPlayers", (_p: any) => {});
+    room.onMessage("playerJoined", (_p: any) => {});
+    room.onMessage("playerLeft", (_p: any) => {});
 
   } catch (err) {
-    console.error("Failed to connect:", err);
+    console.error(err);
     room = null;
     renderOverlay("Connection failed ❌");
   }
@@ -323,22 +297,20 @@ async function connectToServer() {
 connectToServer();
 
 /* ===============================
-   Send position to server each tick
+   Sync Position
 ================================ */
 
 const noaAny = noa as any;
 let lastSend = 0;
 
 noaAny.on("tick", () => {
-  const r = room;
-  if (!r) return;
-
+  if (!room) return;
   const now = performance.now();
-  if (now - lastSend < 50) return; // Throttled to ~20hz
+  if (now - lastSend < 50) return;
   lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
-  r.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });
+  room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });
 });
 
-console.log("NOA + Colyseus client started.");
+console.log("Client started with Terrain Generation.");
