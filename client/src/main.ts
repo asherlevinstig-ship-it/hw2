@@ -249,18 +249,21 @@ worldAny.on(
 );
 
 /* ===============================
-   Mining (ray-pick block and request server to remove it)
+   Mining (use noa.pick(...) in your NOA build)
 ================================ */
 
 function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | null {
-  const pick = (noa as any).pick;
+  const pickFn = (noa as any).pick;
 
-  if (!pick || typeof pick.pickBlock !== "function") {
-    console.warn("NOA pick.pickBlock not available:", pick);
+  // In your build, noa.pick is a FUNCTION (not an object with pickBlock)
+  if (typeof pickFn !== "function") {
+    console.warn("NOA pick function not available:", pickFn);
     return null;
   }
 
-  const hit = pick.pickBlock(maxDist);
+  // Signature you logged: pick(e=null, t=null, i=-1, s=null)
+  // The 3rd argument is max distance in your build.
+  const hit = pickFn(null, null, maxDist, null);
   if (!hit) return null;
 
   const v = hit.voxel ?? hit.voxelCoords ?? hit.position ?? hit.pos;
