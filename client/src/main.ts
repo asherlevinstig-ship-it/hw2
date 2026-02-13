@@ -28,7 +28,7 @@ appEl.style.height = "100vh";
 appEl.style.overflow = "hidden";
 
 /* ===============================
-   Overlay UI
+   Overlay UI (includes hotbar)
 ================================ */
 
 const overlay = document.createElement("div");
@@ -42,9 +42,7 @@ overlay.style.background = "rgba(0,0,0,0.55)";
 overlay.style.color = "#fff";
 overlay.style.borderRadius = "8px";
 overlay.style.zIndex = "9999";
-overlay.innerHTML =
-  `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
-  `Endpoint: ${ENDPOINT}<br/>Connecting...`;
+overlay.style.userSelect = "none";
 document.body.appendChild(overlay);
 
 /* ===============================
@@ -84,6 +82,45 @@ noa.registry.registerBlock(STONE_ID, { material: "stone", solid: true, opaque: t
 noa.registry.registerBlock(SAND_ID, { material: "sand", solid: true, opaque: true });
 noa.registry.registerBlock(WOOD_ID, { material: "wood", solid: true, opaque: true });
 noa.registry.registerBlock(LEAVES_ID, { material: "leaves", solid: true, opaque: true });
+
+/* ===============================
+   Hotbar (1-6)
+================================ */
+
+type Placeable = { id: number; name: string };
+
+const hotbar: Placeable[] = [
+  { id: GRASS_ID, name: "Grass" },
+  { id: DIRT_ID, name: "Dirt" },
+  { id: STONE_ID, name: "Stone" },
+  { id: SAND_ID, name: "Sand" },
+  { id: WOOD_ID, name: "Wood" },
+  { id: LEAVES_ID, name: "Leaves" },
+];
+
+let selectedHotbarIndex = 0;
+
+function renderOverlay(statusLine: string) {
+  const hb = hotbar
+    .map((b, i) => (i === selectedHotbarIndex ? `[${i + 1}:${b.name}]` : `${i + 1}:${b.name}`))
+    .join("  ");
+
+  overlay.innerHTML =
+    `Click to lock mouse • WASD move • Space jump<br/>` +
+    `Left click mine • Right click place • 1-6 select block<br/>` +
+    `Endpoint: ${ENDPOINT}<br/>${statusLine}<br/>` +
+    `Hotbar: ${hb}`;
+}
+
+renderOverlay("Connecting...");
+
+document.addEventListener("keydown", (e) => {
+  const n = Number(e.key);
+  if (n >= 1 && n <= hotbar.length) {
+    selectedHotbarIndex = n - 1;
+    renderOverlay(room ? `Connected ✔ (${room.sessionId})` : "Connecting...");
+  }
+});
 
 /* ===============================
    Minecraft-ish terrain generator (no deps)
@@ -249,27 +286,22 @@ worldAny.on(
 );
 
 /* ===============================
-   Mining (correct binding for noa.pick)
+   Picking helpers (mine vs place)
 ================================ */
 
-function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | null {
+type PickResult = {
+  block: { x: number; y: number; z: number };
+  place: { x: number; y: number; z: number };
+  normal: { x: number; y: number; z: number };
+};
+
+function getPick(maxDist = 6): PickResult | null {
   const pickFn = (noa as any).pick;
   if (typeof pickFn !== "function") return null;
 
-  // bind `this` correctly
   const hit = pickFn.call(noa, null, null, maxDist, null);
   if (!hit) return null;
 
-  // best case: explicit voxel coords
-  const voxel = hit.voxel ?? hit.voxelCoords;
-  if (voxel) {
-    const x = Math.floor(Array.isArray(voxel) ? voxel[0] : voxel.x);
-    const y = Math.floor(Array.isArray(voxel) ? voxel[1] : voxel.y);
-    const z = Math.floor(Array.isArray(voxel) ? voxel[2] : voxel.z);
-    return { x, y, z };
-  }
-
-  // fallback: use hit position + normal, nudge slightly "into" the surface
   const pos = hit.position ?? hit.pos;
   if (!pos) return null;
 
@@ -282,47 +314,76 @@ function getTargetedBlock(maxDist = 6): { x: number; y: number; z: number } | nu
   const ny = normal ? (Array.isArray(normal) ? normal[1] : normal.y) : 0;
   const nz = normal ? (Array.isArray(normal) ? normal[2] : normal.z) : 0;
 
-  // subtract epsilon along normal to push point into the solid voxel
   const eps = 0.01;
-  const x = Math.floor(px - nx * eps);
-  const y = Math.floor(py - ny * eps);
-  const z = Math.floor(pz - nz * eps);
 
-  return { x, y, z };
+  // Block we are looking at: nudge INTO surface
+  const bx = Math.floor(px - nx * eps);
+  const by = Math.floor(py - ny * eps);
+  const bz = Math.floor(pz - nz * eps);
+
+  // Place position: nudge OUT of surface (adjacent voxel)
+  const px2 = Math.floor(px + nx * eps);
+  const py2 = Math.floor(py + ny * eps);
+  const pz2 = Math.floor(pz + nz * eps);
+
+  return {
+    block: { x: bx, y: by, z: bz },
+    place: { x: px2, y: py2, z: pz2 },
+    normal: { x: nx, y: ny, z: nz },
+  };
 }
+
+/* ===============================
+   Mining + Building
+================================ */
 
 function tryMine() {
   if (!room) return;
 
-  const target = getTargetedBlock(6);
-  if (!target) {
-    console.log("Mine: no target (ray hit nothing)");
-    return;
-  }
+  const pick = getPick(6);
+  if (!pick) return;
 
-  let id = noa.world.getBlockID(target.x, target.y, target.z);
-
-  // Extra safety: if still air, try the block just below (often helps on slopes/edges)
-  if (id === 0) {
-    const below = { x: target.x, y: target.y - 1, z: target.z };
-    const belowId = noa.world.getBlockID(below.x, below.y, below.z);
-    if (belowId !== 0) {
-      console.log("Mine target (adjusted below):", below, "blockID:", belowId);
-      room.send("mineBlock", below);
-      return;
-    }
-  }
-
-  console.log("Mine target:", target, "blockID:", id);
+  const id = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
   if (id === 0) return;
 
-  room.send("mineBlock", target);
+  room.send("mineBlock", { x: pick.block.x, y: pick.block.y, z: pick.block.z });
 }
 
+function tryPlace() {
+  if (!room) return;
+
+  const pick = getPick(6);
+  if (!pick) return;
+
+  // Must be aiming at a real block face
+  const targetId = noa.world.getBlockID(pick.block.x, pick.block.y, pick.block.z);
+  if (targetId === 0) return;
+
+  // Place only into air
+  const placeIdNow = noa.world.getBlockID(pick.place.x, pick.place.y, pick.place.z);
+  if (placeIdNow !== 0) return;
+
+  const selected = hotbar[selectedHotbarIndex];
+
+  room.send("placeBlock", {
+    x: pick.place.x,
+    y: pick.place.y,
+    z: pick.place.z,
+    id: selected.id,
+  });
+}
+
+// Left click mine, Right click place
 document.addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return;
-  tryMine();
+  if (e.button === 0) {
+    tryMine();
+  } else if (e.button === 2) {
+    tryPlace();
+  }
 });
+
+// Stop browser context menu on right click
+document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 /* ===============================
    Colyseus connect + handlers
@@ -331,28 +392,25 @@ document.addEventListener("mousedown", (e) => {
 async function connectToServer() {
   try {
     room = await colyseus.joinOrCreate("my_room");
-
-    overlay.innerHTML =
-      `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
-      `Endpoint: ${ENDPOINT}<br/>Connected ✔ (${room.sessionId})`;
+    renderOverlay(`Connected ✔ (${room.sessionId})`);
     console.log("Connected:", room.name, room.sessionId);
 
+    // Apply authoritative block updates
     room.onMessage("blockUpdate", (msg: any) => {
-      console.log("blockUpdate:", msg);
       if (!msg) return;
       noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
     });
 
+    // No self-corrections (prevents jitter)
     room.onMessage("playerTransform", (_data: any) => {});
 
+    // Debug
     room.onMessage("*", (messageType: string | number, payload: unknown) => {
       console.log("Server message:", messageType, payload);
     });
   } catch (err) {
     console.error("Failed to connect:", err);
-    overlay.innerHTML =
-      `Click to lock mouse • WASD move • Space jump • Left click mine<br/>` +
-      `Endpoint: ${ENDPOINT}<br/>Connection failed ❌`;
+    renderOverlay("Connection failed ❌");
   }
 }
 
@@ -369,7 +427,7 @@ noaAny.on("tick", () => {
   if (!room) return;
 
   const now = performance.now();
-  if (now - lastSend < 80) return;
+  if (now - lastSend < 80) return; // ~12.5 updates/sec
   lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
