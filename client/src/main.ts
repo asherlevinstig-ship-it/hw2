@@ -14,8 +14,10 @@ let room: Room | null = null;
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("Missing <div id='app'></div> in index.html");
 
+// Prevent right-click menu (Minecraft-like)
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
+// Fullscreen styles
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
 document.body.style.margin = "0";
@@ -56,20 +58,31 @@ const noa = new Engine({
   playerStart: [0, 20, 0],
   tickRate: 30,
 
-  // Optional: uncomment if you WANT 32 explicitly
+  // If you want to guarantee 32, uncomment:
   // chunkSize: 32,
 });
 
 /* ===============================
-   4.1 Pointer Lock (make sure it actually happens)
+   4.1 Pointer Lock Helpers
 ================================ */
-appEl.addEventListener("click", () => {
-  // NOA often manages this, but forcing it makes debugging easier
-  const canvas = (noa as any).rendering?.getScene?.()?.getEngine?.()?.getRenderingCanvas?.();
-  // Fallback: try locking on appEl
-  const el: any = canvas ?? appEl;
-  if (el?.requestPointerLock) el.requestPointerLock();
-});
+function requestPointerLock() {
+  // Try to lock the actual render canvas if possible
+  try {
+    const scene = (noa as any).rendering?.getScene?.();
+    const canvas =
+      scene?.getEngine?.()?.getRenderingCanvas?.() ??
+      (noa as any).container ??
+      appEl;
+
+    if (canvas?.requestPointerLock) canvas.requestPointerLock();
+  } catch {
+    // Fallback: try appEl anyway
+    if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
+  }
+}
+
+// Click to lock (Minecraft-like)
+appEl.addEventListener("click", () => requestPointerLock());
 
 /* ===============================
    5. Register Blocks & Materials
@@ -103,9 +116,10 @@ const hotbar = [
   { id: WOOD_ID, name: "Wood" },
   { id: LEAVES_ID, name: "Leaves" },
 ];
+
 let selectedSlot = 0;
 
-function updateOverlay() {
+function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
 
@@ -115,70 +129,80 @@ function updateOverlay() {
     -------------------------<br>
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Block<br>
-    [WASD] Move  |  [Space] Jump
+    [WASD] Move  |  [Space] Jump<br>
+    ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
+
 updateOverlay();
 
 document.addEventListener("keydown", (e) => {
-  const key = parseInt(e.key);
-  if (key > 0 && key <= hotbar.length) {
+  const key = Number.parseInt(e.key, 10);
+  if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
     updateOverlay();
   }
 });
 
 /* ===============================
-   7. Terrain Generation (FIXED)
+   7. Terrain Generation (Hills) - FIXED
 ================================ */
 const worldAny = noa.world as any;
-
 let firstChunkLogged = false;
 
-worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: number) => {
-  // ✅ derive chunk size from data shape
-  const CS = data.shape?.[0] ?? 32;
+worldAny.on(
+  "worldDataNeeded",
+  (id: string, data: any, x: number, y: number, z: number) => {
+    // Derive chunk size from the chunk data (avoids hardcoding 32)
+    const CS = data.shape?.[0] ?? 32;
 
-  if (!firstChunkLogged) {
-    firstChunkLogged = true;
-    console.log("✅ worldDataNeeded firing. chunkSize =", CS, "first chunk coords =", { x, y, z });
-  }
+    if (!firstChunkLogged) {
+      firstChunkLogged = true;
+      console.log("✅ worldDataNeeded firing. chunkSize =", CS, "coords =", { x, y, z });
+    }
 
-  const baseHeight = 12; // ✅ prevents “all air” at y>=0
+    // Add base height so chunks around y=0 aren't empty
+    const baseHeight = 12;
 
-  for (let i = 0; i < CS; i++) {
-    for (let k = 0; k < CS; k++) {
-      const globalX = x * CS + i;
-      const globalZ = z * CS + k;
+    for (let i = 0; i < CS; i++) {
+      for (let k = 0; k < CS; k++) {
+        const globalX = x * CS + i;
+        const globalZ = z * CS + k;
 
-      const height =
-        baseHeight +
-        Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
+        // Sine wave hills
+        const height =
+          baseHeight +
+          Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
 
-      for (let j = 0; j < CS; j++) {
-        const globalY = y * CS + j;
+        for (let j = 0; j < CS; j++) {
+          const globalY = y * CS + j;
 
-        if (globalY > height) data.set(i, j, k, AIR_ID);
-        else if (globalY === height) data.set(i, j, k, GRASS_ID);
-        else if (globalY > height - 4) data.set(i, j, k, DIRT_ID);
-        else data.set(i, j, k, STONE_ID);
+          if (globalY > height) data.set(i, j, k, AIR_ID);
+          else if (globalY === height) data.set(i, j, k, GRASS_ID);
+          else if (globalY > height - 4) data.set(i, j, k, DIRT_ID);
+          else data.set(i, j, k, STONE_ID);
+        }
       }
     }
-  }
 
-  noa.world.setChunkData(id, data);
-});
+    noa.world.setChunkData(id, data);
+  }
+);
 
 /* ===============================
    8. Input & Interaction Logic
 ================================ */
 
-// ✅ Ensure bindings exist (varies by noa setup)
+// Try to ensure bindings exist (depends on noa setup/version)
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
   (noa.inputs as any).bind?.("alt-fire", "mouse2");
 } catch {
-  // ignore if bind API differs
+  // no-op
+}
+
+function hasPointerLock(): boolean {
+  return !!(noa.container as any)?.hasPointerLock;
 }
 
 function getTargetInfo() {
@@ -191,31 +215,21 @@ function getTargetInfo() {
   };
 }
 
-let firstInputLogged = false;
-
 noa.inputs.down.on("fire", () => {
-  if (!firstInputLogged) {
-    firstInputLogged = true;
-    console.log("✅ Input firing (fire). pointerLock =", (noa.container as any).hasPointerLock);
-  }
-
-  if (!(noa.container as any).hasPointerLock) return;
+  if (!hasPointerLock()) return;
 
   const target = getTargetInfo();
   if (!target) return;
 
   const { x, y, z } = target.pos;
+  // Local update (instant feedback)
   noa.world.setBlockID(AIR_ID, x, y, z);
+  // Network update
   room?.send("mineBlock", { x, y, z });
 });
 
 noa.inputs.down.on("alt-fire", () => {
-  if (!firstInputLogged) {
-    firstInputLogged = true;
-    console.log("✅ Input firing (alt-fire). pointerLock =", (noa.container as any).hasPointerLock);
-  }
-
-  if (!(noa.container as any).hasPointerLock) return;
+  if (!hasPointerLock()) return;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -223,20 +237,242 @@ noa.inputs.down.on("alt-fire", () => {
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
 
+  // Prevent placing inside player
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  if (x === px && z === pz && (y === py || y === py + 1)) return;
+  // Basic "no place where you stand" check (feet+head)
+  if (x === px && z === pz && (y === py || y === py + 1)) {
+    console.log("❌ Cannot place block: Player is standing here.");
+    return;
+  }
 
+  // Local update
   noa.world.setBlockID(blockToPlace, x, y, z);
+  // Network update
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
 
 /* ===============================
+   8.5 Minecraft-style Avatars (Option A - no assets)
+================================ */
+
+type Avatar = {
+  root: any;
+  head: any;
+  body: any;
+  armL: any;
+  armR: any;
+  legL: any;
+  legR: any;
+  lastPos: { x: number; y: number; z: number };
+  lastT: number;
+};
+
+const avatars = new Map<string, Avatar>();
+
+function getBabylonOrThrow() {
+  const BABYLON = (globalThis as any).BABYLON;
+  if (BABYLON) return BABYLON;
+
+  // If this triggers, tell me what noa.rendering contains and I’ll wire it differently.
+  throw new Error(
+    "BABYLON global not found. noa-engine usually provides Babylon globally. " +
+      "If not, install/explicitly import Babylon and update avatar code accordingly."
+  );
+}
+
+function getSceneOrThrow() {
+  const scene = (noa as any).rendering?.getScene?.();
+  if (scene) return scene;
+  throw new Error("Could not access Babylon scene via noa.rendering.getScene().");
+}
+
+function colorFromId(id: string) {
+  // Deterministic-ish hash -> 0..1 RGB
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  const r = ((h >>> 0) & 255) / 255;
+  const g = (((h >>> 8) >>> 0) & 255) / 255;
+  const b = (((h >>> 16) >>> 0) & 255) / 255;
+  return { r, g, b };
+}
+
+function createAvatar(id: string) {
+  const BABYLON = getBabylonOrThrow();
+  const scene = getSceneOrThrow();
+
+  // Minecraft pixels to world units: 16px = 1 block
+  const SCALE = 1 / 16;
+
+  // Classic model
+  const headSize = 8 * SCALE; // 0.5
+  const bodyW = 8 * SCALE; // 0.5
+  const bodyH = 12 * SCALE; // 0.75
+  const bodyD = 4 * SCALE; // 0.25
+  const limbW = 4 * SCALE; // 0.25
+  const limbH = 12 * SCALE; // 0.75
+  const limbD = 4 * SCALE; // 0.25
+
+  const root = new BABYLON.TransformNode(`avatar:${id}`, scene);
+
+  const col = colorFromId(id);
+
+  const matHead = new BABYLON.StandardMaterial(`matHead:${id}`, scene);
+  matHead.diffuseColor = new BABYLON.Color3(
+    col.r * 0.8 + 0.1,
+    col.g * 0.8 + 0.1,
+    col.b * 0.8 + 0.1
+  );
+
+  const matBody = new BABYLON.StandardMaterial(`matBody:${id}`, scene);
+  matBody.diffuseColor = new BABYLON.Color3(
+    col.r * 0.6 + 0.2,
+    col.g * 0.6 + 0.2,
+    col.b * 0.6 + 0.2
+  );
+
+  const matLimb = new BABYLON.StandardMaterial(`matLimb:${id}`, scene);
+  matLimb.diffuseColor = new BABYLON.Color3(
+    col.r * 0.5 + 0.25,
+    col.g * 0.5 + 0.25,
+    col.b * 0.5 + 0.25
+  );
+
+  // Part helper: box with pivot at top (for swinging)
+  function makeSwingPart(name: string, w: number, h: number, d: number, mat: any) {
+    const mesh = BABYLON.MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
+    mesh.material = mat;
+    mesh.setPivotPoint(new BABYLON.Vector3(0, h / 2, 0));
+    mesh.parent = root;
+    mesh.isPickable = false;
+    mesh.checkCollisions = false;
+    return mesh;
+  }
+
+  const head = BABYLON.MeshBuilder.CreateBox(`head:${id}`, { size: headSize }, scene);
+  head.material = matHead;
+  head.parent = root;
+  head.isPickable = false;
+  head.checkCollisions = false;
+
+  const body = BABYLON.MeshBuilder.CreateBox(
+    `body:${id}`,
+    { width: bodyW, height: bodyH, depth: bodyD },
+    scene
+  );
+  body.material = matBody;
+  body.parent = root;
+  body.isPickable = false;
+  body.checkCollisions = false;
+
+  const armL = makeSwingPart(`armL:${id}`, limbW, limbH, limbD, matLimb);
+  const armR = makeSwingPart(`armR:${id}`, limbW, limbH, limbD, matLimb);
+  const legL = makeSwingPart(`legL:${id}`, limbW, limbH, limbD, matLimb);
+  const legR = makeSwingPart(`legR:${id}`, limbW, limbH, limbD, matLimb);
+
+  // Layout (root ~ feet)
+  const feetY = 0;
+
+  // Legs: pivot at top, so place them at hip height
+  legL.position.set(-bodyW * 0.25, feetY + limbH, 0);
+  legR.position.set(bodyW * 0.25, feetY + limbH, 0);
+
+  // Body: centered above legs
+  body.position.set(0, feetY + limbH + bodyH * 0.5, 0);
+
+  // Arms: pivot at top, place at shoulder height
+  const shoulderY = feetY + limbH + bodyH;
+  armL.position.set(-bodyW * 0.75, shoulderY, 0);
+  armR.position.set(bodyW * 0.75, shoulderY, 0);
+
+  // Head: centered on top
+  head.position.set(0, shoulderY + headSize * 0.5, 0);
+
+  const now = performance.now();
+
+  const avatar: Avatar = {
+    root,
+    head,
+    body,
+    armL,
+    armR,
+    legL,
+    legR,
+    lastPos: { x: 0, y: 0, z: 0 },
+    lastT: now,
+  };
+
+  avatars.set(id, avatar);
+  return avatar;
+}
+
+function removeAvatar(id: string) {
+  const av = avatars.get(id);
+  if (!av) return;
+
+  [av.head, av.body, av.armL, av.armR, av.legL, av.legR].forEach((m) => m.dispose());
+  av.root.dispose();
+  avatars.delete(id);
+}
+
+function updateAvatar(id: string, x: number, y: number, z: number, yawRad?: number) {
+  const av = avatars.get(id) ?? createAvatar(id);
+
+  av.root.position.x = x;
+  av.root.position.y = y;
+  av.root.position.z = z;
+
+  if (typeof yawRad === "number" && Number.isFinite(yawRad)) {
+    av.root.rotation.y = yawRad;
+  }
+
+  // Simple limb swing based on movement speed
+  const t = performance.now();
+  const dt = Math.max(0.001, (t - av.lastT) / 1000);
+
+  const dx = x - av.lastPos.x;
+  const dz = z - av.lastPos.z;
+  const speed = Math.sqrt(dx * dx + dz * dz) / dt; // units/s
+
+  const isMoving = speed > 0.2;
+  const swing = isMoving ? Math.min(1, speed / 4) : 0;
+
+  const phase = t * 0.012;
+  const swingAmt = 0.9 * swing;
+
+  const targetArm = Math.sin(phase) * swingAmt;
+  const targetLeg = Math.sin(phase + Math.PI) * swingAmt;
+
+  function damp(current: number, target: number, k = 12) {
+    return current + (target - current) * (1 - Math.exp(-k * dt));
+  }
+
+  av.armL.rotation.x = damp(av.armL.rotation.x, targetArm);
+  av.armR.rotation.x = damp(av.armR.rotation.x, -targetArm);
+  av.legL.rotation.x = damp(av.legL.rotation.x, targetLeg);
+  av.legR.rotation.x = damp(av.legR.rotation.x, -targetLeg);
+
+  av.lastPos = { x, y, z };
+  av.lastT = t;
+}
+
+/* ===============================
    9. Networking (Connect & Sync)
 ================================ */
+
+function normId(p: any): string | null {
+  if (!p) return null;
+  // try common fields
+  const id = p.id ?? p.sessionId ?? p.sid ?? p.clientId ?? null;
+  if (id != null) return String(id);
+  // sometimes server sends just the string id
+  if (typeof p === "string") return p;
+  return null;
+}
+
 async function connect() {
   try {
     updateOverlay();
@@ -245,19 +481,64 @@ async function connect() {
     console.log("✅ Joined room:", room.sessionId);
     updateOverlay();
 
+    // 1) Block Updates (World)
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
+    // 2) Existing Players (Initial Load)
     room.onMessage("existingPlayers", (players: any[]) => {
       console.log("👋 Existing players:", players);
+      for (const p of players ?? []) {
+        const id = normId(p);
+        if (!id) continue;
+        updateAvatar(
+          id,
+          Number(p.x ?? 0),
+          Number(p.y ?? 0),
+          Number(p.z ?? 0),
+          typeof p.yaw === "number" ? p.yaw : undefined
+        );
+      }
     });
 
-    room.onMessage("playerJoined", (p: any) => console.log("➕ Player joined:", p));
-    room.onMessage("playerLeft", (p: any) => console.log("➖ Player left:", p));
-    room.onMessage("playerTransformOther", (_p: any) => {});
+    // 3) New Player Joined
+    room.onMessage("playerJoined", (p: any) => {
+      console.log("➕ Player joined:", p);
+      const id = normId(p);
+      if (!id) return;
+      updateAvatar(
+        id,
+        Number(p.x ?? 0),
+        Number(p.y ?? 0),
+        Number(p.z ?? 0),
+        typeof p.yaw === "number" ? p.yaw : undefined
+      );
+    });
+
+    // 4) Player Left
+    room.onMessage("playerLeft", (p: any) => {
+      console.log("➖ Player left:", p);
+      const id = normId(p);
+      if (!id) return;
+      removeAvatar(id);
+    });
+
+    // 5) Other Player Movement
+    room.onMessage("playerTransformOther", (p: any) => {
+      // Expected: { id, x, y, z, yaw? }
+      const id = normId(p);
+      if (!id) return;
+
+      const x = Number(p.x);
+      const y = Number(p.y);
+      const z = Number(p.z);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+
+      updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
+    });
   } catch (e) {
     console.error("Connection Error:", e);
     overlay.innerHTML += "<br><span style='color:red'>Connection Failed!</span>";
@@ -269,9 +550,11 @@ connect();
 /* ===============================
    10. Sync Position
 ================================ */
+
 let tickCount = 0;
 (noa as any).on("tick", () => {
   tickCount++;
+
   if (room && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });
