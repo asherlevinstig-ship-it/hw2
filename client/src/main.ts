@@ -14,10 +14,8 @@ let room: Room | null = null;
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("Missing <div id='app'></div> in index.html");
 
-// Prevent right-click menu
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-// Fullscreen styles
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
 document.body.style.margin = "0";
@@ -57,6 +55,20 @@ const noa = new Engine({
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
+
+  // Optional: uncomment if you WANT 32 explicitly
+  // chunkSize: 32,
+});
+
+/* ===============================
+   4.1 Pointer Lock (make sure it actually happens)
+================================ */
+appEl.addEventListener("click", () => {
+  // NOA often manages this, but forcing it makes debugging easier
+  const canvas = (noa as any).rendering?.getScene?.()?.getEngine?.()?.getRenderingCanvas?.();
+  // Fallback: try locking on appEl
+  const el: any = canvas ?? appEl;
+  if (el?.requestPointerLock) el.requestPointerLock();
 });
 
 /* ===============================
@@ -96,7 +108,7 @@ let selectedSlot = 0;
 function updateOverlay() {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
-  
+
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
@@ -106,6 +118,7 @@ function updateOverlay() {
     [WASD] Move  |  [Space] Jump
   `;
 }
+updateOverlay();
 
 document.addEventListener("keydown", (e) => {
   const key = parseInt(e.key);
@@ -116,37 +129,43 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   7. Terrain Generation (Hills)
+   7. Terrain Generation (FIXED)
 ================================ */
 const worldAny = noa.world as any;
 
+let firstChunkLogged = false;
+
 worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: number) => {
-  for (let i = 0; i < 32; i++) {
-    for (let k = 0; k < 32; k++) {
-      const globalX = x * 32 + i;
-      const globalZ = z * 32 + k;
+  // ✅ derive chunk size from data shape
+  const CS = data.shape?.[0] ?? 32;
 
-      // Sine wave hills
-      const height = Math.floor(
-        Math.sin(globalX / 15) * 6 + 
-        Math.cos(globalZ / 15) * 6
-      );
+  if (!firstChunkLogged) {
+    firstChunkLogged = true;
+    console.log("✅ worldDataNeeded firing. chunkSize =", CS, "first chunk coords =", { x, y, z });
+  }
 
-      for (let j = 0; j < 32; j++) {
-        const globalY = y * 32 + j;
+  const baseHeight = 12; // ✅ prevents “all air” at y>=0
 
-        if (globalY > height) {
-          data.set(i, j, k, AIR_ID);
-        } else if (globalY === height) {
-          data.set(i, j, k, GRASS_ID);
-        } else if (globalY > height - 4) {
-          data.set(i, j, k, DIRT_ID);
-        } else {
-          data.set(i, j, k, STONE_ID);
-        }
+  for (let i = 0; i < CS; i++) {
+    for (let k = 0; k < CS; k++) {
+      const globalX = x * CS + i;
+      const globalZ = z * CS + k;
+
+      const height =
+        baseHeight +
+        Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
+
+      for (let j = 0; j < CS; j++) {
+        const globalY = y * CS + j;
+
+        if (globalY > height) data.set(i, j, k, AIR_ID);
+        else if (globalY === height) data.set(i, j, k, GRASS_ID);
+        else if (globalY > height - 4) data.set(i, j, k, DIRT_ID);
+        else data.set(i, j, k, STONE_ID);
       }
     }
   }
+
   noa.world.setChunkData(id, data);
 });
 
@@ -154,29 +173,50 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
    8. Input & Interaction Logic
 ================================ */
 
+// ✅ Ensure bindings exist (varies by noa setup)
+try {
+  (noa.inputs as any).bind?.("fire", "mouse1");
+  (noa.inputs as any).bind?.("alt-fire", "mouse2");
+} catch {
+  // ignore if bind API differs
+}
+
 function getTargetInfo() {
   const tgt = (noa as any).targetedBlock;
-  if (!tgt || !tgt.position) return null;
+  if (!tgt?.position || !tgt?.adjacent) return null;
 
   return {
     pos: { x: tgt.position[0], y: tgt.position[1], z: tgt.position[2] },
-    adj: { x: tgt.adjacent[0], y: tgt.adjacent[1], z: tgt.adjacent[2] }
+    adj: { x: tgt.adjacent[0], y: tgt.adjacent[1], z: tgt.adjacent[2] },
   };
 }
 
-noa.inputs.down.on('fire', () => {
-  if (!noa.container.hasPointerLock) return;
+let firstInputLogged = false;
+
+noa.inputs.down.on("fire", () => {
+  if (!firstInputLogged) {
+    firstInputLogged = true;
+    console.log("✅ Input firing (fire). pointerLock =", (noa.container as any).hasPointerLock);
+  }
+
+  if (!(noa.container as any).hasPointerLock) return;
+
   const target = getTargetInfo();
   if (!target) return;
 
   const { x, y, z } = target.pos;
-  console.log(`⛏ Mining at ${x}, ${y}, ${z}`);
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
 
-noa.inputs.down.on('alt-fire', () => {
-  if (!noa.container.hasPointerLock) return;
+noa.inputs.down.on("alt-fire", () => {
+  if (!firstInputLogged) {
+    firstInputLogged = true;
+    console.log("✅ Input firing (alt-fire). pointerLock =", (noa.container as any).hasPointerLock);
+  }
+
+  if (!(noa.container as any).hasPointerLock) return;
+
   const target = getTargetInfo();
   if (!target) return;
 
@@ -188,12 +228,8 @@ noa.inputs.down.on('alt-fire', () => {
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  if (x === px && z === pz && (y === py || y === py + 1)) {
-    console.log("❌ Cannot place block: Player is standing here.");
-    return; 
-  }
+  if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  console.log(`🧱 Placing block ${blockToPlace} at ${x}, ${y}, ${z}`);
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
@@ -201,46 +237,27 @@ noa.inputs.down.on('alt-fire', () => {
 /* ===============================
    9. Networking (Connect & Sync)
 ================================ */
-
 async function connect() {
   try {
     updateOverlay();
-    
+
     room = await colyseus.joinOrCreate("my_room");
     console.log("✅ Joined room:", room.sessionId);
     updateOverlay();
 
-    // 1. Block Updates (World)
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // 2. Existing Players (Initial Load)
     room.onMessage("existingPlayers", (players: any[]) => {
-        console.log("👋 Existing players:", players);
-        // Future: Loop through 'players' and spawn meshes
+      console.log("👋 Existing players:", players);
     });
 
-    // 3. New Player Joined
-    room.onMessage("playerJoined", (p: any) => {
-        console.log("➕ Player joined:", p);
-        // Future: Spawn mesh for p.id
-    });
-
-    // 4. Player Left
-    room.onMessage("playerLeft", (p: any) => {
-        console.log("➖ Player left:", p);
-        // Future: Remove mesh for p.id
-    });
-
-    // 5. Other Player Movement
-    // Prefix with _ to silence "unused variable" warning
-    room.onMessage("playerTransformOther", (_p: any) => {
-        // Future: Update position of p.id mesh
-    });
-
+    room.onMessage("playerJoined", (p: any) => console.log("➕ Player joined:", p));
+    room.onMessage("playerLeft", (p: any) => console.log("➖ Player left:", p));
+    room.onMessage("playerTransformOther", (_p: any) => {});
   } catch (e) {
     console.error("Connection Error:", e);
     overlay.innerHTML += "<br><span style='color:red'>Connection Failed!</span>";
@@ -252,9 +269,8 @@ connect();
 /* ===============================
    10. Sync Position
 ================================ */
-
 let tickCount = 0;
-(noa as any).on('tick', () => {
+(noa as any).on("tick", () => {
   tickCount++;
   if (room && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
