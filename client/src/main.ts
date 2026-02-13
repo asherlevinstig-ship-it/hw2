@@ -1,15 +1,38 @@
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 
-const ENDPOINT =
-  import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
+/* ===============================
+   Colyseus endpoint (Vercel + local fallback)
+================================ */
 
+const ENDPOINT = import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
 const colyseus = new Client(ENDPOINT);
 let room: Room | null = null;
+
+/* ===============================
+   Make Vite root full-screen (CRITICAL)
+================================ */
+
+const appEl = document.querySelector<HTMLDivElement>("#app");
+if (!appEl) {
+  throw new Error("Missing <div id='app'></div> in index.html");
+}
 
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
 document.body.style.margin = "0";
+
+// Ensure #app fills the viewport (Vite default CSS often breaks this)
+appEl.style.position = "fixed";
+appEl.style.left = "0";
+appEl.style.top = "0";
+appEl.style.width = "100vw";
+appEl.style.height = "100vh";
+appEl.style.overflow = "hidden";
+
+/* ===============================
+   Overlay UI
+================================ */
 
 const overlay = document.createElement("div");
 overlay.style.position = "fixed";
@@ -25,13 +48,27 @@ overlay.style.zIndex = "9999";
 overlay.innerHTML = `Click to lock mouse • WASD move • Space jump<br/>Endpoint: ${ENDPOINT}<br/>Connecting...`;
 document.body.appendChild(overlay);
 
+/* ===============================
+   Block IDs
+================================ */
+
 const AIR_ID = 0;
 const GRASS_ID = 1;
 const STONE_ID = 2;
 
+/* ===============================
+   NOA Engine boot (render INTO #app)
+================================ */
+
 const noa = new Engine({
   debug: true,
-  playerStart: [0, 20, 0],
+
+  // IMPORTANT: force canvas/container into #app
+  container: appEl,
+
+  // Start close to ground so you can immediately see terrain
+  playerStart: [0, 5, 0],
+
   tickRate: 30,
   maxRenderRate: 0,
 
@@ -63,20 +100,19 @@ const noa = new Engine({
   },
 });
 
+/* ===============================
+   Materials + Blocks (simple colors)
+================================ */
+
 noa.registry.registerMaterial("grass", { color: [0.25, 0.75, 0.25] });
 noa.registry.registerMaterial("stone", { color: [0.55, 0.55, 0.58] });
 
-noa.registry.registerBlock(GRASS_ID, {
-  material: "grass",
-  solid: true,
-  opaque: true,
-});
+noa.registry.registerBlock(GRASS_ID, { material: "grass", solid: true, opaque: true });
+noa.registry.registerBlock(STONE_ID, { material: "stone", solid: true, opaque: true });
 
-noa.registry.registerBlock(STONE_ID, {
-  material: "stone",
-  solid: true,
-  opaque: true,
-});
+/* ===============================
+   Colyseus connect + handlers
+================================ */
 
 async function connectToServer() {
   try {
