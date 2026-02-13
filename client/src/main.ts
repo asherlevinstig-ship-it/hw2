@@ -10,7 +10,7 @@ const colyseus = new Client(ENDPOINT);
 let room: Room | null = null;
 
 /* ===============================
-   Fullscreen container (Vite CSS often breaks canvas sizing)
+   Fullscreen container
 ================================ */
 
 const appEl = document.querySelector<HTMLDivElement>("#app");
@@ -28,7 +28,7 @@ appEl.style.height = "100vh";
 appEl.style.overflow = "hidden";
 
 /* ===============================
-   Overlay UI (includes hotbar)
+   Overlay UI
 ================================ */
 
 const overlay = document.createElement("div");
@@ -52,7 +52,7 @@ document.body.appendChild(overlay);
 const noa = new Engine({
   debug: true,
   container: appEl,
-  playerStart: [0, 8, 0],
+  playerStart: [0, 10, 0],
   tickRate: 30,
   maxRenderRate: 0,
 });
@@ -100,6 +100,8 @@ const hotbar: Placeable[] = [
 
 let selectedHotbarIndex = 0;
 
+let worldDataNeededCount = 0;
+
 function renderOverlay(statusLine: string) {
   const hb = hotbar
     .map((b, i) => (i === selectedHotbarIndex ? `[${i + 1}:${b.name}]` : `${i + 1}:${b.name}`))
@@ -109,6 +111,7 @@ function renderOverlay(statusLine: string) {
     `Click to lock mouse • WASD move • Space jump<br/>` +
     `Left click mine • Right click place • 1-6 select block<br/>` +
     `Endpoint: ${ENDPOINT}<br/>${statusLine}<br/>` +
+    `worldDataNeeded: ${worldDataNeededCount}<br/>` +
     `Hotbar: ${hb}`;
 }
 
@@ -123,196 +126,61 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   Minecraft-ish terrain generator (no deps)
-================================ */
-
-function hash2(x: number, z: number): number {
-  let n = x * 374761393 + z * 668265263;
-  n = (n ^ (n >> 13)) * 1274126177;
-  n = n ^ (n >> 16);
-  return (n >>> 0) / 4294967295;
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-function smoothstep(t: number): number {
-  return t * t * (3 - 2 * t);
-}
-
-function valueNoise2D(x: number, z: number): number {
-  const x0 = Math.floor(x);
-  const z0 = Math.floor(z);
-  const x1 = x0 + 1;
-  const z1 = z0 + 1;
-
-  const sx = smoothstep(x - x0);
-  const sz = smoothstep(z - z0);
-
-  const n00 = hash2(x0, z0);
-  const n10 = hash2(x1, z0);
-  const n01 = hash2(x0, z1);
-  const n11 = hash2(x1, z1);
-
-  const ix0 = lerp(n00, n10, sx);
-  const ix1 = lerp(n01, n11, sx);
-  return lerp(ix0, ix1, sz);
-}
-
-function fbm2D(x: number, z: number): number {
-  let amp = 1;
-  let freq = 0.03;
-  let sum = 0;
-  let norm = 0;
-
-  for (let i = 0; i < 4; i++) {
-    sum += valueNoise2D(x * freq, z * freq) * amp;
-    norm += amp;
-    amp *= 0.5;
-    freq *= 2;
-  }
-
-  return sum / norm;
-}
-
-function terrainHeight(wx: number, wz: number): number {
-  const n = fbm2D(wx, wz);
-  return Math.floor(n * 18 + 2);
-}
-
-function treeChance(wx: number, wz: number): boolean {
-  const r = hash2(wx * 17, wz * 17);
-  return r > 0.985;
-}
-
-/**
- * Tree placement that respects NOA chunk padding.
- * The ndarray "dataArr" may have a 1-voxel border padding (common in NOA).
- */
-function placeTreePadded(
-  dataArr: any,
-  baseWX: number,
-  baseWY: number,
-  baseWZ: number,
-  chunkX: number,
-  chunkY: number,
-  chunkZ: number,
-  padX: number,
-  padY: number,
-  padZ: number
-) {
-  const h = 4 + Math.floor(hash2(baseWX, baseWZ) * 3);
-
-  const toI = (wx: number) => wx - chunkX + padX;
-  const toJ = (wy: number) => wy - chunkY + padY;
-  const toK = (wz: number) => wz - chunkZ + padZ;
-
-  const shape = dataArr.shape as [number, number, number];
-
-  const inBounds = (i: number, j: number, k: number) =>
-    i >= padX &&
-    j >= padY &&
-    k >= padZ &&
-    i < shape[0] - padX &&
-    j < shape[1] - padY &&
-    k < shape[2] - padZ;
-
-  for (let t = 1; t <= h; t++) {
-    const i = toI(baseWX);
-    const j = toJ(baseWY + t);
-    const k = toK(baseWZ);
-    if (inBounds(i, j, k)) dataArr.set(i, j, k, WOOD_ID);
-  }
-
-  const topY = baseWY + h;
-  for (let dx = -2; dx <= 2; dx++) {
-    for (let dy = -2; dy <= 2; dy++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        const dist = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
-        if (dist > 4) continue;
-
-        const i = toI(baseWX + dx);
-        const j = toJ(topY + dy);
-        const k = toK(baseWZ + dz);
-
-        if (!inBounds(i, j, k)) continue;
-
-        const existing = dataArr.get(i, j, k);
-        if (existing === AIR_ID) dataArr.set(i, j, k, LEAVES_ID);
-      }
-    }
-  }
-}
-
-/* ===============================
-   World generation hookup (PADDING-SAFE)
-   This is the key fix:
-   - detects chunk padding and writes terrain aligned to NOA world coords
+   World generation hook (kept, but instrumented)
+   If this NEVER increments, your generator is not being used.
 ================================ */
 
 const worldAny = noa.world as any;
 
-worldAny.on(
-  "worldDataNeeded",
-  (requestID: any, dataArr: any, chunkX: number, chunkY: number, chunkZ: number) => {
-    const shape: [number, number, number] = dataArr.shape;
+if (worldAny && typeof worldAny.on === "function") {
+  worldAny.on(
+    "worldDataNeeded",
+    (requestID: any, dataArr: any, _chunkX: number, _chunkY: number, _chunkZ: number) => {
 
-    // If chunk arrays include a 1-voxel border padding, interior is (shape - 2).
-    // We'll assume padding is 1 if the array has room for it, otherwise 0.
-    const padX = shape[0] > 2 ? 1 : 0;
-    const padY = shape[1] > 2 ? 1 : 0;
-    const padZ = shape[2] > 2 ? 1 : 0;
-
-    const seaLevel = 2;
-
-    // Clear to air
-    for (let i = 0; i < shape[0]; i++) {
-      for (let j = 0; j < shape[1]; j++) {
-        for (let k = 0; k < shape[2]; k++) {
-          dataArr.set(i, j, k, AIR_ID);
-        }
-      }
-    }
-
-    // Fill interior only
-    for (let i = padX; i < shape[0] - padX; i++) {
-      for (let k = padZ; k < shape[2] - padZ; k++) {
-        const wx = chunkX + (i - padX);
-        const wz = chunkZ + (k - padZ);
-
-        const h = terrainHeight(wx, wz);
-
-        for (let j = padY; j < shape[1] - padY; j++) {
-          const wy = chunkY + (j - padY);
-
-          let id = AIR_ID;
-
-          if (wy <= h) {
-            const depth = h - wy;
-            if (depth === 0) id = h <= seaLevel + 1 ? SAND_ID : GRASS_ID;
-            else if (depth <= 3) id = h <= seaLevel + 1 ? SAND_ID : DIRT_ID;
-            else id = STONE_ID;
-          }
-
-          dataArr.set(i, j, k, id);
-        }
-
-        // Trees: only attempt if baseY is in this chunk's vertical interior span
-        if (treeChance(wx, wz)) {
-          const baseY = h;
-          const interiorHeight = shape[1] - 2 * padY;
-          const baseInThisChunk = baseY >= chunkY && baseY < chunkY + interiorHeight;
-          if (baseInThisChunk && h > seaLevel + 1) {
-            placeTreePadded(dataArr, wx, baseY, wz, chunkX, chunkY, chunkZ, padX, padY, padZ);
+      worldDataNeededCount++;
+      // For now, leave chunks empty (AIR) to avoid confusing results.
+      // We'll re-enable procedural terrain after mining/building is confirmed working.
+      const shape: [number, number, number] = dataArr.shape;
+      for (let i = 0; i < shape[0]; i++) {
+        for (let j = 0; j < shape[1]; j++) {
+          for (let k = 0; k < shape[2]; k++) {
+            dataArr.set(i, j, k, AIR_ID);
           }
         }
       }
+      noa.world.setChunkData(requestID, dataArr);
     }
+  );
+}
 
-    noa.world.setChunkData(requestID, dataArr);
+/* ===============================
+   TEST PLATFORM (forces real voxels)
+   If mining/building works after this, picker + networking are correct.
+================================ */
+
+function buildTestPlatform() {
+  // A 41x41 grass platform at y=2, with dirt under it (Minecraft-ish)
+  const yTop = 2;
+
+  for (let x = -20; x <= 20; x++) {
+    for (let z = -20; z <= 20; z++) {
+      noa.world.setBlockID(DIRT_ID, x, yTop - 1, z);
+      noa.world.setBlockID(GRASS_ID, x, yTop, z);
+
+      // small stone pillar at origin for easy targeting
+      if (x === 0 && z === 0) {
+        for (let y = yTop + 1; y <= yTop + 4; y++) {
+          noa.world.setBlockID(STONE_ID, x, y, z);
+        }
+      }
+    }
   }
-);
+
+  console.log("✅ Test platform placed (real voxels) at y=2");
+}
+
+// Wait a moment so the scene is ready, then place blocks
+setTimeout(buildTestPlatform, 250);
 
 /* ===============================
    Picking helpers (stable Minecraft-style)
@@ -376,35 +244,6 @@ function getPick(maxDist = 6): PickResult | null {
 }
 
 /* ===============================
-   Colyseus connect + handlers
-================================ */
-
-async function connectToServer() {
-  try {
-    room = await colyseus.joinOrCreate("my_room");
-    renderOverlay(`Connected ✔ (${room.sessionId})`);
-    console.log("Connected:", room.name, room.sessionId);
-
-    room.onMessage("blockUpdate", (msg: any) => {
-      if (!msg) return;
-      noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
-    });
-
-    // We don't use server corrections for local player yet (prevents jitter)
-    room.onMessage("playerTransform", (_data: any) => {});
-
-    room.onMessage("*", (messageType: string | number, payload: unknown) => {
-      console.log("Server message:", messageType, payload);
-    });
-  } catch (err) {
-    console.error("Failed to connect:", err);
-    renderOverlay("Connection failed ❌");
-  }
-}
-
-connectToServer();
-
-/* ===============================
    Mining + Building
 ================================ */
 
@@ -459,6 +298,35 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 /* ===============================
+   Colyseus connect + handlers
+================================ */
+
+async function connectToServer() {
+  try {
+    room = await colyseus.joinOrCreate("my_room");
+    renderOverlay(`Connected ✔ (${room.sessionId})`);
+    console.log("Connected:", room.name, room.sessionId);
+
+    room.onMessage("blockUpdate", (msg: any) => {
+      if (!msg) return;
+      noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
+    });
+
+    // no server corrections for local player yet
+    room.onMessage("playerTransform", (_data: any) => {});
+
+    room.onMessage("*", (messageType: string | number, payload: unknown) => {
+      console.log("Server message:", messageType, payload);
+    });
+  } catch (err) {
+    console.error("Failed to connect:", err);
+    renderOverlay("Connection failed ❌");
+  }
+}
+
+connectToServer();
+
+/* ===============================
    Send position to server each tick (throttled)
 ================================ */
 
@@ -469,7 +337,7 @@ noaAny.on("tick", () => {
   if (!room) return;
 
   const now = performance.now();
-  if (now - lastSend < 80) return; // ~12.5 updates/sec
+  if (now - lastSend < 80) return;
   lastSend = now;
 
   const pos = noa.ents.getPosition(noa.playerEntity);
