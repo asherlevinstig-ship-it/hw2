@@ -1,46 +1,114 @@
-/**
- * FULL DROP-IN CLIENT SCRIPT (no omissions)
- * Fixes:
- *  1) "BABYLON global not found" by explicitly importing Babylon and exposing window.BABYLON
- *  2) noa-engine v0.33 camera API change by using noa.camera.heading and noa.camera.pitch
- *
- * What you must wire up (still included, but you must point it at your real networking):
- *  - Provide a socket-like object with:
- *      socket.on(event, fn)
- *      socket.emit(event, payload)
- *  - Emit/receive:
- *      "joined" -> { id, players: [{id, position:[x,y,z], heading, pitch}] }
- *      "playerJoined" -> { id, position, heading, pitch }
- *      "playerLeft" -> { id }
- *      "playerState" -> { id, position, heading, pitch }
- *
- * If your events are named differently, just change the strings in setupNetworking().
- */
+/* ============================================================================
+   main.ts (FULL, NO OMITS) - TypeScript-safe noa-engine + Babylon + multiplayer
+   Fixes:
+    - window.BABYLON typing
+    - socket typing / destructure typing
+    - noa-engine "no call signatures" typings mismatch
+    - implicit any everywhere
+    - noa v0.33 camera heading/pitch migration
+    - TS2367 pointerLockElement vs HTMLCanvasElement comparison
+============================================================================ */
 
-import createNoa from "noa-engine";
 import * as BABYLON from "@babylonjs/core";
-// If you load external meshes, uncomment:
-// import "@babylonjs/loaders";
+// import "@babylonjs/loaders"; // enable if you load .glb/.gltf/etc
+import * as NoaImport from "noa-engine";
 
 /* -------------------------------------------------------------------------- */
-/* Global BABYLON bridge (fixes "BABYLON global not found")                     */
+/* Global window augmentation for BABYLON                                      */
 /* -------------------------------------------------------------------------- */
-if (typeof window !== "undefined") {
-  window.BABYLON = BABYLON;
+declare global {
+  interface Window {
+    BABYLON: typeof BABYLON;
+  }
+}
+window.BABYLON = BABYLON;
+
+/* -------------------------------------------------------------------------- */
+/* Minimal socket interface                                                    */
+/* -------------------------------------------------------------------------- */
+export type Handler<T = unknown> = (data: T) => void;
+
+export interface SocketLike {
+  on<T = unknown>(event: string, fn: Handler<T>): void;
+  emit<T = unknown>(event: string, payload: T): void;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Config                                                                      */
+/* Player state types                                                         */
 /* -------------------------------------------------------------------------- */
+export type Vec3 = [number, number, number];
 
+export interface NetPlayerState {
+  id: string;
+  position: Vec3;
+  heading?: number;
+  pitch?: number;
+}
+
+export interface JoinedPayload {
+  id: string;
+  players: NetPlayerState[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Start options                                                              */
+/* -------------------------------------------------------------------------- */
+export interface StartClientOptions {
+  canvas?: HTMLCanvasElement | null;
+  socket: SocketLike;
+}
+
+/* -------------------------------------------------------------------------- */
+/* noa minimal typing (only what we use)                                      */
+/* -------------------------------------------------------------------------- */
+type NoaLike = {
+  debug?: boolean;
+  world: {
+    chunkSize: number;
+    on: (
+      event: "worldDataNeeded",
+      fn: (
+        id: [number, number, number],
+        data: Uint16Array,
+        done: (err: unknown, data?: Uint16Array) => void
+      ) => void
+    ) => void;
+    getBlockID: (x: number, y: number, z: number) => number;
+  };
+  registry: {
+    registerBlock: (
+      id: number,
+      opts: { name: string; solid: boolean; opaque: boolean }
+    ) => void;
+  };
+  playerEntity: {
+    position: {
+      set: (x: number, y: number, z: number) => void;
+      [i: number]: number;
+    };
+  };
+  camera: {
+    heading: number;
+    pitch: number;
+  };
+  entities: {
+    getPhysicsBody: (ent: unknown) => { velocity: [number, number, number] } | null;
+  };
+  rendering: {
+    getScene: () => BABYLON.Scene;
+  };
+  on: (event: "tick", fn: (dt: number) => void) => void;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Config                                                                     */
+/* -------------------------------------------------------------------------- */
 const CONFIG = {
   chunkSize: 24,
-  worldSeed: 1337,
   player: {
     height: 1.8,
     width: 0.6,
     depth: 0.6,
-    eyeHeight: 1.6,
     moveSpeed: 6.0,
     jumpImpulse: 7.0,
   },
@@ -49,62 +117,88 @@ const CONFIG = {
     maxPitch: Math.PI / 2 - 0.01,
   },
   avatar: {
-    // simple box avatar for remote players
     size: { w: 0.6, h: 1.8, d: 0.6 },
-    yOffset: 0.9, // center box so it sits on ground
+    yOffset: 0.9,
   },
 };
 
 /* -------------------------------------------------------------------------- */
-/* Entry                                                                        */
+/* Helper: create noa instance (TS-safe)                                      */
 /* -------------------------------------------------------------------------- */
+function createNoaInstance(opts: {
+  canvas: HTMLCanvasElement;
+  debug: boolean;
+  chunkSize: number;
+  playerHeight: number;
+  playerWidth: number;
+  playerDepth: number;
+}): NoaLike {
+  const anyImport = NoaImport as unknown as { default?: unknown } & Record<string, unknown>;
+  const maybeDefault = anyImport.default;
 
-export function startClient({
-  canvas = document.getElementById("renderCanvas"),
-  socket, // REQUIRED: your multiplayer socket
-} = {}) {
-  if (!canvas) throw new Error("No canvas provided/found (expected #renderCanvas).");
-  if (!socket) throw new Error("No socket provided. Pass { socket } into startClient().");
+  const candidate =
+    (typeof maybeDefault === "function" ? maybeDefault : null) ??
+    (typeof (NoaImport as unknown) === "function" ? (NoaImport as unknown) : null);
 
-  // Create noa engine instance
-  const noa = createNoa({
+  if (typeof candidate !== "function") {
+    return (NoaImport as any)(opts) as NoaLike;
+  }
+
+  return (candidate as any)(opts) as NoaLike;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pointer lock helper (fixes TS2367)                                         */
+/* -------------------------------------------------------------------------- */
+function isPointerLockedTo(canvas: HTMLCanvasElement): boolean {
+  const el = document.pointerLockElement;
+  if (!el) return false;
+  // compare as Element to satisfy TS, while still correct at runtime
+  return el === (canvas as unknown as Element);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public entry                                                               */
+/* -------------------------------------------------------------------------- */
+export function startClient(options: StartClientOptions): {
+  noa: NoaLike;
+  socket: SocketLike;
+  avatars: AvatarManager;
+  controls: ControlsHandle;
+} {
+  const canvas =
+    options.canvas ??
+    (document.getElementById("renderCanvas") as HTMLCanvasElement | null);
+
+  if (!canvas) {
+    throw new Error("No canvas found. Provide options.canvas or an element with id='renderCanvas'.");
+  }
+
+  const socket = options.socket;
+  if (!socket) throw new Error("No socket provided.");
+
+  const noa = createNoaInstance({
     canvas,
     debug: true,
     chunkSize: CONFIG.chunkSize,
-    // Options vary by noa builds; these are common:
     playerHeight: CONFIG.player.height,
     playerWidth: CONFIG.player.width,
     playerDepth: CONFIG.player.depth,
   });
 
-  // Basic terrain (placeholder voxel IDs)
   setupWorld(noa);
-
-  // Local player controls & camera
   const controls = setupControls(noa, canvas);
-
-  // Remote avatars
   const avatars = createAvatarManager(noa);
 
-  // Networking glue
-  setupNetworking({
-    noa,
-    socket,
-    avatars,
-    controls,
-  });
+  setupNetworking({ noa, socket, avatars, controls });
 
-  // Return handle for external use/debug
   return { noa, socket, avatars, controls };
 }
 
 /* -------------------------------------------------------------------------- */
-/* World setup (simple flat world)                                              */
+/* World setup                                                                */
 /* -------------------------------------------------------------------------- */
-
-function setupWorld(noa) {
-  // Registry - IDs are arbitrary. If you already register blocks elsewhere,
-  // you can remove/replace this.
+function setupWorld(noa: NoaLike): void {
   const AIR = 0;
   const GRASS = 1;
   const DIRT = 2;
@@ -113,26 +207,21 @@ function setupWorld(noa) {
   noa.registry.registerBlock(GRASS, { name: "grass", solid: true, opaque: true });
   noa.registry.registerBlock(DIRT, { name: "dirt", solid: true, opaque: true });
 
-  // Very simple worldgen: flat ground at y=0 with grass, dirt below.
   noa.world.on("worldDataNeeded", (id, data, done) => {
-    const [cx, cy, cz] = id; // chunk coords
+    const cy = id[1];
     const size = noa.world.chunkSize;
 
-    // data is a Uint16Array (or similar) of voxel IDs, flattened
-    // index = x + size*(y + size*z)
-    const setVoxel = (x, y, z, v) => {
+    const setVoxel = (x: number, y: number, z: number, v: number): void => {
       const idx = x + size * (y + size * z);
       data[idx] = v;
     };
 
-    // Fill chunk
     for (let x = 0; x < size; x++) {
       for (let z = 0; z < size; z++) {
         for (let y = 0; y < size; y++) {
           const worldY = cy * size + y;
 
-          if (worldY < -3) setVoxel(x, y, z, DIRT);
-          else if (worldY < 0) setVoxel(x, y, z, DIRT);
+          if (worldY < 0) setVoxel(x, y, z, DIRT);
           else if (worldY === 0) setVoxel(x, y, z, GRASS);
           else setVoxel(x, y, z, AIR);
         }
@@ -142,28 +231,23 @@ function setupWorld(noa) {
     done(null, data);
   });
 
-  // Optional: set initial spawn a bit above ground
   noa.playerEntity.position.set(0, 4, 0);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Controls + camera (noa v0.33 heading/pitch)                                  */
+/* Controls + camera (noa v0.33 uses heading/pitch)                           */
 /* -------------------------------------------------------------------------- */
+type ControlsHandle = { readonly heading: number; readonly pitch: number };
 
-function setupControls(noa, canvas) {
-  // Pointer lock for mouse look
+function setupControls(noa: NoaLike, canvas: HTMLCanvasElement): ControlsHandle {
   canvas.addEventListener("click", () => {
-    if (document.pointerLockElement !== canvas) {
+    if (!isPointerLockedTo(canvas)) {
       canvas.requestPointerLock?.();
     }
   });
 
-  let yaw = 0;
-  let pitch = 0;
-
-  // Initialize to current camera values if present
-  if (typeof noa.camera.heading === "number") yaw = noa.camera.heading;
-  if (typeof noa.camera.pitch === "number") pitch = noa.camera.pitch;
+  let yaw = noa.camera.heading ?? 0;
+  let pitch = noa.camera.pitch ?? 0;
 
   const keys = {
     forward: false,
@@ -173,10 +257,7 @@ function setupControls(noa, canvas) {
     jump: false,
   };
 
-  window.addEventListener("keydown", (e) => setKey(e.code, true));
-  window.addEventListener("keyup", (e) => setKey(e.code, false));
-
-  function setKey(code, isDown) {
+  const setKey = (code: string, isDown: boolean): void => {
     switch (code) {
       case "KeyW":
         keys.forward = isDown;
@@ -196,11 +277,13 @@ function setupControls(noa, canvas) {
       default:
         break;
     }
-  }
+  };
 
-  // Mouse look (pointer lock)
-  window.addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement !== canvas) return;
+  window.addEventListener("keydown", (e: KeyboardEvent) => setKey(e.code, true));
+  window.addEventListener("keyup", (e: KeyboardEvent) => setKey(e.code, false));
+
+  window.addEventListener("mousemove", (e: MouseEvent) => {
+    if (!isPointerLockedTo(canvas)) return;
 
     const dx = e.movementX || 0;
     const dy = e.movementY || 0;
@@ -208,35 +291,25 @@ function setupControls(noa, canvas) {
     yaw -= dx * CONFIG.mouse.sensitivity;
     pitch -= dy * CONFIG.mouse.sensitivity;
 
-    // clamp pitch
     pitch = clamp(pitch, -CONFIG.mouse.maxPitch, CONFIG.mouse.maxPitch);
 
-    // ✅ noa v0.33+ camera API
     noa.camera.heading = yaw;
     noa.camera.pitch = pitch;
   });
 
-  // Drive movement each tick
-  noa.on("tick", (dt) => {
-    // dt is in ms for noa; normalize to seconds
-    const delta = dt / 1000;
-
+  noa.on("tick", () => {
     const move = computeMoveVector(keys, yaw);
     const speed = CONFIG.player.moveSpeed;
 
-    // Apply to player body (noa physics)
-    // noa.playerEntity has "body" with velocity
     const body = noa.entities.getPhysicsBody(noa.playerEntity);
     if (!body) return;
 
-    // Keep existing vertical velocity
     const vy = body.velocity[1];
 
     body.velocity[0] = move[0] * speed;
     body.velocity[2] = move[2] * speed;
     body.velocity[1] = vy;
 
-    // Jump: only if grounded
     if (keys.jump && isGrounded(noa)) {
       body.velocity[1] = CONFIG.player.jumpImpulse;
     }
@@ -252,20 +325,19 @@ function setupControls(noa, canvas) {
   };
 }
 
-function computeMoveVector(keys, yaw) {
-  // Forward is -Z in many Babylon/noa setups; adjust if your world differs.
+function computeMoveVector(
+  keys: { forward: boolean; back: boolean; left: boolean; right: boolean },
+  yaw: number
+): Vec3 {
   const forward = (keys.forward ? 1 : 0) - (keys.back ? 1 : 0);
   const strafe = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
 
-  // No movement
   if (forward === 0 && strafe === 0) return [0, 0, 0];
 
   const sin = Math.sin(yaw);
   const cos = Math.cos(yaw);
 
-  // Basis vectors for yaw:
-  // forwardDir = [sin, 0, cos] (depending on your coordinate system)
-  // rightDir   = [cos, 0, -sin]
+  // Forward is +Z here (tweak if your world faces another direction)
   const fx = sin;
   const fz = cos;
   const rx = cos;
@@ -274,7 +346,6 @@ function computeMoveVector(keys, yaw) {
   let mx = fx * forward + rx * strafe;
   let mz = fz * forward + rz * strafe;
 
-  // Normalize
   const len = Math.hypot(mx, mz) || 1;
   mx /= len;
   mz /= len;
@@ -282,37 +353,39 @@ function computeMoveVector(keys, yaw) {
   return [mx, 0, mz];
 }
 
-function isGrounded(noa) {
-  // Common noa grounded test:
-  // playerEntity has "resting" flags on body in some versions.
-  // We'll do a conservative ray check just below feet.
-
-  const p = noa.playerEntity.position;
+function isGrounded(noa: NoaLike): boolean {
+  const p = noa.playerEntity.position as unknown as number[];
   const x = p[0];
   const y = p[1];
   const z = p[2];
 
   const belowY = Math.floor(y - 0.05);
   const voxel = noa.world.getBlockID(Math.floor(x), belowY, Math.floor(z));
-  return voxel !== 0; // assumes 0 is air
+  return voxel !== 0;
 }
 
-function clamp(v, a, b) {
+function clamp(v: number, a: number, b: number): number {
   return Math.max(a, Math.min(b, v));
 }
 
 /* -------------------------------------------------------------------------- */
-/* Avatar manager (remote players)                                              */
+/* Avatar manager                                                             */
 /* -------------------------------------------------------------------------- */
+type AvatarManager = {
+  ensurePlayer: (id: string) => { mesh: BABYLON.Mesh };
+  removePlayer: (id: string) => void;
+  setState: (id: string, state: NetPlayerState) => void;
+  clearAll: () => void;
+};
 
-function createAvatarManager(noa) {
+function createAvatarManager(noa: NoaLike): AvatarManager {
   const scene = noa.rendering.getScene();
-  const remote = new Map(); // id -> { mesh }
+  const remote = new Map<string, { mesh: BABYLON.Mesh }>();
 
-  function ensurePlayer(id) {
-    if (remote.has(id)) return remote.get(id);
+  const ensurePlayer = (id: string): { mesh: BABYLON.Mesh } => {
+    const existing = remote.get(id);
+    if (existing) return existing;
 
-    // Create a simple box for the player avatar
     const { w, h, d } = CONFIG.avatar.size;
     const mesh = BABYLON.MeshBuilder.CreateBox(
       `remote_${id}`,
@@ -320,134 +393,124 @@ function createAvatarManager(noa) {
       scene
     );
 
-    // Basic material
     const mat = new BABYLON.StandardMaterial(`remoteMat_${id}`, scene);
-    // no explicit colors per your request? (You didn’t request colors; leaving defaults)
     mesh.material = mat;
 
-    remote.set(id, { mesh });
-    return remote.get(id);
-  }
+    const obj = { mesh };
+    remote.set(id, obj);
+    return obj;
+  };
 
-  function removePlayer(id) {
+  const removePlayer = (id: string): void => {
     const r = remote.get(id);
     if (!r) return;
-    r.mesh?.dispose?.();
+    r.mesh.dispose();
     remote.delete(id);
-  }
-
-  function setState(id, state) {
-    const r = ensurePlayer(id);
-
-    const pos = state.position || [0, 0, 0];
-    r.mesh.position.set(pos[0], pos[1] + CONFIG.avatar.yOffset, pos[2]);
-
-    // Optional: rotate mesh by heading
-    if (typeof state.heading === "number") {
-      r.mesh.rotation.y = state.heading;
-    }
-  }
-
-  function clearAll() {
-    for (const id of remote.keys()) removePlayer(id);
-  }
-
-  return {
-    ensurePlayer,
-    removePlayer,
-    setState,
-    clearAll,
-    _remote: remote, // for debugging
   };
+
+  const setState = (id: string, state: NetPlayerState): void => {
+    const r = ensurePlayer(id);
+    const pos = state.position ?? ([0, 0, 0] as Vec3);
+    r.mesh.position.set(pos[0], pos[1] + CONFIG.avatar.yOffset, pos[2]);
+    if (typeof state.heading === "number") r.mesh.rotation.y = state.heading;
+  };
+
+  const clearAll = (): void => {
+    for (const id of remote.keys()) removePlayer(id);
+  };
+
+  return { ensurePlayer, removePlayer, setState, clearAll };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Networking glue                                                              */
+/* Networking glue                                                            */
 /* -------------------------------------------------------------------------- */
+function setupNetworking(args: {
+  noa: NoaLike;
+  socket: SocketLike;
+  avatars: AvatarManager;
+  controls: ControlsHandle;
+}): void {
+  const { noa, socket, avatars, controls } = args;
 
-function setupNetworking({ noa, socket, avatars, controls }) {
-  let myId = null;
+  let myId: string | null = null;
 
-  socket.on("joined", (payload) => {
+  socket.on<JoinedPayload>("joined", (payload) => {
     myId = payload.id;
 
-    // Spawn existing players
-    const players = payload.players || [];
-    for (const p of players) {
-      if (!p || !p.id || p.id === myId) continue;
+    for (const p of payload.players || []) {
+      if (!p?.id || p.id === myId) continue;
       avatars.setState(p.id, p);
     }
   });
 
-  socket.on("playerJoined", (p) => {
-    if (!p || !p.id || p.id === myId) return;
+  socket.on<NetPlayerState>("playerJoined", (p) => {
+    if (!p?.id || p.id === myId) return;
     avatars.setState(p.id, p);
   });
 
-  socket.on("playerLeft", ({ id }) => {
+  socket.on<{ id: string }>("playerLeft", ({ id }) => {
     if (!id) return;
     avatars.removePlayer(id);
   });
 
-  socket.on("playerState", (p) => {
-    if (!p || !p.id || p.id === myId) return;
+  socket.on<NetPlayerState>("playerState", (p) => {
+    if (!p?.id || p.id === myId) return;
     avatars.setState(p.id, p);
   });
 
-  // Send my state periodically
   const SEND_HZ = 20;
   const SEND_INTERVAL_MS = Math.floor(1000 / SEND_HZ);
-  let acc = 0;
+  let accMs = 0;
 
-  noa.on("tick", (dt) => {
-    acc += dt;
-    if (acc < SEND_INTERVAL_MS) return;
-    acc = 0;
+  noa.on("tick", (dt: number) => {
+    accMs += dt;
+    if (accMs < SEND_INTERVAL_MS) return;
+    accMs = 0;
 
     if (!myId) return;
 
-    const p = noa.playerEntity.position;
-    socket.emit("playerState", {
+    const pos = noa.playerEntity.position as unknown as number[];
+    socket.emit<NetPlayerState>("playerState", {
       id: myId,
-      position: [p[0], p[1], p[2]],
-      heading: controls.heading, // ✅ v0.33-friendly (your local yaw)
+      position: [pos[0], pos[1], pos[2]],
+      heading: controls.heading,
       pitch: controls.pitch,
     });
   });
 }
 
 /* -------------------------------------------------------------------------- */
-/* Example socket adapter (OPTIONAL)                                            */
+/* Optional: JSON WebSocket adapter (typed)                                   */
 /* -------------------------------------------------------------------------- */
-/**
- * If you already have a socket (socket.io / ws wrapper), ignore this.
- * This is a tiny adapter for a raw WebSocket that uses JSON messages:
- *
- * Message format: { type: "joined", data: {...} }
- */
-export function createJsonWebSocketAdapter(ws) {
-  const handlers = new Map();
+export function createJsonWebSocketAdapter(ws: WebSocket): SocketLike {
+  const handlers = new Map<string, Array<Handler<any>>>();
 
-  ws.addEventListener("message", (evt) => {
-    let msg;
+  ws.addEventListener("message", (evt: MessageEvent) => {
+    let msg: unknown;
     try {
-      msg = JSON.parse(evt.data);
+      msg = JSON.parse(String(evt.data));
     } catch {
       return;
     }
-    const { type, data } = msg || {};
+    if (!msg || typeof msg !== "object") return;
+
+    const type = (msg as any).type as string | undefined;
+    const data = (msg as any).data as unknown;
+
+    if (!type) return;
     const list = handlers.get(type);
     if (!list) return;
     for (const fn of list) fn(data);
   });
 
   return {
-    on(type, fn) {
-      if (!handlers.has(type)) handlers.set(type, []);
-      handlers.get(type).push(fn);
+    on<T = unknown>(event: string, fn: Handler<T>) {
+      if (!handlers.has(event)) handlers.set(event, []);
+      handlers.get(event)!.push(fn as Handler<any>);
     },
-    emit(type, data) {
-      ws.send(JSON.stringify({ type, data }));
+    emit<T = unknown>(event: string, payload: T) {
+      ws.send(JSON.stringify({ type: event, data: payload }));
     },
   };
 }
