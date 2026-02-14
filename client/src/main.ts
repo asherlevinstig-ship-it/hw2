@@ -17,6 +17,7 @@
  * Debug controls (viewmodel):
  * - B toggles VM debug visuals (axes + screen frame)
  * - N toggles VM tuning mode (enables hotkey nudging)
+ * - M toggles VM mirror (fixes "wrong direction"/handedness)
  *
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
@@ -24,12 +25,17 @@
  *
  * Tuning hotkeys (only when VM Tune = ON):
  * - Arrow keys: move VM anchor (x/y)
- * - Shift+ArrowLeft/Right: fine move (smaller step)
+ * - Shift+ArrowLeft/Right/Up/Down: fine move (smaller step)
  * - 7/8: rotX down/up
  * - 9/0: rotY down/up
  * - -/= : rotZ down/up
  *
- * (We moved rotation keys away from 1-6 because 1-5 are your hotbar.)
+ * Viewmodel:
+ * - Minecraft-ish blocky arm (boxes)
+ * - Screen-space HUD (orthographic) anchored bottom-right
+ * - Punch animates on mine/place (deterministic)
+ * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
+ * - Mirroring (scale.x = -1) makes it read as a right-hand viewmodel
  */
 
 import { Engine } from "noa-engine";
@@ -156,15 +162,16 @@ let viewModelEnabled = true;
    6.1 Viewmodel Debug/Tuning State
 ================================ */
 let vmDebug = true; // B toggles debug visuals (axes + frame)
-let vmTuning = false; // N toggles tuning (default OFF so arrows behave normally)
+let vmTuning = false; // N toggles tuning (default OFF)
+let vmMirrorX = true; // M toggles mirror (fixes handedness)
 
-// Tunable base placement & pose
-let vmBaseXMul = 0.82; // baseX = r * vmBaseXMul
-let vmBaseY = -0.72;
+// Tunable base placement & pose (defaults tuned a bit more MC-ish)
+let vmBaseXMul = 0.74; // baseX = r * vmBaseXMul
+let vmBaseY = -0.68;
 
-let vmRotX = 0.35;
-let vmRotY = 0.15;
-let vmRotZ = -0.85;
+let vmRotX = 0.22;
+let vmRotY = 0.10;
+let vmRotZ = -0.58;
 
 // responsiveness multipliers
 let vmPitchMul = 0.45;
@@ -182,16 +189,17 @@ function updateOverlay(extraLine = "") {
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
-    <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} | <strong>VM Tune:</strong> ${
-    vmTuning ? "ON" : "OFF"
-  }<br>
+    <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} |
+    <strong>VM Tune:</strong> ${vmTuning ? "ON" : "OFF"} |
+    <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
     -------------------------<br>
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Block<br>
     [WASD] Move  |  [Space] Jump<br>
     [V] Toggle Viewmodel<br>
     [B] Toggle VM Debug (axes/frame)<br>
-    [N] Toggle VM Tuning (hotkeys)<br>
+    [N] Toggle VM Tuning (captures tuning keys)<br>
+    [M] Toggle VM Mirror (handedness)<br>
     <span style="opacity:.9">Tuning keys (Tune ON):</span><br>
     <span style="opacity:.9">Arrows=Move | Shift+Arrows=Fine</span><br>
     <span style="opacity:.9">7/8 rotX | 9/0 rotY | -/= rotZ</span><br>
@@ -208,7 +216,7 @@ updateOverlay();
 
 // Normal (bubble) handler: hotbar + toggles
 document.addEventListener("keydown", (e) => {
-  // Hotbar 1-5
+  // Hotbar 1-5 (do NOT reuse these for tuning)
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
@@ -230,7 +238,13 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "n" || e.key === "N") {
     vmTuning = !vmTuning;
-    updateOverlay(vmTuning ? "VM Tuning: ON (arrows captured)" : "VM Tuning: OFF");
+    updateOverlay(vmTuning ? "VM Tuning: ON (tuning keys captured)" : "VM Tuning: OFF");
+    return;
+  }
+
+  if (e.key === "m" || e.key === "M") {
+    vmMirrorX = !vmMirrorX;
+    updateOverlay(vmMirrorX ? "VM Mirror: ON" : "VM Mirror: OFF");
     return;
   }
 });
@@ -247,29 +261,22 @@ window.addEventListener(
       e.key === "ArrowUp" ||
       e.key === "ArrowDown";
 
-    const isRotKey =
-      e.key === "7" ||
-      e.key === "8" ||
-      e.key === "9" ||
-      e.key === "0" ||
-      e.key === "-" ||
-      e.key === "=";
+    const isRotKey = e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
     // CRITICAL: stop NOA / browser from using these keys
     e.preventDefault();
     e.stopPropagation();
-    // stopImmediatePropagation is not on Event in TS DOM typings sometimes, so guard:
     (e as any).stopImmediatePropagation?.();
 
-    const fine = e.shiftKey ? 0.003 : 0.01;
+    const fineMove = e.shiftKey ? 0.003 : 0.01;
 
     // Move anchor
-    if (e.key === "ArrowLeft") vmBaseXMul -= fine;
-    if (e.key === "ArrowRight") vmBaseXMul += fine;
-    if (e.key === "ArrowUp") vmBaseY += fine;
-    if (e.key === "ArrowDown") vmBaseY -= fine;
+    if (e.key === "ArrowLeft") vmBaseXMul -= fineMove;
+    if (e.key === "ArrowRight") vmBaseXMul += fineMove;
+    if (e.key === "ArrowUp") vmBaseY += fineMove;
+    if (e.key === "ArrowDown") vmBaseY -= fineMove;
 
     // Rotate base pose
     const rStep = e.shiftKey ? 0.02 : 0.05;
@@ -283,7 +290,7 @@ window.addEventListener(
     updateOverlay(
       `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
         2
-      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)})`
+      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -578,7 +585,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       // X=red, Y=green, Z=blue
       makeAxis("vmAxisX", new BABYLON.Vector3(0.35, 0, 0), new BABYLON.Color3(1, 0, 0));
       makeAxis("vmAxisY", new BABYLON.Vector3(0, 0.35, 0), new BABYLON.Color3(0, 1, 0));
-      // Make Z longer so it's visible when you tweak rotations
+      // Longer Z so you can see it when rotating
       makeAxis("vmAxisZ", new BABYLON.Vector3(0, 0, 0.65), new BABYLON.Color3(0, 0.5, 1));
     }
 
@@ -662,6 +669,11 @@ function wrapPi(a: number) {
 function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   if (!viewModelEnabled) return;
+
+  // Mirror for right-hand viewmodel (fix "pointing wrong direction")
+  vmArmRoot.scaling.x = vmMirrorX ? -1 : 1;
+  vmArmRoot.scaling.y = 1;
+  vmArmRoot.scaling.z = 1;
 
   // Compute walk speed from NOA player
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
