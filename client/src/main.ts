@@ -8,17 +8,18 @@
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
  * Why vmScene?
- * NOA's render pipeline ignores arbitrary meshes added to its world scene
- * (camera.renderList is ignored and extra meshes never show). vmScene is
- * rendered AFTER NOA each frame via engine.onEndFrameObservable.
+ * NOA's render pipeline ignores arbitrary meshes added to its world scene.
+ * vmScene is rendered AFTER NOA each frame via engine.onEndFrameObservable.
  *
  * Controls:
  * - V toggles viewmodel overlay scene ON/OFF
  *
  * Viewmodel:
  * - Minecraft-ish blocky arm (boxes)
- * - HUD/overlay style (orthographic, screen-space)
- * - Responds to pitch + walk bob/sway + turn sway (delta yaw/pitch) + punch on click
+ * - Screen-space HUD (orthographic) anchored bottom-right
+ * - Punch animates on mine/place (deterministic)
+ * - Pose tuned to look "held" rather than edge-on
+ * - Uses delta yaw/pitch for sway (NOT absolute yaw)
  */
 
 import { Engine } from "noa-engine";
@@ -89,7 +90,10 @@ function requestPointerLock() {
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
-      scene?.getEngine?.()?.getRenderingCanvas?.() ?? (noa as any).container ?? appEl;
+      scene?.getEngine?.()?.getRenderingCanvas?.() ??
+      (noa as any).container ??
+      appEl;
+
     if (canvas?.requestPointerLock) canvas.requestPointerLock();
   } catch {
     if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
@@ -176,7 +180,10 @@ document.addEventListener("keydown", (e) => {
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
+const queuedRequests = new Map<
+  string,
+  { id: string; chunkSize: number; x: number; y: number; z: number }
+>();
 const worldAny = noa.world as any;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -330,7 +337,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   // Create overlay scene sharing the same engine/canvas
   vmScene = new BABYLON.Scene(engine);
 
-  // Do NOT clear color (keep world). Clear depth so viewmodel draws on top cleanly.
+  // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
@@ -341,7 +348,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmScene.activeCamera = vmCam;
 
   const updateOrtho = () => {
-    if (!vmCam || !vmScene) return;
+    if (!vmCam) return;
     const w = engine.getRenderWidth();
     const h = engine.getRenderHeight();
     const r = w / Math.max(1, h);
@@ -365,7 +372,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  // Upper arm + forearm + hand
+  // Upper arm + forearm + hand (slightly more compact than before)
   const upper = BABYLON.MeshBuilder.CreateBox(
     "vmUpperArm",
     { width: 0.16, height: 0.44, depth: 0.16 },
@@ -373,7 +380,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   );
   const fore = BABYLON.MeshBuilder.CreateBox(
     "vmForeArm",
-    { width: 0.16, height: 0.44, depth: 0.16 },
+    { width: 0.16, height: 0.38, depth: 0.16 },
     vmScene
   );
   const hand = BABYLON.MeshBuilder.CreateBox(
@@ -386,13 +393,13 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   fore.parent = vmArmRoot;
   hand.parent = vmArmRoot;
 
-  // Pull the arm "up" a touch relative to the screen anchor, so it doesn't clip
-  vmArmRoot.position.set(0.0, 0.12, 0.0);
+  // Lift arm slightly relative to anchor to reduce clipping
+  vmArmRoot.position.set(0.0, 0.10, 0.0);
 
   // Stack parts
   upper.position.set(0.0, 0.22, 0.0);
-  fore.position.set(0.0, -0.18, 0.02);
-  hand.position.set(0.0, -0.48, 0.04);
+  fore.position.set(0.0, -0.14, 0.02);
+  hand.position.set(0.0, -0.40, 0.04);
 
   // Unlit material, always on top
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
@@ -490,29 +497,29 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
-  // punch: deterministic, always visible
+  // Punch: deterministic, always visible
   punchT = Math.min(1, punchT + dtSec * 10.0);
   const punch01 = Math.sin(punchT * Math.PI); // 0 -> 1 -> 0
 
   // Screen-space bounds: x in [-r,r], y in [-1,1]
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  // Tucked bottom-right (Minecraft-ish)
-  const baseX = r * 0.90;
-  const baseY = -0.62;
+  // Anchor bottom-right; pulled LEFT a bit so we see the arm, not just its edge
+  const baseX = r * 0.82;
+  const baseY = -0.72;
 
-  // Punch moves arm forward/left/down a touch
-  const x = baseX + sway * 0.55 - punch01 * 0.06;
-  const y = baseY + bob * 0.65 - punch01 * 0.04;
+  // Punch moves arm more noticeably
+  const x = baseX + sway * 0.55 - punch01 * 0.12;
+  const y = baseY + bob * 0.65 - punch01 * 0.08;
 
   vmRoot.position.set(x, y, 0);
 
-  // Read view angles, but sway with *deltas* (not absolute yaw)
+  // View sway uses *deltas* (not absolute yaw)
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
 
   const dyaw = lastYawVM == null ? 0 : wrapPi(yawNow - lastYawVM);
-  const dpitch = lastPitchVM == null ? 0 : (pitchNow - lastPitchVM);
+  const dpitch = lastPitchVM == null ? 0 : pitchNow - lastPitchVM;
 
   lastYawVM = yawNow;
   lastPitchVM = pitchNow;
@@ -521,13 +528,15 @@ function updateViewmodel(dtSec: number) {
   const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
   const lookSway = BABYLON.Scalar.Clamp(dpitch * 1.2, -0.2, 0.2);
 
-  // subtle walk swing
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // FPS-ish base pose: inward, slight roll; pitch raises/lowers; punch adds snap
-  vmArmRoot.rotation.x = 0.15 + pitchInfluence * 0.35 - punch01 * 0.55 + lookSway * 0.35;
-  vmArmRoot.rotation.y = 0.55 + turnSway * 0.4;
-  vmArmRoot.rotation.z = -1.05 + swing - turnSway * 0.35;
+  // Pose tuned to look "held" and not edge-on:
+  // - reduce Y rotation a LOT (too much makes it thin)
+  // - moderate roll
+  // - stronger pitch response
+  vmArmRoot.rotation.x = 0.35 + pitchInfluence * 0.45 - punch01 * 0.75 + lookSway * 0.35;
+  vmArmRoot.rotation.y = 0.15 + turnSway * 0.35;
+  vmArmRoot.rotation.z = -0.85 + swing - turnSway * 0.25;
 }
 
 /* ===============================
