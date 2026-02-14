@@ -4,11 +4,11 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players rendered via NOA entities + mesh component
- * - First-person arm (camera-attached) with simple walk bob animation
+ * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
+ * - First-person arm (camera-attached) with robust NOA camera detection + simple walk bob animation
  *
  * Debug:
- * - P toggles pinning first remote marker in front of camera (local-only)
+ * - P toggles pinning remote marker in front of camera (local-only debug)
  * - O toggles extra debug overlay line
  */
 
@@ -308,7 +308,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (VERY OBVIOUS)
+   10. First-person arm (robust NOA camera attach)
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -317,46 +317,77 @@ let fpArmMesh: BABYLON.Mesh | null = null;
 let lastLocalPos: [number, number, number] | null = null;
 let armTime = 0;
 
+function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
+  const r = (noa as any).rendering as any;
+
+  const c1 = (typeof r?.getCamera === "function" ? r.getCamera() : null) as BABYLON.Camera | null;
+  if (c1) return c1;
+
+  const c2 = (r?._camera ?? null) as BABYLON.Camera | null;
+  if (c2) return c2;
+
+  const c3 = (r?.camera ?? null) as BABYLON.Camera | null;
+  if (c3) return c3;
+
+  const c4 = ((noa as any).camera?._camera ?? null) as BABYLON.Camera | null;
+  if (c4) return c4;
+
+  const c5 = (scene.activeCamera ?? null) as BABYLON.Camera | null;
+  if (c5) return c5;
+
+  return null;
+}
+
 function setupFirstPersonArm(scene: BABYLON.Scene) {
   if (fpArmReady) return;
 
-  const cam = scene.activeCamera as BABYLON.Camera | null;
-  if (!cam) return;
+  const cam = getNoaCamera(scene);
+  if (!cam) {
+    if ((setupFirstPersonArm as any)._missed !== true) {
+      (setupFirstPersonArm as any)._missed = true;
+      console.warn("[FP] No camera yet - arm will retry when camera exists");
+    }
+    return;
+  }
+
+  console.log("[FP] Using camera:", {
+    name: cam.name,
+    id: (cam as any).id,
+    layerMask: (cam as any).layerMask,
+    sceneUid: (scene as any).uid,
+  });
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
   fpArmRoot.parent = cam;
 
-  // camera-local placement (made extra visible)
   fpArmRoot.position.set(0.65, -0.65, 1.15);
   fpArmRoot.rotation.set(0.2, 0.0, 0.0);
 
-  // Bigger, unmistakable arm
-  fpArmMesh = BABYLON.MeshBuilder.CreateBox(
-    "fpArm",
-    { width: 0.6, height: 1.6, depth: 0.6 },
-    scene
-  );
+  fpArmMesh = BABYLON.MeshBuilder.CreateBox("fpArm", { width: 0.6, height: 1.6, depth: 0.6 }, scene);
   fpArmMesh.parent = fpArmRoot;
   fpArmMesh.position.set(0, -0.8, 0);
 
   const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
-  mat.disableLighting = true; // always bright
-  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0); // bright cyan so you cannot miss it
+  mat.disableLighting = true;
+  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0); // bright cyan
   mat.diffuseColor = new BABYLON.Color3(0.2, 0.8, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   fpArmMesh.material = mat;
 
-  // Always on top
+  // Set layer mask ONLY on mesh (TransformNode doesn't have layerMask)
+  const camMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
+  fpArmMesh.layerMask = camMask;
+
   fpArmMesh.renderingGroupId = 3;
-  (fpArmMesh.material as BABYLON.StandardMaterial).disableDepthWrite = true;
-  (fpArmMesh.material as any).disableDepthTest = true;
+  mat.disableDepthWrite = true;
+  (mat as any).disableDepthTest = true;
 
   fpArmReady = true;
-  console.log("[FP] First-person arm created (cyan)");
+  console.log("[FP] Arm created OK");
 }
 
 function updateFirstPersonArm(dtSec: number) {
-  if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
+  if (!fpArmReady || !fpArmRoot) return;
 
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   if (!pos) return;
@@ -387,7 +418,6 @@ function updateFirstPersonArm(dtSec: number) {
 
 /* ===============================
    11. Remote Player Rendering (NOA Entities + Mesh Component)
-   NOTE: Remote players are still spheres for now.
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -425,7 +455,6 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   const scene = getStableScene();
   if (!scene) return null;
 
-  // Small by default (NO MORE GIANT RED BALL)
   const mesh = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 1.0, segments: 12 }, scene);
   mesh.material = makeRemoteMaterial(scene, id);
 
@@ -461,10 +490,7 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
 
   try {
     const meshName = (noa as any).ents?.names?.mesh ?? "mesh";
-    (noa as any).ents.addComponent(eid, meshName, {
-      mesh,
-      offset: [0, 0, 0],
-    });
+    (noa as any).ents.addComponent(eid, meshName, { mesh, offset: [0, 0, 0] });
   } catch (e) {
     console.warn("[RENDER] Failed to add mesh component to NOA entity", id, e);
     mesh.dispose();
@@ -512,9 +538,7 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
       : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
 
   const fwd: BABYLON.Vector3 =
-    typeof cam.getForwardRay === "function"
-      ? cam.getForwardRay(1).direction
-      : new BABYLON.Vector3(0, 0, 1);
+    typeof cam.getForwardRay === "function" ? cam.getForwardRay(1).direction : new BABYLON.Vector3(0, 0, 1);
 
   mesh.position.x = camPos.x + fwd.x * 6;
   mesh.position.y = camPos.y + fwd.y * 6;
@@ -534,7 +558,6 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
     const { eid, mesh } = created;
 
     if (pinRemoteMarkerInFront) {
-      // Pin ONLY affects your local view
       forceRemoteInFrontOfCamera(mesh);
 
       const scene = mesh.getScene();
@@ -701,6 +724,8 @@ let debugTick = 0;
 
 let lastTickMs = performance.now();
 
+let sceneHookedForArm = false;
+
 (noa as any).on("tick", () => {
   tickCount++;
   debugTick++;
@@ -710,18 +735,25 @@ let lastTickMs = performance.now();
   lastTickMs = now;
 
   const scene = getStableScene();
+
+  // Robust: also hook onBeforeRender once scene exists, so arm creation can happen even if timing differs
+  if (scene && !sceneHookedForArm) {
+    sceneHookedForArm = true;
+    scene.onBeforeRenderObservable.add(() => {
+      if (!fpArmReady) setupFirstPersonArm(scene);
+    });
+  }
+
   if (scene) setupFirstPersonArm(scene);
   updateFirstPersonArm(dtSec);
 
-  // Send movement (gated until spawn applied)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Debug overlay (~1/sec)
-  if (debugTick % 30 === 0) {
+  if (debugTick % 30 === 0 && showExtraDebugOverlay) {
     const pos = noa.ents.getPosition(noa.playerEntity);
 
     let firstRemote: { id: string; t: NetTransform } | null = null;
@@ -734,14 +766,13 @@ let lastTickMs = performance.now();
     }
 
     const line =
-      showExtraDebugOverlay
-        ? `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
-          `Remote: ${firstRemote ? `${firstRemote.id} (${firstRemote.t.x.toFixed(2)},${firstRemote.t.y.toFixed(2)},${firstRemote.t.z.toFixed(2)})` : "none"} | ` +
-          `Net=${netTransforms.size} RemoteEnts=${remoteEnts.size} Meshes=${remoteMeshes.size} | ` +
-          `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"} | ` +
-          `Pin=${pinRemoteMarkerInFront ? "ON" : "OFF"}`
-        : "";
+      `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
+      `Remote: ${firstRemote ? `${firstRemote.id} (${firstRemote.t.x.toFixed(2)},${firstRemote.t.y.toFixed(2)},${firstRemote.t.z.toFixed(2)})` : "none"} | ` +
+      `Arm=${fpArmReady ? "YES" : "NO"} | ` +
+      `Net=${netTransforms.size} RemoteEnts=${remoteEnts.size} Meshes=${remoteMeshes.size} | ` +
+      `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"} | ` +
+      `Pin=${pinRemoteMarkerInFront ? "ON" : "OFF"}`;
 
-    if (showExtraDebugOverlay) updateOverlay(line);
+    updateOverlay(line);
   }
 });
