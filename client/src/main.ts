@@ -4,7 +4,7 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players rendered via Babylon meshes (visible to others)
+ * - Remote players rendered via visible Babylon avatars
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
  * Controls:
@@ -19,18 +19,9 @@
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
  *
- * Tuning hotkeys (only when VM Tune = ON):
- * - Arrow keys: move VM anchor (x/y)
- * - Shift+ArrowLeft/Right/Up/Down: fine move (smaller step)
- * - 7/8: rotX down/up
- * - 9/0: rotY down/up
- * - -/= : rotZ down/up
- *
- * Remote players:
- * - Always-visible avatar mesh (boxy body + head), bright emissive
- * - LayerMask forced to 0xffffffff for visibility
- * - We DO NOT add +6 Y offset (was making avatars float / disappear)
- * - Robust: if NOA mesh component attach fails, we still render the mesh directly
+ * CHUNK APPLY FIX (critical):
+ * - Server may send voxels as number[] OR Uint8Array/Buffer/TypedArray/ArrayBuffer
+ * - This client accepts all of those.
  */
 
 import { Engine } from "noa-engine";
@@ -156,19 +147,17 @@ let viewModelEnabled = true;
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
-let vmDebug = true; // B toggles debug visuals (axes + frame)
-let vmTuning = false; // N toggles tuning (default OFF)
-let vmMirrorX = true; // M toggles mirror (fixes handedness)
+let vmDebug = true;
+let vmTuning = false;
+let vmMirrorX = true;
 
-// Tunable base placement & pose (defaults tuned a bit more MC-ish)
-let vmBaseXMul = 0.74; // baseX = r * vmBaseXMul
+let vmBaseXMul = 0.74;
 let vmBaseY = -0.68;
 
 let vmRotX = 0.22;
 let vmRotY = 0.10;
 let vmRotZ = -0.58;
 
-// responsiveness multipliers
 let vmPitchMul = 0.45;
 let vmPunchRotMul = 0.75;
 let vmTurnSwayMulY = 0.35;
@@ -206,10 +195,7 @@ updateOverlay();
 /* ===============================
    6.2 Key handling
 ================================ */
-
-// Normal (bubble) handler: hotbar + toggles
 document.addEventListener("keydown", (e) => {
-  // Hotbar 1-5 (do NOT reuse these for tuning)
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
@@ -242,7 +228,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Capture-phase handler: if vmTuning, swallow arrow/rotation keys so NOA can't move.
 window.addEventListener(
   "keydown",
   (e) => {
@@ -315,6 +300,52 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
+// Type guard for TypedArray-like objects
+type TypedArrayLike = {
+  buffer: ArrayBufferLike;
+  byteOffset: number;
+  byteLength: number;
+};
+
+function isTypedArrayLike(v: unknown): v is TypedArrayLike {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "buffer" in (v as any) &&
+    "byteOffset" in (v as any) &&
+    "byteLength" in (v as any) &&
+    (v as any).buffer instanceof ArrayBuffer
+  );
+}
+
+function toNumberArrayVoxels(v: unknown): number[] | null {
+  if (v == null) return null;
+
+  if (Array.isArray(v)) {
+    const out = new Array<number>(v.length);
+    for (let i = 0; i < v.length; i++) out[i] = (v[i] as number) | 0;
+    return out;
+  }
+
+  // Uint8Array / Buffer / any TypedArray
+  if (isTypedArrayLike(v)) {
+    const u8 = new Uint8Array(v.buffer as ArrayBuffer, v.byteOffset, v.byteLength);
+    const out = new Array<number>(u8.length);
+    for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
+    return out;
+  }
+
+  // raw ArrayBuffer
+  if (v instanceof ArrayBuffer) {
+    const u8 = new Uint8Array(v);
+    const out = new Array<number>(u8.length);
+    for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
+    return out;
+  }
+
+  return null;
+}
+
 function applyChunkFromServer(msg: any) {
   if (!msg || typeof msg.id !== "string") return;
 
@@ -322,11 +353,14 @@ function applyChunkFromServer(msg: any) {
   if (!pending) return;
 
   const CS =
-    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
+    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
+      ? msg.chunkSize
+      : pending.chunkSize;
 
-  const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
   const expected = CS * CS * CS;
-  if (voxels.length !== expected) return;
+
+  const voxels = toNumberArrayVoxels(msg.voxels);
+  if (!voxels || voxels.length !== expected) return;
 
   const data = pending.data;
 
@@ -362,8 +396,7 @@ function getTargetInfo() {
   };
 }
 
-/* ---- Viewmodel punch (time-based, deterministic) ---- */
-let punchT = 1; // 0..1
+let punchT = 1;
 function triggerPunch() {
   punchT = 0;
 }
@@ -442,7 +475,6 @@ let vmArmRoot: BABYLON.TransformNode | null = null;
 
 let vmEngineHooked = false;
 
-// Debug meshes
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
@@ -584,7 +616,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 }
 
 /* ===============================
-   10.1 Viewmodel animation (screenspace)
+   10.1 Viewmodel animation
 ================================ */
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
@@ -685,11 +717,8 @@ function updateViewmodel(dtSec: number) {
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
-
-// We keep both: NOA entity id (if attached) and mesh root (always exists)
 const remoteEnts = new Map<string, number>();
 const remoteRoots = new Map<string, BABYLON.TransformNode>();
-const remoteMeshes = new Map<string, BABYLON.AbstractMesh[]>();
 
 function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
@@ -716,10 +745,8 @@ function tryAttachToNoaEntity(eid: number, meshRoot: BABYLON.TransformNode): boo
 
 function createRemoteAvatar(scene: BABYLON.Scene, id: string) {
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, scene);
-
   const mat = makeRemoteMaterial(scene, id);
 
-  // Simple, obvious avatar: body + head (boxy), with a "nose" to show facing direction
   const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, scene);
   body.parent = root;
   body.position.y = 0.6;
@@ -735,18 +762,16 @@ function createRemoteAvatar(scene: BABYLON.Scene, id: string) {
   nose.position.z = 0.4;
   nose.material = mat;
 
-  // Always render + visible
   for (const m of [body, head, nose]) {
     m.isPickable = false;
     m.checkCollisions = false;
-    m.layerMask = 0xffffffff; // force visible
-    m.renderingGroupId = 2; // draw after terrain
+    m.layerMask = 0xffffffff;
+    m.renderingGroupId = 2;
     (m as any).isInFrustum = () => true;
   }
 
   root.setEnabled(true);
-
-  return { root, meshes: [body, head, nose] as BABYLON.AbstractMesh[] };
+  return root;
 }
 
 function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.TransformNode } | null {
@@ -756,9 +781,8 @@ function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.Tra
   const scene = getStableScene();
   if (!scene) return null;
 
-  const { root, meshes } = createRemoteAvatar(scene, id);
+  const root = createRemoteAvatar(scene, id);
 
-  // Try to create NOA entity and attach meshRoot via mesh component
   let eid: number | null = null;
 
   try {
@@ -773,7 +797,6 @@ function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.Tra
     } catch {}
   }
 
-  // Even if NOA entity fails, we keep the mesh visible by direct Babylon positioning
   if (eid != null) {
     const attached = tryAttachToNoaEntity(eid, root);
     if (attached) remoteEnts.set(id, eid);
@@ -786,8 +809,6 @@ function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.Tra
   }
 
   remoteRoots.set(id, root);
-  remoteMeshes.set(id, meshes);
-
   return { eid, root };
 }
 
@@ -809,11 +830,8 @@ function removeRemote(id: string) {
     } catch {}
     remoteRoots.delete(id);
   }
-
-  remoteMeshes.delete(id);
 }
 
-/* Apply remote transforms each tick */
 (noa as any).on("tick", () => {
   if (!room) return;
 
@@ -825,12 +843,10 @@ function removeRemote(id: string) {
 
     const { eid, root } = created;
 
-    // IMPORTANT: do NOT add +6.0 on Y (was causing "not visible" / floating)
     const px = t.x;
     const py = t.y;
     const pz = t.z;
 
-    // If attached via NOA entity, set NOA position; otherwise directly set Babylon root
     if (eid != null) {
       try {
         (noa as any).ents.setPosition(eid, [px, py, pz]);
@@ -842,7 +858,6 @@ function removeRemote(id: string) {
     }
 
     if (typeof t.yaw === "number") {
-      // root yaw is the avatar facing direction
       root.rotation.y = t.yaw;
     }
   }
