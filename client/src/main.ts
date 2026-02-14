@@ -37,10 +37,12 @@
  * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
  * - Mirroring (scale.x = -1) makes it read as a right-hand viewmodel
  *
- * IMPORTANT NETWORK UPGRADES IN THIS VERSION:
- * - Pointer lock detection uses document.pointerLockElement (reliable)
+ * BEST FIXES INCLUDED:
+ * - Pointer lock check is RELAXED: if browser says locked, we accept it.
+ * - Pointer lock request tries multiple elements (canvas + appEl) for robustness.
  * - ChunkData supports binary voxels (Uint8Array / ArrayBuffer) OR legacy number[]
  * - ChunkData is validated against pending chunk coords (hardening)
+ * - TypeScript strict-null safe: appEl is non-null by construction (IIFE).
  */
 
 import { Engine } from "noa-engine";
@@ -57,8 +59,11 @@ let room: Room | null = null;
 /* ===============================
    2. DOM & CSS Setup
 ================================ */
-const appEl = document.querySelector<HTMLDivElement>("#app");
-if (!appEl) throw new Error("Missing <div id='app'></div> in index.html");
+const appEl = (() => {
+  const el = document.querySelector<HTMLDivElement>("#app");
+  if (!el) throw new Error("Missing <div id='app'></div> in index.html");
+  return el;
+})();
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -105,7 +110,7 @@ const noa = new Engine({
 });
 
 /* ===============================
-   4.1 Pointer Lock (reliable)
+   4.1 Pointer Lock (BEST solution: relaxed + robust request)
 ================================ */
 function getNoaCanvas(): HTMLElement | null {
   try {
@@ -113,25 +118,26 @@ function getNoaCanvas(): HTMLElement | null {
     const canvas = scene?.getEngine?.()?.getRenderingCanvas?.();
     if (canvas) return canvas as HTMLElement;
   } catch {}
-  return (noa as any).container ?? appEl;
+  return null;
 }
 
 function requestPointerLock() {
-  const el = getNoaCanvas();
+  // Try canvas first (Babylon typical), then appEl fallback.
+  const canvas = getNoaCanvas();
   try {
-    el?.requestPointerLock?.();
-  } catch {
-    // ignore
-  }
+    canvas?.requestPointerLock?.();
+  } catch {}
+  try {
+    appEl.requestPointerLock?.();
+  } catch {}
 }
 
 appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
-  const el = document.pointerLockElement;
-  if (!el) return false;
-  const target = getNoaCanvas();
-  return !!target && el === target;
+  // BEST: Trust the browser. If pointerLockElement exists, we consider ourselves locked.
+  // This avoids strict element equality issues across NOA/Babylon versions.
+  return !!document.pointerLockElement;
 }
 
 /* ===============================
@@ -353,22 +359,18 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 });
 
 function toU8View(vox: unknown): Uint8Array | null {
-  // Prefer binary
   if (vox instanceof Uint8Array) return vox;
   if (vox instanceof ArrayBuffer) return new Uint8Array(vox);
   if (ArrayBuffer.isView(vox) && (vox as any).buffer instanceof ArrayBuffer) {
     const v = vox as ArrayBufferView;
     return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   }
-
-  // Legacy JSON array
   if (Array.isArray(vox)) {
     const arr = vox as unknown[];
     const u = new Uint8Array(arr.length);
     for (let i = 0; i < arr.length; i++) u[i] = (Number(arr[i]) | 0) & 255;
     return u;
   }
-
   return null;
 }
 
@@ -378,16 +380,8 @@ function applyChunkFromServer(msg: ChunkDataMsg) {
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
-  // Hardening: ensure coords match what NOA requested for this id
-  if (
-    typeof msg.x === "number" &&
-    typeof msg.y === "number" &&
-    typeof msg.z === "number"
-  ) {
-    if (msg.x !== pending.x || msg.y !== pending.y || msg.z !== pending.z) {
-      // mismatch = ignore (prevents corruption / malicious mismatch)
-      return;
-    }
+  if (typeof msg.x === "number" && typeof msg.y === "number" && typeof msg.z === "number") {
+    if (msg.x !== pending.x || msg.y !== pending.y || msg.z !== pending.z) return;
   }
 
   const CS =
@@ -403,8 +397,6 @@ function applyChunkFromServer(msg: ChunkDataMsg) {
 
   const data = pending.data;
 
-  // Packing matches server idx = i + CS*(j + CS*k)
-  // Client NOA expects: for k, for j, for i (same as your previous loop)
   let n = 0;
   for (let k = 0; k < CS; k++) {
     for (let j = 0; j < CS; j++) {
@@ -451,8 +443,6 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
-
-  // Optimistic local update (server remains authoritative)
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -467,7 +457,6 @@ noa.inputs.down.on("alt-fire", () => {
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
 
-  // Don't place into player's feet
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
@@ -475,7 +464,6 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  // Optimistic local update (server remains authoritative)
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
@@ -530,14 +518,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   const engine = noaScene.getEngine();
 
-  // Create overlay scene sharing the same engine/canvas
   vmScene = new BABYLON.Scene(engine);
-
-  // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
-  // Ortho camera in screenspace
   vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -10), vmScene);
   vmCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
   vmCam.setTarget(BABYLON.Vector3.Zero());
@@ -549,13 +533,11 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     const h = engine.getRenderHeight();
     const r = w / Math.max(1, h);
 
-    // Ortho bounds: x in [-r, r], y in [-1, 1]
     vmCam.orthoLeft = -r;
     vmCam.orthoRight = r;
     vmCam.orthoTop = 1;
     vmCam.orthoBottom = -1;
 
-    // update frame if present
     if (vmFrame && vmFrame.getScene()) {
       const pts = [
         new BABYLON.Vector3(-r, -1, 0),
@@ -571,44 +553,27 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   updateOrtho();
   engine.onResizeObservable.add(() => updateOrtho());
 
-  // Root for screenspace placement
   vmRoot = new BABYLON.TransformNode("vmRoot", vmScene);
   vmRoot.position.set(0, 0, 0);
   vmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
-  // --- Minecraft-ish blocky arm ---
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox(
-    "vmUpperArm",
-    { width: 0.16, height: 0.44, depth: 0.16 },
-    vmScene
-  );
-  const fore = BABYLON.MeshBuilder.CreateBox(
-    "vmForeArm",
-    { width: 0.16, height: 0.38, depth: 0.16 },
-    vmScene
-  );
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "vmHand",
-    { width: 0.17, height: 0.18, depth: 0.17 },
-    vmScene
-  );
+  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
+  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
   hand.parent = vmArmRoot;
 
-  // Lift arm slightly relative to anchor to reduce clipping
   vmArmRoot.position.set(0.0, 0.10, 0.0);
 
-  // Stack parts
   upper.position.set(0.0, 0.22, 0.0);
   fore.position.set(0.0, -0.14, 0.02);
   hand.position.set(0.0, -0.40, 0.04);
 
-  // Unlit material, always on top
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
   armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
@@ -625,12 +590,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   upper.isPickable = fore.isPickable = hand.isPickable = false;
   upper.isVisible = fore.isVisible = hand.isVisible = true;
 
-  // Ensure HUD meshes always render
   (upper as any).isInFrustum = () => true;
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
 
-  // Debug visuals: axes and screen frame
   const ensureVmDebugMeshes = () => {
     if (!vmScene || !vmRoot || !vmCam) return;
 
@@ -639,11 +602,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes.parent = vmRoot;
 
       const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(
-          name,
-          { points: [BABYLON.Vector3.Zero(), to] },
-          vmScene!
-        );
+        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -652,10 +611,8 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
         return l;
       };
 
-      // X=red, Y=green, Z=blue
       makeAxis("vmAxisX", new BABYLON.Vector3(0.35, 0, 0), new BABYLON.Color3(1, 0, 0));
       makeAxis("vmAxisY", new BABYLON.Vector3(0, 0.35, 0), new BABYLON.Color3(0, 1, 0));
-      // Longer Z so you can see it when rotating
       makeAxis("vmAxisZ", new BABYLON.Vector3(0, 0, 0.65), new BABYLON.Color3(0, 0.5, 1));
     }
 
@@ -669,7 +626,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
         new BABYLON.Vector3(-r, -1, 0),
       ];
       vmFrame = BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts }, vmScene);
-      vmFrame.color = new BABYLON.Color3(1, 1, 0); // yellow
+      vmFrame.color = new BABYLON.Color3(1, 1, 0);
       vmFrame.isPickable = false;
       (vmFrame as any).isInFrustum = () => true;
       vmFrame.renderingGroupId = 3;
@@ -678,7 +635,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   ensureVmDebugMeshes();
 
-  // Hook engine end-of-frame once
   if (!vmEngineHooked) {
     vmEngineHooked = true;
 
@@ -686,7 +642,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       if (!viewModelEnabled) return;
       if (!vmScene) return;
 
-      // toggle debug visibility just before render
       if (vmAxes) vmAxes.setEnabled(vmDebug);
       if (vmFrame) vmFrame.setEnabled(vmDebug);
 
@@ -740,12 +695,10 @@ function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   if (!viewModelEnabled) return;
 
-  // Mirror for right-hand viewmodel (fix "pointing wrong direction")
   vmArmRoot.scaling.x = vmMirrorX ? -1 : 1;
   vmArmRoot.scaling.y = 1;
   vmArmRoot.scaling.z = 1;
 
-  // Compute walk speed from NOA player
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   let speed = 0;
   if (pos && lastLocalPosVM) {
@@ -762,14 +715,11 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
-  // Punch: deterministic, always visible
   punchT = Math.min(1, punchT + dtSec * 10.0);
-  const punch01 = Math.sin(punchT * Math.PI); // 0 -> 1 -> 0
+  const punch01 = Math.sin(punchT * Math.PI);
 
-  // Screen-space bounds: x in [-r,r], y in [-1,1]
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  // Anchor (tunable)
   const baseX = r * vmBaseXMul;
   const baseY = vmBaseY;
 
@@ -778,7 +728,6 @@ function updateViewmodel(dtSec: number) {
 
   vmRoot.position.set(x, y, 0);
 
-  // View sway uses *deltas* (not absolute yaw)
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
 

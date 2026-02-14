@@ -3,19 +3,18 @@
 //
 // Path B (server authoritative chunks) + multiplayer:
 // - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
-// - Chunk streaming is BINARY (Uint8Array) (Colyseus will msgpack it efficiently)
+// - Chunk streaming is BINARY (Uint8Array) (Colyseus msgpack-encodes efficiently)
 // - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
 // - Player movement is relayed to others via "playerTransformOther"
 // - Periodic "playersSnapshot" for robustness
-// - Deterministic spawn spacing so players don't spawn on top of each other
+// - Spawn uses first-free deterministic grid slot (no overlap even after leaves)
 // - Spawn Y computed from SAME terrain function (so nobody spawns underground)
 //
-// Extra hardening/debug in this version:
-// - On join: send an immediate playersSnapshot to the joiner
-// - Optional join-broadcast snapshot removed (periodic snapshot already converges state)
+// Hardening/debug in this version:
+// - On join: send immediate playersSnapshot to joiner (authoritative convergence)
 // - Throttled debug logs for moves and snapshots
 // - Movement anti-teleport: rejects impossible speed jumps
-// - Block edit reach validation: rejects edits too far from player's last known position
+// - Block edit reach validation: Minecraft-ish (horizontal reach + generous vertical slack)
 // - Chunk request hardening: validates payload + clamps coords
 //
 // NOTE: Keep your server room name as "my_room" in defineServer config.
@@ -38,7 +37,7 @@ type ChunkDataMsg = {
   x: number;
   y: number;
   z: number;
-  voxels: Uint8Array; // BINARY (preferred)
+  voxels: Uint8Array; // ✅ binary
 };
 
 type PlayerInfo = {
@@ -89,8 +88,11 @@ export class MyRoom extends Room {
   // Anti-teleport / speed cap
   private readonly maxSpeedBlocksPerSec = 12;
 
-  // Block edit reach cap
-  private readonly maxEditDistance = 8;
+  // Block edit reach (best-practice):
+  // - Horizontal reach is tight (stops "dig from orbit")
+  // - Vertical slack is generous (prevents "mining not working" when spawnY is above ground)
+  private readonly maxEditHoriz = 6;
+  private readonly maxEditVert = 12;
 
   // Debug throttles
   private lastMoveLogAt = 0;
@@ -158,7 +160,7 @@ export class MyRoom extends Room {
         x: cx,
         y: cy,
         z: cz,
-        voxels: chunk, // ✅ binary
+        voxels: chunk,
       };
 
       client.send("chunkData", msg);
@@ -194,7 +196,7 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      // Allow some slack for jitter (factor 2)
+      // Allow slack for jitter (factor 2 => squared factor 4)
       if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 4) {
         return;
       }
@@ -233,7 +235,6 @@ export class MyRoom extends Room {
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      // Reach validation
       if (!this.isWithinEditRange(client, x, y, z)) return;
 
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
@@ -252,7 +253,6 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const id = toInt(clamp(maybe.id, 0, 255));
 
-      // Reach validation
       if (!this.isWithinEditRange(client, x, y, z)) return;
 
       this.setBlockAuthoritative(x, y, z, id);
@@ -270,7 +270,7 @@ export class MyRoom extends Room {
   onJoin(client: Client, options: any) {
     console.log("➕ onJoin", client.sessionId, options);
 
-    // Deterministic spawn grid but choose first free slot (no overlap if others remain)
+    // First-free deterministic spawn slot (no overlap even after leaves)
     const spacing = 6;
 
     let spawnX = 0;
@@ -334,7 +334,7 @@ export class MyRoom extends Room {
     // Tell joiner their own spawn
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
 
-    // ✅ Hardening: immediately send a full snapshot to the joiner (authoritative state)
+    // ✅ Hardening: immediately send a full snapshot to the joiner
     const allNow = Array.from(this.players.values()).map((p) => ({
       id: p.id,
       x: p.x,
@@ -375,10 +375,16 @@ export class MyRoom extends Room {
   private isWithinEditRange(client: Client, x: number, y: number, z: number): boolean {
     const p = this.players.get(client.sessionId);
     if (!p) return false;
+
     const dx = x - p.x;
-    const dy = y - p.y;
     const dz = z - p.z;
-    return dx * dx + dy * dy + dz * dz <= this.maxEditDistance * this.maxEditDistance;
+    const dy = y - p.y;
+
+    const horiz = Math.sqrt(dx * dx + dz * dz);
+    if (horiz > this.maxEditHoriz) return false;
+    if (Math.abs(dy) > this.maxEditVert) return false;
+
+    return true;
   }
 
   // =========================
@@ -397,8 +403,7 @@ export class MyRoom extends Room {
   }
 
   private heightAt(worldX: number, worldZ: number): number {
-    const h = this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
-    return h;
+    return this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
   }
 
   private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
