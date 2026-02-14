@@ -1,28 +1,30 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
+ *
+ * Fixes included:
+ * 1) Colyseus room name: uses "my_room" (matches your server defineServer rooms key)
+ * 2) noa-engine import: uses Engine class (noa-engine is not callable)
+ * 3) Networking message alignment with your server:
+ *    - client sends: "playerMove"
+ *    - client receives: "playerTransformOther", "playersSnapshot", "playerJoined", "playerLeft", "existingPlayers", "youJoined"
+ *
+ * Notes:
+ * - Your server currently does NOT implement chunk streaming messages ("worldDataNeeded", "chunkData", "worldData"),
+ *   so this client does not request them. When you add server support later, you can re-add world streaming.
  */
 
 import { Client, Room } from "@colyseus/sdk";
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
-import * as NoaModule from "noa-engine";
+import { Engine as NoaEngine } from "noa-engine";
 
 type Vec3 = { x: number; y: number; z: number };
 
-type WorldDataNeededMsg = {
-  chunkSize: number;
-  coords: { x: number; y: number; z: number } | Record<string, unknown>;
-};
-
-type ChunkDataMsg = {
-  coords: { x: number; y: number; z: number } | Record<string, unknown>;
-  voxels: number[] | Uint8Array | string;
-  palette?: number[];
-};
-
-type YouJoinedMsg = { id: string };
-type PlayerJoinedMsg = { id: string; position?: Vec3 };
+type YouJoinedMsg = { id: string; x?: number; y?: number; z?: number; yaw?: number };
+type PlayerJoinedMsg = { id: string; x?: number; y?: number; z?: number; yaw?: number };
 type PlayerLeftMsg = { id: string };
-type PlayerUpdateMsg = { id: string; position: Vec3; heading?: number; pitch?: number };
+
+type PlayerTransformOtherMsg = { id: string; x: number; y: number; z: number; yaw?: number };
+type PlayersSnapshotMsg = Array<{ id: string; x: number; y: number; z: number; yaw?: number }>;
 
 declare global {
   interface Window {
@@ -43,10 +45,8 @@ void (async function boot(): Promise<void> {
 
     const client = new Client(endpoint);
 
-    // Change "world" if your room name differs
-   const room = await joinRoom(client, "my_room");
-
-
+    // MUST match your server rooms key: rooms: { my_room: defineRoom(MyRoom) }
+    const room = await joinRoom(client, "my_room");
 
     console.log("✅ Joined room successfully");
 
@@ -57,11 +57,10 @@ void (async function boot(): Promise<void> {
 
     const avatars = new Map<string, BABYLON.TransformNode>();
 
-    setupWorldStreaming(noa, room);
     setupPlayerNetworking(noa, room, avatars);
     setupLocalControls(noa, room);
 
-    console.log("✅ Client booted", { endpoint });
+    console.log("✅ Client booted", { endpoint, roomName: room.name, roomId: room.id });
   } catch (err) {
     console.error("❌ Boot error:", err);
     showFatalOverlay(err);
@@ -127,17 +126,8 @@ async function joinRoom(client: Client, roomName: string): Promise<Room> {
 /* ----------------------------- */
 
 function createNoaEngine(opts: { canvas: HTMLCanvasElement }): any {
-  const modAny = NoaModule as unknown as Record<string, unknown>;
-
-  const createNoa =
-    (modAny.default as unknown as ((o: unknown) => any) | undefined) ??
-    (modAny as unknown as (o: unknown) => any);
-
-  if (typeof createNoa !== "function") {
-    throw new Error("noa-engine import is not callable. Check noa-engine version/bundler.");
-  }
-
-  const noa = createNoa({
+  // noa-engine exports an Engine class. Instantiate with "new".
+  const noa = new NoaEngine({
     debug: true,
     canvas: opts.canvas,
     showFPS: true,
@@ -167,18 +157,10 @@ function ensureBasicLighting(noa: any): void {
 
   const hasLight = Array.isArray(scene.lights) && scene.lights.length > 0;
   if (!hasLight) {
-    const hemi = new BABYLON.HemisphericLight(
-      "hemi",
-      new BABYLON.Vector3(0.2, 1, 0.2),
-      scene
-    );
+    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.2), scene);
     hemi.intensity = 0.9;
 
-    const dir = new BABYLON.DirectionalLight(
-      "dir",
-      new BABYLON.Vector3(-0.4, -1, -0.2),
-      scene
-    );
+    const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-0.4, -1, -0.2), scene);
     dir.intensity = 0.6;
   }
 }
@@ -195,45 +177,6 @@ function keepCanvasSized(noa: any, canvas: HTMLCanvasElement): void {
 }
 
 /* ----------------------------- */
-/* World streaming */
-/* ----------------------------- */
-
-function setupWorldStreaming(noa: any, room: Room): void {
-  noa.world?.on?.("worldDataNeeded", (chunk: unknown) => {
-    const cAny = chunk as Record<string, unknown>;
-    const msg: WorldDataNeededMsg = {
-      chunkSize: (cAny.chunkSize as number) ?? 24,
-      coords: (cAny.coords as any) ?? { x: 0, y: 0, z: 0 },
-    };
-
-    room.send("worldDataNeeded", msg);
-  });
-
-  room.onMessage("chunkData", (data: ChunkDataMsg) => {
-    applyChunkToNoa(noa, data);
-  });
-
-  room.onMessage("worldData", (data: ChunkDataMsg) => {
-    applyChunkToNoa(noa, data);
-  });
-}
-
-function applyChunkToNoa(noa: any, data: ChunkDataMsg): void {
-  try {
-    const coords = data.coords as any;
-
-    if (typeof noa.world?.setChunkData === "function") {
-      noa.world.setChunkData(coords, data.voxels);
-      return;
-    }
-
-    console.warn("⚠️ Received chunk data but noa.world.setChunkData is missing.", data);
-  } catch (e) {
-    console.error("❌ Failed applying chunk:", e, data);
-  }
-}
-
-/* ----------------------------- */
 /* Player networking / avatars */
 /* ----------------------------- */
 
@@ -247,20 +190,25 @@ function setupPlayerNetworking(
   room.onMessage("youJoined", (msg: YouJoinedMsg) => {
     myId = msg.id;
     console.log("🟦 youJoined:", msg);
+
+    // If server provides a spawn, move local player there (optional)
+    if (typeof msg.x === "number" && typeof msg.y === "number" && typeof msg.z === "number") {
+      trySetLocalPlayerPosition(noa, { x: msg.x, y: msg.y, z: msg.z });
+    }
   });
 
   room.onMessage("existingPlayers", (players: PlayerJoinedMsg[]) => {
     console.log("👋 Existing players:", players);
     for (const p of players) {
       if (!avatars.has(p.id)) {
-        avatars.set(p.id, createAvatar(noa, p.id, p.position));
+        avatars.set(p.id, createAvatar(noa, p.id, toVec3(p)));
       }
     }
   });
 
   room.onMessage("playerJoined", (p: PlayerJoinedMsg) => {
     if (avatars.has(p.id)) return;
-    avatars.set(p.id, createAvatar(noa, p.id, p.position));
+    avatars.set(p.id, createAvatar(noa, p.id, toVec3(p)));
   });
 
   room.onMessage("playerLeft", (p: PlayerLeftMsg) => {
@@ -269,17 +217,35 @@ function setupPlayerNetworking(
     avatars.delete(p.id);
   });
 
-  room.onMessage("playerUpdate", (u: PlayerUpdateMsg) => {
+  // Server broadcast when someone else moves
+  room.onMessage("playerTransformOther", (u: PlayerTransformOtherMsg) => {
     if (myId && u.id === myId) return;
-
     const node = avatars.get(u.id);
     if (!node) return;
 
-    node.position.set(u.position.x, u.position.y, u.position.z);
-
-    if (typeof u.heading === "number") node.rotation.y = u.heading;
-    if (typeof u.pitch === "number") node.rotation.x = u.pitch;
+    node.position.set(u.x, u.y, u.z);
+    if (typeof u.yaw === "number") node.rotation.y = u.yaw;
   });
+
+  // Server periodic snapshot of all players
+  room.onMessage("playersSnapshot", (all: PlayersSnapshotMsg) => {
+    for (const p of all) {
+      if (myId && p.id === myId) continue;
+
+      let node = avatars.get(p.id);
+      if (!node) {
+        node = createAvatar(noa, p.id, { x: p.x, y: p.y, z: p.z });
+        avatars.set(p.id, node);
+      } else {
+        node.position.set(p.x, p.y, p.z);
+      }
+      if (typeof p.yaw === "number") node.rotation.y = p.yaw;
+    }
+  });
+}
+
+function toVec3(p: { x?: number; y?: number; z?: number }): Vec3 {
+  return { x: p.x ?? 0, y: p.y ?? 2, z: p.z ?? 0 };
 }
 
 function createAvatar(noa: any, id: string, pos?: Vec3): BABYLON.TransformNode {
@@ -306,7 +272,7 @@ function createAvatar(noa: any, id: string, pos?: Vec3): BABYLON.TransformNode {
 }
 
 /* ----------------------------- */
-/* Local controls */
+/* Local controls -> sends "playerMove" */
 /* ----------------------------- */
 
 function setupLocalControls(noa: any, room: Room): void {
@@ -330,26 +296,118 @@ function setupLocalControls(noa: any, room: Room): void {
     }
   });
 
-  const tickHz = 20;
+  const tickHz = 16; // server rate-limit is ~60ms, so 16Hz is safe
   let acc = 0;
 
   noa.on?.("tick", (dt: number) => {
+    // Basic local movement (optional). If you already have noa movement controls, remove this.
+    applyBasicNoaMovement(noa, keys, dt);
+
     acc += dt;
     if (acc < 1 / tickHz) return;
     acc = 0;
 
-    const input = {
-      forward: keys.has("KeyW"),
-      back: keys.has("KeyS"),
-      left: keys.has("KeyA"),
-      right: keys.has("KeyD"),
-      jump: keys.has("Space"),
-      heading: noa.camera?.heading ?? 0,
-      pitch: noa.camera?.pitch ?? 0,
-    };
+    const pos = getLocalPlayerPosition(noa);
+    if (!pos) return;
 
-    room.send("input", input);
+    const yaw = typeof noa.camera?.heading === "number" ? noa.camera.heading : 0;
+
+    // Send to server using message name it expects
+    room.send("playerMove", { x: pos.x, y: pos.y, z: pos.z, yaw });
   });
+}
+
+/**
+ * Minimal WASD movement so something actually moves even if noa controls aren't configured.
+ * If you already have player physics/controls configured elsewhere, you can delete this.
+ */
+function applyBasicNoaMovement(noa: any, keys: Set<string>, dt: number): void {
+  const speed = 6; // units per second
+  const jumpSpeed = 7;
+
+  const forward = keys.has("KeyW") ? 1 : 0;
+  const back = keys.has("KeyS") ? 1 : 0;
+  const left = keys.has("KeyA") ? 1 : 0;
+  const right = keys.has("KeyD") ? 1 : 0;
+
+  const dz = forward - back;
+  const dx = right - left;
+
+  const heading = typeof noa.camera?.heading === "number" ? noa.camera.heading : 0;
+
+  // rotate input by camera heading
+  const cos = Math.cos(heading);
+  const sin = Math.sin(heading);
+  const vx = (dx * cos - dz * sin) * speed;
+  const vz = (dx * sin + dz * cos) * speed;
+
+  // Try common noa player entity access patterns
+  const ent = noa?.playerEntity;
+  const bodies = noa?.entities?.getPhysicsBody ? noa.entities.getPhysicsBody(ent) : null;
+
+  // If noa physics body is available, set velocity
+  if (bodies?.velocity) {
+    bodies.velocity[0] = vx;
+    bodies.velocity[2] = vz;
+
+    if (keys.has("Space")) {
+      // naive jump, only if nearly not moving vertically
+      if (Math.abs(bodies.velocity[1]) < 0.01) bodies.velocity[1] = jumpSpeed;
+    }
+    return;
+  }
+
+  // Fallback: if we can directly mutate position array
+  const posArr: number[] | undefined =
+    (noa?.entities?.getPosition && ent != null ? (noa.entities.getPosition(ent) as number[]) : undefined) ??
+    (noa?.playerEntity?.position as number[] | undefined);
+
+  if (!posArr || posArr.length < 3) return;
+
+  posArr[0] += vx * dt;
+  posArr[2] += vz * dt;
+  if (keys.has("Space")) posArr[1] += jumpSpeed * dt * 0.15;
+}
+
+function getLocalPlayerPosition(noa: any): Vec3 | null {
+  // Common patterns in noa for player position:
+  // - noa.playerEntity + entities.getPosition(entityId)
+  // - noa.playerEntity.position array
+  const ent = noa?.playerEntity;
+
+  try {
+    if (noa?.entities?.getPosition && ent != null) {
+      const p = noa.entities.getPosition(ent) as number[] | undefined;
+      if (Array.isArray(p) && p.length >= 3) return { x: p[0], y: p[1], z: p[2] };
+    }
+  } catch {
+    // ignore
+  }
+
+  const arr = noa?.playerEntity?.position as number[] | undefined;
+  if (Array.isArray(arr) && arr.length >= 3) return { x: arr[0], y: arr[1], z: arr[2] };
+
+  return null;
+}
+
+function trySetLocalPlayerPosition(noa: any, pos: Vec3): void {
+  const ent = noa?.playerEntity;
+
+  try {
+    if (noa?.entities?.setPosition && ent != null) {
+      noa.entities.setPosition(ent, [pos.x, pos.y, pos.z]);
+      return;
+    }
+  } catch {
+    // ignore
+  }
+
+  const arr = noa?.playerEntity?.position as number[] | undefined;
+  if (Array.isArray(arr) && arr.length >= 3) {
+    arr[0] = pos.x;
+    arr[1] = pos.y;
+    arr[2] = pos.z;
+  }
 }
 
 /* ----------------------------- */
