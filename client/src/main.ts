@@ -17,8 +17,8 @@
  *
  * Viewmodel:
  * - Minecraft-ish blocky arm (boxes)
- * - Subtle bottom-right placement (visible but not obnoxious)
- * - Responds to yaw/pitch + walk bob/sway + punch
+ * - HUD/overlay style (orthographic, screen-space)
+ * - Responds to pitch + walk bob/sway + turn sway (delta yaw/pitch) + punch on click
  */
 
 import { Engine } from "noa-engine";
@@ -90,7 +90,6 @@ function requestPointerLock() {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
       scene?.getEngine?.()?.getRenderingCanvas?.() ?? (noa as any).container ?? appEl;
-
     if (canvas?.requestPointerLock) canvas.requestPointerLock();
   } catch {
     if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
@@ -207,7 +206,6 @@ function applyChunkFromServer(msg: any) {
 
   const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
   const expected = CS * CS * CS;
-
   if (voxels.length !== expected) return;
 
   const data = pending.data;
@@ -244,15 +242,18 @@ function getTargetInfo() {
   };
 }
 
-let armPunch = 0;
-let armPunchVel = 0;
+/* ---- Viewmodel punch (time-based, deterministic) ---- */
+let punchT = 1; // 0..1 (0 = start, 1 = done)
+function triggerPunch() {
+  punchT = 0;
+}
 
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   const target = getTargetInfo();
   if (!target) return;
 
-  armPunchVel = 10;
+  triggerPunch();
 
   const { x, y, z } = target.pos;
   noa.world.setBlockID(AIR_ID, x, y, z);
@@ -264,7 +265,7 @@ noa.inputs.down.on("alt-fire", () => {
   const target = getTargetInfo();
   if (!target) return;
 
-  armPunchVel = 10;
+  triggerPunch();
 
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
@@ -281,7 +282,7 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Babylon scene/camera access (NOA scene)
+   9. Babylon scene access (NOA scene)
 ================================ */
 function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
@@ -311,7 +312,6 @@ function getStableScene(): BABYLON.Scene | null {
 
 /* ===============================
    10. Viewmodel Overlay Scene (vmScene)
-   Rendered at end-of-frame to guarantee visibility
 ================================ */
 let vmReady = false;
 let vmScene: BABYLON.Scene | null = null;
@@ -386,6 +386,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   fore.parent = vmArmRoot;
   hand.parent = vmArmRoot;
 
+  // Pull the arm "up" a touch relative to the screen anchor, so it doesn't clip
+  vmArmRoot.position.set(0.0, 0.12, 0.0);
+
+  // Stack parts
   upper.position.set(0.0, 0.22, 0.0);
   fore.position.set(0.0, -0.18, 0.02);
   hand.position.set(0.0, -0.48, 0.04);
@@ -407,6 +411,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   upper.isPickable = fore.isPickable = hand.isPickable = false;
   upper.isVisible = fore.isVisible = hand.isVisible = true;
 
+  // Ensure HUD meshes always render
   (upper as any).isInFrustum = () => true;
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
@@ -430,6 +435,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 ================================ */
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
+
+let lastYawVM: number | null = null;
+let lastPitchVM: number | null = null;
 
 function readNoaYaw(): number {
   const h = (noa as any).camera?.heading;
@@ -455,6 +463,12 @@ function readNoaPitch(): number {
   return v;
 }
 
+function wrapPi(a: number) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
 function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   if (!viewModelEnabled) return;
@@ -476,41 +490,44 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
-  // punch decay
-  armPunch += armPunchVel * dtSec;
-  armPunchVel *= Math.pow(0.02, dtSec);
-  armPunch *= Math.pow(0.10, dtSec);
-  armPunch = Math.min(1, armPunch);
-  const punch01 = Math.sin(armPunch * Math.PI);
+  // punch: deterministic, always visible
+  punchT = Math.min(1, punchT + dtSec * 10.0);
+  const punch01 = Math.sin(punchT * Math.PI); // 0 -> 1 -> 0
 
   // Screen-space bounds: x in [-r,r], y in [-1,1]
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  // Arm placement:
-  // Previously baseY=-0.72 clipped most of the arm off-screen (hand went below y=-1).
-  // Raise slightly so it's visible-but-subtle.
-  const baseX = r * 0.78;
-  const baseY = -0.48;
+  // Tucked bottom-right (Minecraft-ish)
+  const baseX = r * 0.90;
+  const baseY = -0.62;
 
-  const x = baseX + sway * 0.6 + punch01 * 0.03;
-  const y = baseY + bob * 0.7 - punch01 * 0.02;
+  // Punch moves arm forward/left/down a touch
+  const x = baseX + sway * 0.55 - punch01 * 0.06;
+  const y = baseY + bob * 0.65 - punch01 * 0.04;
 
   vmRoot.position.set(x, y, 0);
 
-  // Read view angles
-  const yaw = readNoaYaw();
-  const pitch = readNoaPitch();
+  // Read view angles, but sway with *deltas* (not absolute yaw)
+  const yawNow = readNoaYaw();
+  const pitchNow = readNoaPitch();
 
-  const pitchInfluence = BABYLON.Scalar.Clamp(pitch, -1.2, 1.2);
-  const yawInfluence = BABYLON.Scalar.Clamp(yaw, -Math.PI, Math.PI);
+  const dyaw = lastYawVM == null ? 0 : wrapPi(yawNow - lastYawVM);
+  const dpitch = lastPitchVM == null ? 0 : (pitchNow - lastPitchVM);
 
-  // Minecraft-ish swing: mostly roll, some pitch response
-  const swing = Math.sin(vmTime * 1.7) * 0.25 * walk;
+  lastYawVM = yawNow;
+  lastPitchVM = pitchNow;
 
-  // Base pose angled down-left like MC
-  vmArmRoot.rotation.x = 0.35 + pitchInfluence * 0.25 - punch01 * 0.35;
-  vmArmRoot.rotation.y = -0.25; // slight inward
-  vmArmRoot.rotation.z = -0.85 + swing - yawInfluence * 0.04; // roll dominates
+  const pitchInfluence = BABYLON.Scalar.Clamp(pitchNow, -1.2, 1.2);
+  const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
+  const lookSway = BABYLON.Scalar.Clamp(dpitch * 1.2, -0.2, 0.2);
+
+  // subtle walk swing
+  const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
+
+  // FPS-ish base pose: inward, slight roll; pitch raises/lowers; punch adds snap
+  vmArmRoot.rotation.x = 0.15 + pitchInfluence * 0.35 - punch01 * 0.55 + lookSway * 0.35;
+  vmArmRoot.rotation.y = 0.55 + turnSway * 0.4;
+  vmArmRoot.rotation.z = -1.05 + swing - turnSway * 0.35;
 }
 
 /* ===============================
@@ -652,7 +669,6 @@ async function connect() {
     updateOverlay();
 
     room = await colyseus.joinOrCreate("my_room");
-
     (globalThis as any).room = room;
 
     updateOverlay();
