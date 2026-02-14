@@ -5,11 +5,12 @@
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component
- * - First-person arm: UtilityLayer viewmodel (camera-parented, never culled)
- *   - Better model (forearm + hand + thumb)
- *   - More on screen
- *   - Walk bob/sway
- *   - Punch on mine/place
+ * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
+ *   - Always on top (no depth)
+ *   - Never culled
+ *   - Camera-world-matrix anchored (no drifting / floating)
+ *   - Better model (forearm + hand + thumb merged)
+ *   - Walk bob/sway + punch on mine/place
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -252,8 +253,8 @@ function getTargetInfo() {
   };
 }
 
-// Punch animation triggers
-let armPunch = 0; // 0..1
+// punch anim
+let armPunch = 0;
 let armPunchVel = 0;
 
 noa.inputs.down.on("fire", () => {
@@ -338,12 +339,9 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 }
 
 /* ===============================
-   10. First-person arm (viewmodel: UtilityLayer + camera-parented)
+   10. First-person arm (MAIN SCENE viewmodel)
 ================================ */
 let fpArmReady = false;
-let fpArmUILayer: BABYLON.UtilityLayerRenderer | null = null;
-let fpArmUIScene: BABYLON.Scene | null = null;
-
 let fpArmRoot: BABYLON.TransformNode | null = null;
 let fpArmMesh: BABYLON.Mesh | null = null;
 
@@ -362,33 +360,24 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
     return;
   }
 
-  // reduce near plane
   try {
     if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
   } catch {}
 
-  fpArmUILayer = new BABYLON.UtilityLayerRenderer(scene);
-  fpArmUILayer.utilityLayerScene.autoClear = false;
+  fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
 
-  fpArmUIScene = fpArmUILayer.utilityLayerScene;
-  fpArmUIScene.activeCamera = cam;
-
-  // ROOT is parented to CAMERA (local-space offsets = stable viewmodel)
-  fpArmRoot = new BABYLON.TransformNode("fpArmRoot", fpArmUIScene);
-  (fpArmRoot as any).parent = cam as any;
-
-  // Build meshes in utility scene
+  // Build better arm parts in MAIN scene
   const forearm = BABYLON.MeshBuilder.CreateCylinder(
     "fpForearm",
     { height: 1.35, diameter: 0.32, tessellation: 16 },
-    fpArmUIScene
+    scene
   );
   forearm.rotation.x = Math.PI / 2;
 
   const hand = BABYLON.MeshBuilder.CreateBox(
     "fpHand",
     { width: 0.38, height: 0.28, depth: 0.55 },
-    fpArmUIScene
+    scene
   );
   hand.position.z = 0.62;
   hand.rotation.x = Math.PI / 2;
@@ -396,27 +385,13 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   const thumb = BABYLON.MeshBuilder.CreateBox(
     "fpThumb",
     { width: 0.12, height: 0.12, depth: 0.28 },
-    fpArmUIScene
+    scene
   );
   thumb.position.set(0.20, -0.06, 0.56);
   thumb.rotation.x = Math.PI / 2;
   thumb.rotation.z = -0.55;
 
-  // Parent parts before merge (so merge keeps transforms)
-  forearm.parent = fpArmRoot;
-  forearm.position.set(0, -0.55, 0);
-
-  hand.parent = fpArmRoot;
-  hand.position.y = -0.72;
-
-  thumb.parent = fpArmRoot;
-  thumb.position.y = -0.78;
-
-  // MERGE: but first unparent so merge happens in the same space
-  forearm.parent = null;
-  hand.parent = null;
-  thumb.parent = null;
-
+  // Merge
   const merged = BABYLON.Mesh.MergeMeshes([forearm, hand, thumb], true, true, undefined, false, true);
   if (!merged) {
     console.warn("[FP] Failed to merge arm meshes");
@@ -427,39 +402,40 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.name = "fpArm";
   fpArmMesh.parent = fpArmRoot;
 
-  // Material
-  const mat = new BABYLON.StandardMaterial("fpArmMat", fpArmUIScene);
+  // Material: always visible
+  const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
   mat.disableLighting = true;
   mat.emissiveColor = new BABYLON.Color3(0.15, 0.65, 1.0);
   mat.diffuseColor = new BABYLON.Color3(0.15, 0.65, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
+
+  // draw on top
   mat.disableDepthWrite = true;
+  (mat as any).disableDepthTest = true;
+
   fpArmMesh.material = mat;
 
-  // Make it bulletproof visible
   fpArmMesh.isPickable = false;
   fpArmMesh.alwaysSelectAsActiveMesh = true;
-  fpArmMesh.layerMask = 0xffffffff;
 
-  // NEVER cull (fixes disappearing after merge / bounding issues)
+  // never culled
   (fpArmMesh as any).isInFrustum = () => true;
-  fpArmMesh.doNotSyncBoundingInfo = true;
-  try {
-    fpArmMesh.refreshBoundingInfo(true);
-  } catch {}
 
-  // Outline pop
+  // render late (on top)
+  fpArmMesh.renderingGroupId = 9;
+
+  // match camera mask
+  fpArmMesh.layerMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
+
+  // outline
   fpArmMesh.renderOutline = true;
   fpArmMesh.outlineWidth = 0.06;
   fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
 
-  // Initial local offset (more on screen)
-  fpArmRoot.position.set(0.95, -0.85, 0.95);
-
   fpArmReady = true;
 
-  console.log("[FP] Arm created OK (utility-layer)", {
+  console.log("[FP] Arm created OK (main-scene viewmodel)", {
     cam: cam.name,
     sceneUid: (scene as any).uid,
     camMask: (cam as any).layerMask,
@@ -468,21 +444,13 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 }
 
 function updateFirstPersonArm(dtSec: number) {
-  if (!fpArmReady || !fpArmRoot || !fpArmMesh || !fpArmUIScene) return;
+  if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
 
-  const baseScene = getStableScene();
-  if (!baseScene) return;
-
-  const cam = getNoaCamera(baseScene);
+  const scene = fpArmMesh.getScene();
+  const cam = getNoaCamera(scene);
   if (!cam) return;
 
-  // keep utility camera synced
-  fpArmUIScene.activeCamera = cam;
-
-  // ensure parent is the current camera (NOA can swap internals)
-  if ((fpArmRoot as any).parent !== (cam as any)) (fpArmRoot as any).parent = cam as any;
-
-  // compute walk speed
+  // walk speed
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   if (!pos) return;
 
@@ -501,36 +469,57 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // punch impulse + decay
+  // punch
   armPunch += armPunchVel * dtSec;
   armPunchVel *= Math.pow(0.02, dtSec);
   armPunch *= Math.pow(0.10, dtSec);
   armPunch = Math.min(1, armPunch);
 
-  const punch01 = Math.sin(armPunch * Math.PI); // 0..1..0
+  const punch01 = Math.sin(armPunch * Math.PI);
 
-  // LOCAL SPACE offsets (camera-parented)
-  const x = 0.95;
-  const y = -0.85 + bob;
-  const z = 0.95 + punch01 * 0.30;
+  // camera world matrix basis (stable)
+  cam.computeWorldMatrix();
+  const wm = cam.getWorldMatrix();
 
-  fpArmRoot.position.set(x, y, z);
+  const camPos = new BABYLON.Vector3(wm.m[12], wm.m[13], wm.m[14]);
 
-  // walk swing
-  const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk;
+  const camRot = new BABYLON.Quaternion();
+  wm.decompose(undefined, camRot, undefined);
+
+  const rotM = new BABYLON.Matrix();
+  camRot.toRotationMatrix(rotM);
+
+  const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 0, 1), rotM).normalize();
+  const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
+  const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 1, 0), rotM).normalize();
+
+  // viewmodel offsets (more visible)
+  const distFwd = 0.95 + punch01 * 0.30;
+  const distRight = 0.95;
+  const distDown = 0.85 - bob;
+
+  const armPos = camPos
+    .add(forward.scale(distFwd))
+    .add(right.scale(distRight))
+    .add(up.scale(-distDown));
+
+  fpArmRoot.position.copyFrom(armPos);
+
+  // face same as camera
+  fpArmRoot.rotationQuaternion = camRot.clone();
+
+  // local swing
+  const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
   const swingZ = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
+  const swingY = punch01 * 0.15;
 
-  // punch rotation
-  const punchRotX = -punch01 * 0.25;
-  const punchRotY = punch01 * 0.15;
-
-  fpArmMesh.rotation.x = swingX + punchRotX;
-  fpArmMesh.rotation.y = punchRotY;
+  fpArmMesh.rotation.x = swingX;
+  fpArmMesh.rotation.y = swingY;
   fpArmMesh.rotation.z = swingZ;
 }
 
 /* ===============================
-   11. Remote Player Rendering (NOA Entities + Mesh Component)
+   11. Remote Player Rendering
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -832,11 +821,12 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick: local move send + first-person arm + periodic debug
+   13. Tick: local move send + arm update + periodic debug
 ================================ */
 let tickCount = 0;
 let debugTick = 0;
 let lastTickMs = performance.now();
+
 let sceneHookedForArm = false;
 
 (noa as any).on("tick", () => {
@@ -868,22 +858,10 @@ let sceneHookedForArm = false;
   if (debugTick % 30 === 0 && showExtraDebugOverlay) {
     const pos = noa.ents.getPosition(noa.playerEntity);
 
-    let firstRemote: { id: string; t: NetTransform } | null = null;
-    if (room) {
-      for (const [id, t] of netTransforms.entries()) {
-        if (id === room.sessionId) continue;
-        firstRemote = { id, t };
-        break;
-      }
-    }
-
     const line =
       `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
-      `Remote: ${firstRemote ? `${firstRemote.id} (${firstRemote.t.x.toFixed(2)},${firstRemote.t.y.toFixed(2)},${firstRemote.t.z.toFixed(2)})` : "none"} | ` +
       `Arm=${fpArmReady ? "YES" : "NO"} | ` +
-      `Net=${netTransforms.size} RemoteEnts=${remoteEnts.size} Meshes=${remoteMeshes.size} | ` +
-      `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"} | ` +
-      `Pin=${pinRemoteMarkerInFront ? "ON" : "OFF"}`;
+      `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"}`;
 
     updateOverlay(line);
   }
