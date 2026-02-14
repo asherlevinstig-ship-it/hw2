@@ -6,6 +6,7 @@
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
  * - First-person arm rendered in a BABYLON UtilityLayer (bulletproof "always on top")
+ *   and attached to camera using CAMERA WORLD MATRIX (fixes "arm floating in air")
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -308,7 +309,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (UTILITY LAYER, always on top)
+   10. First-person arm (UTILITY LAYER, always on top, camera WORLD MATRIX)
 ================================ */
 let fpArmReady = false;
 
@@ -412,7 +413,7 @@ function updateFirstPersonArm(dtSec: number) {
   const cam = getNoaCamera(baseScene);
   if (!cam) return;
 
-  // Keep utility layer scene camera in sync
+  // Keep utility layer scene camera in sync (NOA may replace/retarget camera internals)
   fpArmUIScene.activeCamera = cam;
 
   // Movement speed for bob (from NOA player entity)
@@ -434,33 +435,35 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // Camera basis in world space (robust)
-  const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
-  const right = cam.getDirection(BABYLON.Axis.X).normalize();
-  const up = cam.getDirection(BABYLON.Axis.Y).normalize();
+  // ---- IMPORTANT: use camera WORLD transform (NOT cam.position) ----
+  cam.computeWorldMatrix();
+  const camWorld = cam.getWorldMatrix();
 
-  const camPos = (cam as any).position as BABYLON.Vector3;
+  // World position from matrix translation
+  const camWorldPos = new BABYLON.Vector3(camWorld.m[12], camWorld.m[13], camWorld.m[14]);
+
+  // World rotation from matrix decomposition
+  const camWorldRot = new BABYLON.Quaternion();
+  camWorld.decompose(undefined, camWorldRot, undefined);
+
+  // Basis vectors derived from world rotation (no Matrix.FromQuaternion)
+  const rotM = new BABYLON.Matrix();
+  camWorldRot.toRotationMatrix(rotM);
+
+  const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 0, 1), rotM).normalize();
+  const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
+  const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 1, 0), rotM).normalize();
 
   // Always in front-right-down of camera
-  const base = camPos
+  const base = camWorldPos
     .add(forward.scale(1.2))
     .add(right.scale(0.65))
     .add(up.scale(-0.65 + bob));
 
   fpArmRoot.position.copyFrom(base);
 
-  // Follow camera rotation (prefer quaternion)
-  const q =
-    (cam as any).absoluteRotationQuaternion ??
-    (cam as any).rotationQuaternion ??
-    null;
-
-  if (q && q.clone) {
-    fpArmRoot.rotationQuaternion = q.clone();
-  } else {
-    fpArmRoot.rotationQuaternion = null;
-    fpArmRoot.rotation.copyFrom((cam as any).rotation ?? BABYLON.Vector3.Zero());
-  }
+  // Follow camera WORLD rotation
+  fpArmRoot.rotationQuaternion = camWorldRot.clone();
 
   // Add swing on the mesh itself (local-ish)
   fpArmMesh.rotation.x = 0.2 + Math.sin(armTime) * 0.12 * walk;
