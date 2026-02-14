@@ -1,28 +1,15 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * NOA voxel client + Colyseus multiplayer
- * - Server authoritative chunk streaming (Path B)
- * - Mine/place block sync
- * - Remote players rendered via NOA entities + mesh component
- * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
+ * PURPOSE: diagnose why first-person arm/plane are not visible.
  *
- * ✅ THIS VERSION INCLUDES (NEW THEORY):
- * Many NOA/Babylon camera rigs keep cam.position at (0,0,0) and drive the view matrix.
- * So we now derive the TRUE camera pose from the INVERSE VIEW MATRIX:
- *  - trueCamPos = inverse(viewMatrix).translation
- *  - basis vectors = inverse(viewMatrix) axes
- *  - rotation quaternion = decompose(inverse(viewMatrix)).rotation
- *
- * ✅ FULL DEBUGGING:
- * - CANVAS log on scene swap
- * - ARMDBG logs (cam.position vs trueCamPos, basis, arm pos)
- * - World-follow debug plane + arm using TRUE camera pose
- * - Render-loop hook for guaranteed per-frame updates
- *
- * Debug controls:
- * - P toggles pinning remote marker in front of camera (local-only debug)
- * - O toggles extra debug overlay line
+ * NEW DEBUG WEAPONS:
+ * - Compute TRUE camera pose from inverse view matrix (confirmed needed)
+ * - Enumerate ALL cameras frequently
+ * - Log which camera is actually active each render
+ * - FORCE render via activeCamera.renderList (toggle with L)
+ * - Force camera.layerMask to all-bits in debug mode
+ * - Force arm renderingGroupId = 0 (so it cannot be skipped by group filtering)
  */
 
 import { Engine } from "noa-engine";
@@ -144,6 +131,7 @@ const hotbar = [
 let selectedSlot = 0;
 
 let showExtraDebugOverlay = true;
+let FORCE_RENDERLIST_MODE = true; // toggle with L
 
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
@@ -158,6 +146,7 @@ function updateOverlay(extraLine = "") {
     [WASD] Move  |  [Space] Jump<br>
     [P] Pin Remote (debug)<br>
     [O] Toggle Debug Overlay<br>
+    [L] Toggle FORCE renderList: ${FORCE_RENDERLIST_MODE ? "ON" : "OFF"}<br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
@@ -173,6 +162,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "o" || e.key === "O") {
     showExtraDebugOverlay = !showExtraDebugOverlay;
     updateOverlay(showExtraDebugOverlay ? "Debug overlay: ON" : "Debug overlay: OFF");
+    return;
+  }
+  if (e.key === "l" || e.key === "L") {
+    FORCE_RENDERLIST_MODE = !FORCE_RENDERLIST_MODE;
+    console.log("[ARMDBG] FORCE_RENDERLIST_MODE =", FORCE_RENDERLIST_MODE);
+    updateOverlay(`FORCE renderList: ${FORCE_RENDERLIST_MODE ? "ON" : "OFF"}`);
     return;
   }
 });
@@ -298,7 +293,7 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Babylon scene access (stable)
+   9. Babylon scene/camera access
 ================================ */
 function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
@@ -362,10 +357,9 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 }
 
 /* ===============================
-   10. TRUE camera pose helpers (NEW THEORY)
+   10. TRUE camera pose helpers
 ================================ */
 function getTrueCameraWorldPos(cam: BABYLON.Camera): BABYLON.Vector3 {
-  // World pos = inverse(viewMatrix).translation
   try {
     const invView = cam.getViewMatrix().clone();
     invView.invert();
@@ -376,7 +370,6 @@ function getTrueCameraWorldPos(cam: BABYLON.Camera): BABYLON.Vector3 {
 }
 
 function getTrueCameraBasis(cam: BABYLON.Camera) {
-  // Basis from inverse view matrix axes
   const view = cam.getViewMatrix();
   const inv = view.clone();
   inv.invert();
@@ -384,7 +377,6 @@ function getTrueCameraBasis(cam: BABYLON.Camera) {
   const right = new BABYLON.Vector3(inv.m[0], inv.m[1], inv.m[2]).normalize();
   const up = new BABYLON.Vector3(inv.m[4], inv.m[5], inv.m[6]).normalize();
   const forward = new BABYLON.Vector3(inv.m[8], inv.m[9], inv.m[10]).normalize();
-
   return { forward, right, up };
 }
 
@@ -398,91 +390,21 @@ function getTrueCameraRotationQuat(cam: BABYLON.Camera): BABYLON.Quaternion {
 }
 
 /* ===============================
-   11. First-person viewmodel: WORLD-FOLLOW (TRUE POSE) + FULL DEBUG
+   11. Arm / Debug plane
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
 let fpArmMesh: BABYLON.Mesh | null = null;
-let fpArmSceneUid: string | number | null = null;
-
 let fpDbgPlane: BABYLON.Mesh | null = null;
+let fpArmSceneUid: string | number | null = null;
 
 let lastLocalPos: [number, number, number] | null = null;
 let armTime = 0;
 
-function debugArmStatus(tag: string) {
-  const scene = getStableScene();
-  if (!scene) {
-    console.log(`[ARMDBG:${tag}] no scene`);
-    return;
-  }
-
-  const cam = getNoaCamera(scene) ?? scene.activeCamera;
-  const armByName = scene.getMeshByName("fpArm") as BABYLON.AbstractMesh | null;
-  const rootByName = scene.getNodeByName("fpArmRoot") as BABYLON.Node | null;
-
-  let absPos: number[] | null = null;
-  let scaling: number[] | null = null;
-
-  try {
-    if (armByName) {
-      absPos = armByName.getAbsolutePosition().asArray();
-      scaling = armByName.scaling.asArray();
-    }
-  } catch {}
-
-  const camPos = cam ? cam.position.asArray() : null;
-  const trueCamPos = cam ? getTrueCameraWorldPos(cam).asArray() : null;
-
-  let f: number[] | null = null;
-  let r: number[] | null = null;
-  let u: number[] | null = null;
-  try {
-    if (cam) {
-      const basis = getTrueCameraBasis(cam);
-      f = basis.forward.asArray();
-      r = basis.right.asArray();
-      u = basis.up.asArray();
-    }
-  } catch {}
-
-  console.log(`[ARMDBG:${tag}]`, {
-    sceneUid: (scene as any).uid,
-    activeCam: cam?.name ?? null,
-    meshes: scene.meshes.length,
-    nodes: scene.getNodes().length,
-    armReady: fpArmReady,
-    armSceneUid: fpArmSceneUid,
-    armMeshPtr: !!fpArmMesh,
-    armRootPtr: !!fpArmRoot,
-    armByName: !!armByName,
-    rootByName: !!rootByName,
-    armEnabled: armByName ? armByName.isEnabled() : null,
-    armVisible: armByName ? armByName.isVisible : null,
-    armScaling: scaling,
-    armAbsPos: absPos,
-    armLayerMask: armByName ? (armByName as any).layerMask : null,
-    camLayerMask: cam ? (cam as any).layerMask : null,
-    renderingGroupId: armByName ? (armByName as any).renderingGroupId : null,
-    camPos,
-    trueCamPos,
-    basisFwd: f,
-    basisRight: r,
-    basisUp: u,
-  });
-}
-
-function disposeFirstPersonArm() {
-  try {
-    fpArmMesh?.dispose(false, true);
-  } catch {}
-  try {
-    fpArmRoot?.dispose(false, true);
-  } catch {}
-  try {
-    fpDbgPlane?.dispose(false, true);
-  } catch {}
-
+function disposeArm() {
+  try { fpArmMesh?.dispose(false, true); } catch {}
+  try { fpArmRoot?.dispose(false, true); } catch {}
+  try { fpDbgPlane?.dispose(false, true); } catch {}
   fpArmMesh = null;
   fpArmRoot = null;
   fpDbgPlane = null;
@@ -501,51 +423,37 @@ function ensureDebugPlane(scene: BABYLON.Scene) {
   dbgMat.specularColor = new BABYLON.Color3(0, 0, 0);
   dbgMat.disableLighting = true;
   dbgMat.backFaceCulling = false;
-
-  // Always visible
   dbgMat.disableDepthWrite = true;
   dbgMat.depthFunction = BABYLON.Constants.ALWAYS;
 
   fpDbgPlane.material = dbgMat;
-  fpDbgPlane.renderingGroupId = 3;
+
+  // IMPORTANT: group 0 so NOA cannot skip a higher group
+  fpDbgPlane.renderingGroupId = 0;
   fpDbgPlane.layerMask = 0xffffffff;
   fpDbgPlane.isPickable = false;
   fpDbgPlane.setEnabled(true);
   fpDbgPlane.isVisible = true;
+
   (fpDbgPlane as any).isInFrustum = () => true;
   (fpDbgPlane as any).alwaysSelectAsActiveMesh = true;
-  (fpDbgPlane as any).infiniteDistance = true;
 
-  console.log("[ARMDBG] Created ARM_DEBUG_PLANE (magenta, TRUE-POSE WORLD-FOLLOW)", {
-    sceneUid: (scene as any).uid,
-  });
+  console.log("[ARMDBG] Debug plane created (group 0)", { sceneUid: (scene as any).uid });
 }
 
-function setupFirstPersonArm(scene: BABYLON.Scene) {
+function setupArm(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
 
-  // Rebuild if scene swapped
   if (fpArmReady && fpArmSceneUid !== (uid ?? null)) {
-    console.warn("[FP] Scene changed - rebuilding arm", { from: fpArmSceneUid, to: uid });
-    disposeFirstPersonArm();
+    console.warn("[ARMDBG] Scene swap -> rebuild arm", { from: fpArmSceneUid, to: uid });
+    disposeArm();
   }
-
   if (fpArmReady) return;
 
   const cam = getNoaCamera(scene) ?? scene.activeCamera;
-  if (!cam) {
-    if ((setupFirstPersonArm as any)._missed !== true) {
-      (setupFirstPersonArm as any)._missed = true;
-      console.warn("[FP] No camera yet - will retry");
-    }
-    return;
-  }
+  if (!cam) return;
 
   fpArmSceneUid = uid ?? null;
-
-  try {
-    if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
-  } catch {}
 
   ensureDebugPlane(scene);
 
@@ -554,41 +462,24 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmRoot.position.set(0, 0, 0);
   fpArmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
-  const forearm = BABYLON.MeshBuilder.CreateCylinder(
-    "fpForearm",
-    { height: 1.35, diameter: 0.32, tessellation: 16 },
-    scene
-  );
+  const forearm = BABYLON.MeshBuilder.CreateCylinder("fpForearm", { height: 1.35, diameter: 0.32, tessellation: 16 }, scene);
   forearm.rotation.x = Math.PI / 2;
 
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "fpHand",
-    { width: 0.38, height: 0.28, depth: 0.55 },
-    scene
-  );
+  const hand = BABYLON.MeshBuilder.CreateBox("fpHand", { width: 0.38, height: 0.28, depth: 0.55 }, scene);
   hand.position.z = 0.62;
   hand.rotation.x = Math.PI / 2;
 
-  const thumb = BABYLON.MeshBuilder.CreateBox(
-    "fpThumb",
-    { width: 0.12, height: 0.12, depth: 0.28 },
-    scene
-  );
+  const thumb = BABYLON.MeshBuilder.CreateBox("fpThumb", { width: 0.12, height: 0.12, depth: 0.28 }, scene);
   thumb.position.set(0.20, -0.06, 0.56);
   thumb.rotation.x = Math.PI / 2;
   thumb.rotation.z = -0.55;
 
   const merged = BABYLON.Mesh.MergeMeshes([forearm, hand, thumb], true, true, undefined, false, true);
-  if (!merged) {
-    console.warn("[FP] Failed to merge arm meshes");
-    return;
-  }
+  if (!merged) return;
 
   fpArmMesh = merged;
   fpArmMesh.name = "fpArm";
   fpArmMesh.parent = fpArmRoot;
-
-  // Big scale while debugging
   fpArmMesh.scaling.setAll(2.0);
 
   const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
@@ -597,47 +488,64 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.diffuseColor = new BABYLON.Color3(0.15, 0.65, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
-
-  // Always on top
   mat.disableDepthWrite = true;
   mat.depthFunction = BABYLON.Constants.ALWAYS;
 
   fpArmMesh.material = mat;
-
   fpArmMesh.isPickable = false;
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // Never cull / always active
-  (fpArmMesh as any).isInFrustum = () => true;
-  (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
-  (fpArmMesh as any).infiniteDistance = true;
-
-  // Valid group
-  fpArmMesh.renderingGroupId = 3;
+  // IMPORTANT: group 0
+  fpArmMesh.renderingGroupId = 0;
   fpArmMesh.layerMask = 0xffffffff;
 
-  fpArmMesh.renderOutline = true;
-  fpArmMesh.outlineWidth = 0.06;
-  fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
+  (fpArmMesh as any).isInFrustum = () => true;
+  (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
 
   fpArmReady = true;
 
-  console.log("[FP] Arm created OK (TRUE-POSE WORLD-FOLLOW viewmodel)", {
+  console.log("[ARMDBG] Arm created (group 0)", {
     cam: cam.name,
     sceneUid: (scene as any).uid,
     camMask: (cam as any).layerMask,
-    minZ: (cam as any).minZ,
   });
-
-  debugArmStatus("created");
 }
 
-function updateFirstPersonArm(dtSec: number) {
+function applyForceRenderList(scene: BABYLON.Scene) {
+  const cam = scene.activeCamera as any;
+  if (!cam) return;
+
+  if (!FORCE_RENDERLIST_MODE) {
+    // Restore to default behaviour if toggled off
+    if ((cam as any).renderList && (cam as any).renderList.length) {
+      console.log("[ARMDBG] renderList cleared");
+    }
+    (cam as any).renderList = null;
+    return;
+  }
+
+  // Force camera to render ONLY these debug meshes in addition to normal scene
+  // Some pipelines treat renderList as exclusive; so we keep it minimal for debugging.
+  // If this makes world disappear, it confirms renderList is being used.
+  const list: BABYLON.AbstractMesh[] = [];
+  if (fpArmMesh) list.push(fpArmMesh);
+  if (fpDbgPlane) list.push(fpDbgPlane);
+
+  (cam as any).renderList = list;
+
+  // Ensure masks overlap
+  try { cam.layerMask = 0xffffffff; } catch {}
+
+  // Ensure camera is actually active
+  try { scene.activeCamera = cam; } catch {}
+}
+
+function updateArm(dtSec: number) {
   if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
 
   const scene = fpArmMesh.getScene();
-  const cam = getNoaCamera(scene) ?? scene.activeCamera;
+  const cam = (getNoaCamera(scene) ?? scene.activeCamera) as BABYLON.Camera | null;
   if (!cam) return;
 
   // Walk speed
@@ -664,14 +572,12 @@ function updateFirstPersonArm(dtSec: number) {
   armPunchVel *= Math.pow(0.02, dtSec);
   armPunch *= Math.pow(0.10, dtSec);
   armPunch = Math.min(1, armPunch);
-
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // TRUE camera pose from matrices
+  // TRUE pose
   const camPosTrue = getTrueCameraWorldPos(cam);
   const { forward, right, up } = getTrueCameraBasis(cam);
 
-  // Offsets
   const distFwd = 0.75 + punch01 * 0.20;
   const distRight = 0.45;
   const distUp = -0.35 + bob;
@@ -683,65 +589,69 @@ function updateFirstPersonArm(dtSec: number) {
 
   fpArmRoot.position.copyFrom(armPos);
 
-  // Match camera rotation using decomposed inverse view matrix
   if (!fpArmRoot.rotationQuaternion) fpArmRoot.rotationQuaternion = new BABYLON.Quaternion();
   fpArmRoot.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
 
-  // Animate mesh locally (swing)
-  const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
-  const swingZ = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
-  const swingY = punch01 * 0.15;
+  // local swing
+  fpArmMesh.rotation.x = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
+  fpArmMesh.rotation.y = punch01 * 0.15;
+  fpArmMesh.rotation.z = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
 
-  fpArmMesh.rotation.x = swingX;
-  fpArmMesh.rotation.y = swingY;
-  fpArmMesh.rotation.z = swingZ;
-
-  // Move debug plane to camera forward (TRUE-POSE world-follow)
+  // debug plane
   if (fpDbgPlane && !fpDbgPlane.isDisposed()) {
-    const dbgPos = camPosTrue.add(forward.scale(2.5));
-    fpDbgPlane.position.copyFrom(dbgPos);
-
+    fpDbgPlane.position.copyFrom(camPosTrue.add(forward.scale(2.5)));
     if (!fpDbgPlane.rotationQuaternion) fpDbgPlane.rotationQuaternion = new BABYLON.Quaternion();
     fpDbgPlane.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
   }
 
-  // One-time cam/arm position log
-  if ((updateFirstPersonArm as any)._logged !== true) {
-    (updateFirstPersonArm as any)._logged = true;
+  // one-time log
+  if ((updateArm as any)._logged !== true) {
+    (updateArm as any)._logged = true;
     console.log("[ARMDBG] camPos/trueCamPos/armPos", {
       camPos: cam.position.asArray(),
       trueCamPos: camPosTrue.asArray(),
       armPos: armPos.asArray(),
-    });
-  }
-
-  // Optional: spot-check every ~2 seconds in render loop
-  if ((updateFirstPersonArm as any)._t == null) (updateFirstPersonArm as any)._t = 0;
-  (updateFirstPersonArm as any)._t += dtSec;
-  if ((updateFirstPersonArm as any)._t > 2.0) {
-    (updateFirstPersonArm as any)._t = 0;
-    console.log("[ARMDBG] periodic pose", {
-      camPos: cam.position.asArray(),
-      trueCamPos: camPosTrue.asArray(),
-      fwd: forward.asArray(),
+      activeCamName: scene.activeCamera?.name ?? null,
+      camName: cam.name,
     });
   }
 }
 
-function hookArmToSceneRender(scene: BABYLON.Scene) {
+function logAllCameras(scene: BABYLON.Scene) {
+  const cams = scene.cameras ?? [];
+  const data = cams.map((c: any) => ({
+    name: c?.name ?? "unnamed",
+    type: c?.getClassName?.() ?? "Camera",
+    layerMask: c?.layerMask ?? null,
+    pos: c?.position?.asArray?.() ?? null,
+    isActive: scene.activeCamera === c,
+  }));
+  console.log("[ARMDBG] cameras:", data);
+}
+
+/* Render loop hook */
+function hookScene(scene: BABYLON.Scene) {
   if ((scene as any).__armHooked) return;
   (scene as any).__armHooked = true;
 
   scene.onBeforeRenderObservable.add(() => {
-    setupFirstPersonArm(scene);
-    updateFirstPersonArm(1 / 60);
+    // WHICH camera is actually active right now?
+    // If this changes, that's why you can't see the arm.
+    if ((hookScene as any)._lastCam !== scene.activeCamera) {
+      (hookScene as any)._lastCam = scene.activeCamera;
+      console.log("[ARMDBG] activeCamera changed ->", scene.activeCamera?.name);
+    }
+
+    setupArm(scene);
+    updateArm(1 / 60);
+    applyForceRenderList(scene);
   });
 
   console.log("[FP] hooked arm to scene render loop", (scene as any).uid);
 }
 
 /* ===============================
-   12. Remote Player Rendering (NOA Entities + Mesh Component)
+   12. Remote Player Rendering
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -783,7 +693,7 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   mesh.material = makeRemoteMaterial(scene, id);
 
   const cam = scene.activeCamera;
-  if (cam && typeof cam.layerMask === "number") mesh.layerMask = cam.layerMask;
+  if (cam && typeof (cam as any).layerMask === "number") mesh.layerMask = (cam as any).layerMask;
   else mesh.layerMask = 0xffffffff;
 
   mesh.setEnabled(true);
@@ -791,7 +701,7 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   mesh.visibility = 1;
   mesh.isPickable = false;
   mesh.checkCollisions = false;
-  mesh.renderingGroupId = 1;
+  mesh.renderingGroupId = 0;
 
   let eid: number | null = null;
   try {
@@ -818,9 +728,7 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   } catch (e) {
     console.warn("[RENDER] Failed to add mesh component to NOA entity", id, e);
     mesh.dispose();
-    try {
-      (noa as any).ents.removeEntity?.(eid);
-    } catch {}
+    try { (noa as any).ents.removeEntity?.(eid); } catch {}
     return null;
   }
 
@@ -836,24 +744,20 @@ function removeRemote(id: string) {
 
   const eid = remoteEnts.get(id);
   if (eid != null) {
-    try {
-      (noa as any).ents.removeEntity?.(eid);
-    } catch {}
+    try { (noa as any).ents.removeEntity?.(eid); } catch {}
     remoteEnts.delete(id);
   }
 
   const mesh = remoteMeshes.get(id);
   if (mesh) {
-    try {
-      mesh.dispose();
-    } catch {}
+    try { mesh.dispose(); } catch {}
     remoteMeshes.delete(id);
   }
 }
 
 function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
   const scene = mesh.getScene();
-  const cam = scene.activeCamera as any;
+  const cam = (scene.activeCamera ?? null) as any;
   if (!cam) return;
 
   const camPosTrue = getTrueCameraWorldPos(cam as any);
@@ -878,33 +782,18 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
 
     if (pinRemoteMarkerInFront) {
       forceRemoteInFrontOfCamera(mesh);
-
-      // (debug only) keep NOA entity near camera
-      const scene = mesh.getScene();
-      const cam = (getNoaCamera(scene) ?? scene.activeCamera) as any;
-      if (cam) {
-        const camPosTrue = getTrueCameraWorldPos(cam);
-        try {
-          (noa as any).ents.setPosition(eid, [camPosTrue.x, camPosTrue.y, camPosTrue.z]);
-        } catch {}
-      }
       continue;
     }
 
-    try {
-      (noa as any).ents.setPosition(eid, [t.x, t.y + 6.0, t.z]);
-    } catch {}
-
+    try { (noa as any).ents.setPosition(eid, [t.x, t.y + 6.0, t.z]); } catch {}
     if (typeof t.yaw === "number") {
-      try {
-        mesh.rotation.y = t.yaw;
-      } catch {}
+      try { mesh.rotation.y = t.yaw; } catch {}
     }
   }
 });
 
 /* ===============================
-   13. Networking (Connect & Debug)
+   13. Networking
 ================================ */
 function normId(p: any): string | null {
   if (!p) return null;
@@ -961,7 +850,6 @@ async function connect() {
 
     room.onMessage("playerJoined", (p: any) => {
       console.log("[NET] playerJoined:", p);
-
       const id = normId(p);
       if (!id || id === room!.sessionId) return;
 
@@ -995,7 +883,6 @@ async function connect() {
     room.onMessage("playersSnapshot", (players: any) => {
       const len = Array.isArray(players) ? players.length : 0;
       console.log("[NET] playersSnapshot:", len, players);
-
       if (!Array.isArray(players)) return;
 
       for (const p of players) {
@@ -1038,7 +925,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   14. Tick: local move send + arm debug + overlay
+   14. Tick loop
 ================================ */
 let tickCount = 0;
 let debugTick = 0;
@@ -1053,7 +940,7 @@ let lastTickMs = performance.now();
   lastTickMs = now;
 
   const scene = getStableScene();
-  if (scene) hookArmToSceneRender(scene);
+  if (scene) hookScene(scene);
 
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
@@ -1061,20 +948,22 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  if (debugTick % 30 === 0 && showExtraDebugOverlay) {
-    const pos = noa.ents.getPosition(noa.playerEntity);
-
-    const line =
-      `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
-      `Arm=${fpArmReady ? "YES" : "NO"} | ` +
-      `ArmScene=${fpArmSceneUid ?? "null"} | ` +
-      `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"}`;
-
-    updateOverlay(line);
-
-    debugArmStatus("tick");
+  if (scene && debugTick % 60 === 0) {
+    logAllCameras(scene);
   }
 
-  // keep arm animation state correct even if render loop dt differs
-  updateFirstPersonArm(dtSec);
+  if (debugTick % 30 === 0 && showExtraDebugOverlay) {
+    const pos = noa.ents.getPosition(noa.playerEntity);
+    const cam = scene ? (getNoaCamera(scene) ?? scene.activeCamera) : null;
+    const truePos = cam ? getTrueCameraWorldPos(cam).asArray() : null;
+
+    updateOverlay(
+      `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
+      `Scene=${scene ? String((scene as any).uid) : "null"} | ` +
+      `activeCam=${scene?.activeCamera?.name ?? "none"} | ` +
+      `trueCamPos=${truePos ? `(${truePos[0].toFixed(2)},${truePos[1].toFixed(2)},${truePos[2].toFixed(2)})` : "null"}`
+    );
+  }
+
+  updateArm(dtSec);
 });
