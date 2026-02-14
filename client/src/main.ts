@@ -4,8 +4,12 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players rendered via visible Babylon avatars
+ * - Remote players rendered via NOA entities + Babylon mesh component (carrier mesh)
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
+ *
+ * Why vmScene?
+ * NOA's render pipeline ignores arbitrary meshes added to its world scene.
+ * vmScene is rendered AFTER NOA each frame via engine.onEndFrameObservable.
  *
  * Controls:
  * - V toggles viewmodel overlay scene ON/OFF
@@ -19,9 +23,12 @@
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
  *
- * CHUNK APPLY FIX (critical):
- * - Server may send voxels as number[] OR Uint8Array/Buffer/TypedArray/ArrayBuffer
- * - This client accepts all of those.
+ * Critical fixes in this version:
+ * 1) Chunk apply accepts number[] OR Uint8Array/Buffer/TypedArray/ArrayBuffer
+ *    (otherwise you see only sky because chunks are discarded)
+ * 2) Remote player attachment: NOA mesh component requires a BABYLON.Mesh.
+ *    We attach an invisible carrier MESH, and parent the avatar under it.
+ *    (prevents Babylon crash: _currentLODIsUpToDate)
  */
 
 import { Engine } from "noa-engine";
@@ -147,9 +154,9 @@ let viewModelEnabled = true;
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
-let vmDebug = true;
-let vmTuning = false;
-let vmMirrorX = true;
+let vmDebug = true; // B
+let vmTuning = false; // N
+let vmMirrorX = true; // M
 
 let vmBaseXMul = 0.74;
 let vmBaseY = -0.68;
@@ -300,7 +307,6 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-// Type guard for TypedArray-like objects
 type TypedArrayLike = {
   buffer: ArrayBufferLike;
   byteOffset: number;
@@ -327,7 +333,6 @@ function toNumberArrayVoxels(v: unknown): number[] | null {
     return out;
   }
 
-  // Uint8Array / Buffer / any TypedArray
   if (isTypedArrayLike(v)) {
     const u8 = new Uint8Array(v.buffer as ArrayBuffer, v.byteOffset, v.byteLength);
     const out = new Array<number>(u8.length);
@@ -335,7 +340,6 @@ function toNumberArrayVoxels(v: unknown): number[] | null {
     return out;
   }
 
-  // raw ArrayBuffer
   if (v instanceof ArrayBuffer) {
     const u8 = new Uint8Array(v);
     const out = new Array<number>(u8.length);
@@ -396,6 +400,7 @@ function getTargetInfo() {
   };
 }
 
+/* ---- Viewmodel punch (time-based, deterministic) ---- */
 let punchT = 1;
 function triggerPunch() {
   punchT = 0;
@@ -475,6 +480,7 @@ let vmArmRoot: BABYLON.TransformNode | null = null;
 
 let vmEngineHooked = false;
 
+// Debug meshes
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
@@ -712,13 +718,16 @@ function updateViewmodel(dtSec: number) {
 }
 
 /* ===============================
-   11. Remote Player Rendering (VISIBLE AVATARS)
+   11. Remote Player Rendering
+   - Attach a BABYLON.Mesh carrier to NOA mesh component (required)
+   - Parent the visible avatar under the carrier mesh
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
 const remoteEnts = new Map<string, number>();
-const remoteRoots = new Map<string, BABYLON.TransformNode>();
+const remoteCarrierMeshes = new Map<string, BABYLON.Mesh>();
+const remoteAvatarRoots = new Map<string, BABYLON.TransformNode>();
 
 function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
@@ -732,28 +741,16 @@ function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardM
   return mat;
 }
 
-function tryAttachToNoaEntity(eid: number, meshRoot: BABYLON.TransformNode): boolean {
-  try {
-    const names = (noa as any).ents?.names;
-    const meshName = names?.mesh ?? names?.render ?? "mesh";
-    (noa as any).ents.addComponent(eid, meshName, { mesh: meshRoot, offset: [0, 0, 0] });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function createRemoteAvatar(scene: BABYLON.Scene, id: string) {
-  const root = new BABYLON.TransformNode(`remoteRoot:${id}`, scene);
+function createRemoteAvatar(scene: BABYLON.Scene, id: string, parent: BABYLON.TransformNode) {
   const mat = makeRemoteMaterial(scene, id);
 
   const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, scene);
-  body.parent = root;
+  body.parent = parent;
   body.position.y = 0.6;
   body.material = mat;
 
   const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: 0.55, height: 0.55, depth: 0.55 }, scene);
-  head.parent = root;
+  head.parent = parent;
   head.position.y = 1.45;
   head.material = mat;
 
@@ -770,21 +767,39 @@ function createRemoteAvatar(scene: BABYLON.Scene, id: string) {
     (m as any).isInFrustum = () => true;
   }
 
-  root.setEnabled(true);
-  return root;
+  return { body, head, nose };
 }
 
-function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.TransformNode } | null {
-  const existingRoot = remoteRoots.get(id);
-  if (existingRoot) return { eid: remoteEnts.get(id) ?? null, root: existingRoot };
+function ensureRemoteEntity(id: string): { eid: number; carrier: BABYLON.Mesh; avatarRoot: BABYLON.TransformNode } | null {
+  const existingEid = remoteEnts.get(id);
+  const existingCarrier = remoteCarrierMeshes.get(id);
+  const existingRoot = remoteAvatarRoots.get(id);
+
+  if (existingEid != null && existingCarrier && existingRoot) {
+    return { eid: existingEid, carrier: existingCarrier, avatarRoot: existingRoot };
+  }
 
   const scene = getStableScene();
   if (!scene) return null;
 
-  const root = createRemoteAvatar(scene, id);
+  // Create an invisible carrier MESH (THIS is what NOA attaches)
+  const carrier = BABYLON.MeshBuilder.CreateBox(`remoteCarrier:${id}`, { size: 0.001 }, scene);
+  carrier.isVisible = false;
+  carrier.visibility = 0;
+  carrier.isPickable = false;
+  carrier.checkCollisions = false;
+  carrier.layerMask = 0xffffffff;
+  carrier.renderingGroupId = 2;
+  (carrier as any).isInFrustum = () => true;
 
+  // Visible avatar root (TransformNode) parented to carrier mesh
+  const avatarRoot = new BABYLON.TransformNode(`remoteAvatarRoot:${id}`, scene);
+  avatarRoot.parent = carrier;
+
+  createRemoteAvatar(scene, id, avatarRoot);
+
+  // Create NOA entity
   let eid: number | null = null;
-
   try {
     const maybe = (noa as any).ents.add?.([0, 0, 0], 1, 2);
     if (typeof maybe === "number") eid = maybe;
@@ -797,19 +812,34 @@ function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.Tra
     } catch {}
   }
 
-  if (eid != null) {
-    const attached = tryAttachToNoaEntity(eid, root);
-    if (attached) remoteEnts.set(id, eid);
-    else {
-      try {
-        (noa as any).ents.removeEntity?.(eid);
-      } catch {}
-      eid = null;
-    }
+  if (eid == null) {
+    carrier.dispose();
+    try {
+      avatarRoot.dispose();
+    } catch {}
+    return null;
   }
 
-  remoteRoots.set(id, root);
-  return { eid, root };
+  // Attach carrier mesh to NOA mesh component (MUST be a BABYLON.Mesh)
+  try {
+    const meshName = (noa as any).ents?.names?.mesh ?? "mesh";
+    (noa as any).ents.addComponent(eid, meshName, { mesh: carrier, offset: [0, 0, 0] });
+  } catch {
+    carrier.dispose();
+    try {
+      avatarRoot.dispose();
+    } catch {}
+    try {
+      (noa as any).ents.removeEntity?.(eid);
+    } catch {}
+    return null;
+  }
+
+  remoteEnts.set(id, eid);
+  remoteCarrierMeshes.set(id, carrier);
+  remoteAvatarRoots.set(id, avatarRoot);
+
+  return { eid, carrier, avatarRoot };
 }
 
 function removeRemote(id: string) {
@@ -823,12 +853,20 @@ function removeRemote(id: string) {
     remoteEnts.delete(id);
   }
 
-  const root = remoteRoots.get(id);
+  const carrier = remoteCarrierMeshes.get(id);
+  if (carrier) {
+    try {
+      carrier.dispose();
+    } catch {}
+    remoteCarrierMeshes.delete(id);
+  }
+
+  const root = remoteAvatarRoots.get(id);
   if (root) {
     try {
       root.dispose();
     } catch {}
-    remoteRoots.delete(id);
+    remoteAvatarRoots.delete(id);
   }
 }
 
@@ -841,24 +879,16 @@ function removeRemote(id: string) {
     const created = ensureRemoteEntity(id);
     if (!created) continue;
 
-    const { eid, root } = created;
+    const { eid, avatarRoot } = created;
 
-    const px = t.x;
-    const py = t.y;
-    const pz = t.z;
+    // Set NOA entity pos; carrier follows because it's attached to entity
+    try {
+      (noa as any).ents.setPosition(eid, [t.x, t.y, t.z]);
+    } catch {}
 
-    if (eid != null) {
-      try {
-        (noa as any).ents.setPosition(eid, [px, py, pz]);
-      } catch {
-        root.position.set(px, py, pz);
-      }
-    } else {
-      root.position.set(px, py, pz);
-    }
-
+    // rotate the visible root (yaw)
     if (typeof t.yaw === "number") {
-      root.rotation.y = t.yaw;
+      avatarRoot.rotation.y = t.yaw;
     }
   }
 });
