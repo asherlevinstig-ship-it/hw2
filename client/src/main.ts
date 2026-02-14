@@ -535,6 +535,13 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   vmScene = new BABYLON.Scene(engine);
 
+  // ✅ CRITICAL: match NOA scene handedness (fixes "remotes not visible" in split scenes)
+  vmScene.useRightHandedSystem = noaScene.useRightHandedSystem;
+
+  console.log("[VM] ensureVmScene", {
+    useRightHandedSystem: vmScene.useRightHandedSystem,
+  });
+
   // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
@@ -795,6 +802,13 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   rpScene = new BABYLON.Scene(engine);
 
+  // ✅ CRITICAL: match NOA scene handedness (fixes "remotes not visible" in split scenes)
+  rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
+
+  console.log("[RP] ensureRpScene", {
+    useRightHandedSystem: rpScene.useRightHandedSystem,
+  });
+
   // DO NOT clear color (keep world).
   // Depth/stencil behavior:
   // - If xray ON: we clear depth and force ALWAYS so remotes draw on top.
@@ -872,6 +886,8 @@ function removeRemoteMesh(id: string) {
   }
 }
 
+let lastRpCamLogAt = 0;
+
 function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (!rpReady || !rpScene || !rpCam) return;
 
@@ -884,20 +900,21 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   // Copy FOV/aspect-ish (FreeCamera will use engine aspect automatically)
   if (typeof (worldCam as any).fov === "number") (rpCam as any).fov = (worldCam as any).fov;
 
+  // Copy fovMode too (some cams use vertical/horizontal fov mode)
+  if (typeof (worldCam as any).fovMode === "number") (rpCam as any).fovMode = (worldCam as any).fovMode;
+
   // Copy clipping
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
   // Position: use global position if available
-// Position: use global position if available
-const gp = (worldCam as any).globalPosition as BABYLON.Vector3 | undefined;
-if (gp instanceof BABYLON.Vector3) {
-  rpCam.position.copyFrom(gp);
-} else {
-  const wp = (worldCam as any).position as BABYLON.Vector3 | undefined;
-  if (wp instanceof BABYLON.Vector3) rpCam.position.copyFrom(wp);
-}
-
+  const gp = (worldCam as any).globalPosition as BABYLON.Vector3 | undefined;
+  if (gp instanceof BABYLON.Vector3) {
+    rpCam.position.copyFrom(gp);
+  } else {
+    const wp = (worldCam as any).position as BABYLON.Vector3 | undefined;
+    if (wp instanceof BABYLON.Vector3) rpCam.position.copyFrom(wp);
+  }
 
   // Rotation: prefer quaternion
   const rq = (worldCam as any).rotationQuaternion as BABYLON.Quaternion | null | undefined;
@@ -924,6 +941,20 @@ if (gp instanceof BABYLON.Vector3) {
       mat.disableDepthWrite = false;
       mat.depthFunction = BABYLON.Constants.LESS;
     }
+  }
+
+  // ✅ Console debug log (throttled)
+  const now = performance.now();
+  if (now - lastRpCamLogAt > 1500) {
+    lastRpCamLogAt = now;
+
+    const p = rpCam.position;
+    console.log("[RP] cam sync", {
+      handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
+      xray: remoteXray,
+      camPos: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
+      hasWorldQuat: !!rq,
+    });
   }
 }
 
@@ -970,6 +1001,8 @@ async function connect() {
     room = await colyseus.joinOrCreate("my_room");
     (globalThis as any).room = room;
 
+    console.log("[NET] joined room", { sessionId: room.sessionId });
+
     updateOverlay();
 
     // Flush queued chunk requests
@@ -1001,6 +1034,7 @@ async function connect() {
       }
 
       lastTransformAt = performance.now();
+      console.log("[NET] existingPlayers", { count: netTransforms.size });
       updateOverlay("existingPlayers received");
     });
 
@@ -1016,6 +1050,7 @@ async function connect() {
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
 
       lastTransformAt = performance.now();
+      console.log("[NET] playerJoined", { id, x, y, z });
       updateOverlay(`playerJoined: ${id}`);
     });
 
@@ -1027,6 +1062,7 @@ async function connect() {
       removeRemoteMesh(id);
 
       lastTransformAt = performance.now();
+      console.log("[NET] playerLeft", { id });
       updateOverlay(`playerLeft: ${id}`);
     });
 
@@ -1077,6 +1113,7 @@ async function connect() {
       } catch {}
 
       canSendMoves = true;
+      console.log("[NET] youJoined spawn", { x, y, z });
       updateOverlay("Spawn synced.");
     });
   } catch (e) {
