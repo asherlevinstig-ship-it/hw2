@@ -1,516 +1,380 @@
-/* ============================================================================
-   main.ts (FULL, NO OMITS) - TypeScript-safe noa-engine + Babylon + multiplayer
-   Fixes:
-    - window.BABYLON typing
-    - socket typing / destructure typing
-    - noa-engine "no call signatures" typings mismatch
-    - implicit any everywhere
-    - noa v0.33 camera heading/pitch migration
-    - TS2367 pointerLockElement vs HTMLCanvasElement comparison
-============================================================================ */
+/* client/src/main.ts
+ * FULL FILE - paste exactly as-is
+ */
 
-import * as BABYLON from "@babylonjs/core";
-// import "@babylonjs/loaders"; // enable if you load .glb/.gltf/etc
-import * as NoaImport from "noa-engine";
+import { Client, Room } from "@colyseus/sdk";
+import * as BABYLON from "@babylonjs/core/Legacy/legacy";
+import * as NoaModule from "noa-engine";
 
-/* -------------------------------------------------------------------------- */
-/* Global window augmentation for BABYLON                                      */
-/* -------------------------------------------------------------------------- */
+type Vec3 = { x: number; y: number; z: number };
+
+type WorldDataNeededMsg = {
+  chunkSize: number;
+  coords: { x: number; y: number; z: number } | Record<string, unknown>;
+};
+
+type ChunkDataMsg = {
+  coords: { x: number; y: number; z: number } | Record<string, unknown>;
+  voxels: number[] | Uint8Array | string;
+  palette?: number[];
+};
+
+type YouJoinedMsg = { id: string };
+type PlayerJoinedMsg = { id: string; position?: Vec3 };
+type PlayerLeftMsg = { id: string };
+type PlayerUpdateMsg = { id: string; position: Vec3; heading?: number; pitch?: number };
+
 declare global {
   interface Window {
-    BABYLON: typeof BABYLON;
+    BABYLON?: typeof BABYLON;
   }
 }
-window.BABYLON = BABYLON;
 
-/* -------------------------------------------------------------------------- */
-/* Minimal socket interface                                                    */
-/* -------------------------------------------------------------------------- */
-export type Handler<T = unknown> = (data: T) => void;
+void (async function boot(): Promise<void> {
+  try {
+    // expose BABYLON global for any code that expects it
+    window.BABYLON = BABYLON;
 
-export interface SocketLike {
-  on<T = unknown>(event: string, fn: Handler<T>): void;
-  emit<T = unknown>(event: string, payload: T): void;
-}
+    const canvas = ensureCanvas();
 
-/* -------------------------------------------------------------------------- */
-/* Player state types                                                         */
-/* -------------------------------------------------------------------------- */
-export type Vec3 = [number, number, number];
+    const endpoint =
+      (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_COLYSEUS_ENDPOINT ||
+      `${location.protocol}//${location.hostname}:2567`;
 
-export interface NetPlayerState {
-  id: string;
-  position: Vec3;
-  heading?: number;
-  pitch?: number;
-}
+    const client = new Client(endpoint);
 
-export interface JoinedPayload {
-  id: string;
-  players: NetPlayerState[];
-}
+    // Change "world" if your room name differs
+    const room = await joinRoom(client, "world");
 
-/* -------------------------------------------------------------------------- */
-/* Start options                                                              */
-/* -------------------------------------------------------------------------- */
-export interface StartClientOptions {
-  canvas?: HTMLCanvasElement | null;
-  socket: SocketLike;
-}
+    console.log("✅ Joined room successfully");
 
-/* -------------------------------------------------------------------------- */
-/* noa minimal typing (only what we use)                                      */
-/* -------------------------------------------------------------------------- */
-type NoaLike = {
-  debug?: boolean;
-  world: {
-    chunkSize: number;
-    on: (
-      event: "worldDataNeeded",
-      fn: (
-        id: [number, number, number],
-        data: Uint16Array,
-        done: (err: unknown, data?: Uint16Array) => void
-      ) => void
-    ) => void;
-    getBlockID: (x: number, y: number, z: number) => number;
-  };
-  registry: {
-    registerBlock: (
-      id: number,
-      opts: { name: string; solid: boolean; opaque: boolean }
-    ) => void;
-  };
-  playerEntity: {
-    position: {
-      set: (x: number, y: number, z: number) => void;
-      [i: number]: number;
-    };
-  };
-  camera: {
-    heading: number;
-    pitch: number;
-  };
-  entities: {
-    getPhysicsBody: (ent: unknown) => { velocity: [number, number, number] } | null;
-  };
-  rendering: {
-    getScene: () => BABYLON.Scene;
-  };
-  on: (event: "tick", fn: (dt: number) => void) => void;
-};
+    const noa = createNoaEngine({ canvas });
 
-/* -------------------------------------------------------------------------- */
-/* Config                                                                     */
-/* -------------------------------------------------------------------------- */
-const CONFIG = {
-  chunkSize: 24,
-  player: {
-    height: 1.8,
-    width: 0.6,
-    depth: 0.6,
-    moveSpeed: 6.0,
-    jumpImpulse: 7.0,
-  },
-  mouse: {
-    sensitivity: 0.002,
-    maxPitch: Math.PI / 2 - 0.01,
-  },
-  avatar: {
-    size: { w: 0.6, h: 1.8, d: 0.6 },
-    yOffset: 0.9,
-  },
-};
+    ensureBasicLighting(noa);
+    keepCanvasSized(noa, canvas);
 
-/* -------------------------------------------------------------------------- */
-/* Helper: create noa instance (TS-safe)                                      */
-/* -------------------------------------------------------------------------- */
-function createNoaInstance(opts: {
-  canvas: HTMLCanvasElement;
-  debug: boolean;
-  chunkSize: number;
-  playerHeight: number;
-  playerWidth: number;
-  playerDepth: number;
-}): NoaLike {
-  const anyImport = NoaImport as unknown as { default?: unknown } & Record<string, unknown>;
-  const maybeDefault = anyImport.default;
+    const avatars = new Map<string, BABYLON.TransformNode>();
 
-  const candidate =
-    (typeof maybeDefault === "function" ? maybeDefault : null) ??
-    (typeof (NoaImport as unknown) === "function" ? (NoaImport as unknown) : null);
+    setupWorldStreaming(noa, room);
+    setupPlayerNetworking(noa, room, avatars);
+    setupLocalControls(noa, room);
 
-  if (typeof candidate !== "function") {
-    return (NoaImport as any)(opts) as NoaLike;
+    console.log("✅ Client booted", { endpoint });
+  } catch (err) {
+    console.error("❌ Boot error:", err);
+    showFatalOverlay(err);
+  }
+})();
+
+/* ----------------------------- */
+/* Canvas helpers */
+/* ----------------------------- */
+
+function ensureCanvas(): HTMLCanvasElement {
+  const existing = document.querySelector("canvas#game") as HTMLCanvasElement | null;
+  if (existing) {
+    sizeCanvas(existing);
+    window.addEventListener("resize", () => sizeCanvas(existing));
+    return existing;
   }
 
-  return (candidate as any)(opts) as NoaLike;
+  const canvas = document.createElement("canvas");
+  canvas.id = "game";
+  canvas.style.position = "fixed";
+  canvas.style.left = "0";
+  canvas.style.top = "0";
+  canvas.style.width = "100vw";
+  canvas.style.height = "100vh";
+  canvas.style.display = "block";
+  canvas.style.background = "#000";
+
+  document.body.style.margin = "0";
+  document.body.appendChild(canvas);
+
+  sizeCanvas(canvas);
+  window.addEventListener("resize", () => sizeCanvas(canvas));
+
+  return canvas;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Pointer lock helper (fixes TS2367)                                         */
-/* -------------------------------------------------------------------------- */
-function isPointerLockedTo(canvas: HTMLCanvasElement): boolean {
-  const el = document.pointerLockElement;
-  if (!el) return false;
-  // compare as Element to satisfy TS, while still correct at runtime
-  return el === (canvas as unknown as Element);
+function sizeCanvas(canvas: HTMLCanvasElement): void {
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Public entry                                                               */
-/* -------------------------------------------------------------------------- */
-export function startClient(options: StartClientOptions): {
-  noa: NoaLike;
-  socket: SocketLike;
-  avatars: AvatarManager;
-  controls: ControlsHandle;
-} {
-  const canvas =
-    options.canvas ??
-    (document.getElementById("renderCanvas") as HTMLCanvasElement | null);
+/* ----------------------------- */
+/* Colyseus helpers */
+/* ----------------------------- */
 
-  if (!canvas) {
-    throw new Error("No canvas found. Provide options.canvas or an element with id='renderCanvas'.");
+async function joinRoom(client: Client, roomName: string): Promise<Room> {
+  try {
+    const room = await client.joinOrCreate(roomName);
+    return room;
+  } catch (e) {
+    console.warn(`⚠️ joinOrCreate("${roomName}") failed, trying join("${roomName}")...`, e);
+    const room = await client.join(roomName);
+    return room;
+  }
+}
+
+/* ----------------------------- */
+/* noa-engine creation */
+/* ----------------------------- */
+
+function createNoaEngine(opts: { canvas: HTMLCanvasElement }): any {
+  const modAny = NoaModule as unknown as Record<string, unknown>;
+
+  const createNoa =
+    (modAny.default as unknown as ((o: unknown) => any) | undefined) ??
+    (modAny as unknown as (o: unknown) => any);
+
+  if (typeof createNoa !== "function") {
+    throw new Error("noa-engine import is not callable. Check noa-engine version/bundler.");
   }
 
-  const socket = options.socket;
-  if (!socket) throw new Error("No socket provided.");
-
-  const noa = createNoaInstance({
-    canvas,
+  const noa = createNoa({
     debug: true,
-    chunkSize: CONFIG.chunkSize,
-    playerHeight: CONFIG.player.height,
-    playerWidth: CONFIG.player.width,
-    playerDepth: CONFIG.player.depth,
+    canvas: opts.canvas,
+    showFPS: true,
   });
 
-  setupWorld(noa);
-  const controls = setupControls(noa, canvas);
-  const avatars = createAvatarManager(noa);
+  // Click to pointer-lock (optional)
+  opts.canvas.addEventListener("click", () => {
+    opts.canvas.requestPointerLock?.();
+  });
 
-  setupNetworking({ noa, socket, avatars, controls });
-
-  return { noa, socket, avatars, controls };
+  return noa;
 }
 
-/* -------------------------------------------------------------------------- */
-/* World setup                                                                */
-/* -------------------------------------------------------------------------- */
-function setupWorld(noa: NoaLike): void {
-  const AIR = 0;
-  const GRASS = 1;
-  const DIRT = 2;
+/* ----------------------------- */
+/* Rendering / lighting safety */
+/* ----------------------------- */
 
-  noa.registry.registerBlock(AIR, { name: "air", solid: false, opaque: false });
-  noa.registry.registerBlock(GRASS, { name: "grass", solid: true, opaque: true });
-  noa.registry.registerBlock(DIRT, { name: "dirt", solid: true, opaque: true });
+function ensureBasicLighting(noa: any): void {
+  const scene: BABYLON.Scene | undefined =
+    (noa?.rendering?.getScene?.() as BABYLON.Scene | undefined) ||
+    (noa?.rendering?._scene as BABYLON.Scene | undefined);
 
-  noa.world.on("worldDataNeeded", (id, data, done) => {
-    const cy = id[1];
-    const size = noa.world.chunkSize;
+  if (!scene) {
+    console.warn("⚠️ Babylon scene not found on noa.rendering.");
+    return;
+  }
 
-    const setVoxel = (x: number, y: number, z: number, v: number): void => {
-      const idx = x + size * (y + size * z);
-      data[idx] = v;
+  const hasLight = Array.isArray(scene.lights) && scene.lights.length > 0;
+  if (!hasLight) {
+    const hemi = new BABYLON.HemisphericLight(
+      "hemi",
+      new BABYLON.Vector3(0.2, 1, 0.2),
+      scene
+    );
+    hemi.intensity = 0.9;
+
+    const dir = new BABYLON.DirectionalLight(
+      "dir",
+      new BABYLON.Vector3(-0.4, -1, -0.2),
+      scene
+    );
+    dir.intensity = 0.6;
+  }
+}
+
+function keepCanvasSized(noa: any, canvas: HTMLCanvasElement): void {
+  window.addEventListener("resize", () => {
+    sizeCanvas(canvas);
+    try {
+      noa?.rendering?.resize?.();
+    } catch {
+      // ignore
+    }
+  });
+}
+
+/* ----------------------------- */
+/* World streaming */
+/* ----------------------------- */
+
+function setupWorldStreaming(noa: any, room: Room): void {
+  noa.world?.on?.("worldDataNeeded", (chunk: unknown) => {
+    const cAny = chunk as Record<string, unknown>;
+    const msg: WorldDataNeededMsg = {
+      chunkSize: (cAny.chunkSize as number) ?? 24,
+      coords: (cAny.coords as any) ?? { x: 0, y: 0, z: 0 },
     };
 
-    for (let x = 0; x < size; x++) {
-      for (let z = 0; z < size; z++) {
-        for (let y = 0; y < size; y++) {
-          const worldY = cy * size + y;
+    room.send("worldDataNeeded", msg);
+  });
 
-          if (worldY < 0) setVoxel(x, y, z, DIRT);
-          else if (worldY === 0) setVoxel(x, y, z, GRASS);
-          else setVoxel(x, y, z, AIR);
-        }
+  room.onMessage("chunkData", (data: ChunkDataMsg) => {
+    applyChunkToNoa(noa, data);
+  });
+
+  room.onMessage("worldData", (data: ChunkDataMsg) => {
+    applyChunkToNoa(noa, data);
+  });
+}
+
+function applyChunkToNoa(noa: any, data: ChunkDataMsg): void {
+  try {
+    const coords = data.coords as any;
+
+    if (typeof noa.world?.setChunkData === "function") {
+      noa.world.setChunkData(coords, data.voxels);
+      return;
+    }
+
+    console.warn("⚠️ Received chunk data but noa.world.setChunkData is missing.", data);
+  } catch (e) {
+    console.error("❌ Failed applying chunk:", e, data);
+  }
+}
+
+/* ----------------------------- */
+/* Player networking / avatars */
+/* ----------------------------- */
+
+function setupPlayerNetworking(
+  noa: any,
+  room: Room,
+  avatars: Map<string, BABYLON.TransformNode>
+): void {
+  let myId: string | null = null;
+
+  room.onMessage("youJoined", (msg: YouJoinedMsg) => {
+    myId = msg.id;
+    console.log("🟦 youJoined:", msg);
+  });
+
+  room.onMessage("existingPlayers", (players: PlayerJoinedMsg[]) => {
+    console.log("👋 Existing players:", players);
+    for (const p of players) {
+      if (!avatars.has(p.id)) {
+        avatars.set(p.id, createAvatar(noa, p.id, p.position));
       }
     }
-
-    done(null, data);
   });
 
-  noa.playerEntity.position.set(0, 4, 0);
+  room.onMessage("playerJoined", (p: PlayerJoinedMsg) => {
+    if (avatars.has(p.id)) return;
+    avatars.set(p.id, createAvatar(noa, p.id, p.position));
+  });
+
+  room.onMessage("playerLeft", (p: PlayerLeftMsg) => {
+    const node = avatars.get(p.id);
+    if (node) node.dispose();
+    avatars.delete(p.id);
+  });
+
+  room.onMessage("playerUpdate", (u: PlayerUpdateMsg) => {
+    if (myId && u.id === myId) return;
+
+    const node = avatars.get(u.id);
+    if (!node) return;
+
+    node.position.set(u.position.x, u.position.y, u.position.z);
+
+    if (typeof u.heading === "number") node.rotation.y = u.heading;
+    if (typeof u.pitch === "number") node.rotation.x = u.pitch;
+  });
 }
 
-/* -------------------------------------------------------------------------- */
-/* Controls + camera (noa v0.33 uses heading/pitch)                           */
-/* -------------------------------------------------------------------------- */
-type ControlsHandle = { readonly heading: number; readonly pitch: number };
+function createAvatar(noa: any, id: string, pos?: Vec3): BABYLON.TransformNode {
+  const scene: BABYLON.Scene | undefined =
+    (noa?.rendering?.getScene?.() as BABYLON.Scene | undefined) ||
+    (noa?.rendering?._scene as BABYLON.Scene | undefined);
 
-function setupControls(noa: NoaLike, canvas: HTMLCanvasElement): ControlsHandle {
-  canvas.addEventListener("click", () => {
-    if (!isPointerLockedTo(canvas)) {
-      canvas.requestPointerLock?.();
-    }
-  });
+  if (!scene) {
+    throw new Error("Babylon scene not available. Cannot create avatar.");
+  }
 
-  let yaw = noa.camera.heading ?? 0;
-  let pitch = noa.camera.pitch ?? 0;
+  const root = new BABYLON.TransformNode(`avatar:${id}`, scene);
+  root.position.set(pos?.x ?? 0, pos?.y ?? 2, pos?.z ?? 0);
 
-  const keys = {
-    forward: false,
-    back: false,
-    left: false,
-    right: false,
-    jump: false,
-  };
+  const body = BABYLON.MeshBuilder.CreateBox(
+    `avatarBody:${id}`,
+    { width: 0.8, height: 1.6, depth: 0.8 },
+    scene
+  );
+  body.parent = root;
+  body.position.y = 0.8;
 
-  const setKey = (code: string, isDown: boolean): void => {
-    switch (code) {
-      case "KeyW":
-        keys.forward = isDown;
-        break;
-      case "KeyS":
-        keys.back = isDown;
-        break;
-      case "KeyA":
-        keys.left = isDown;
-        break;
-      case "KeyD":
-        keys.right = isDown;
-        break;
-      case "Space":
-        keys.jump = isDown;
-        break;
-      default:
-        break;
-    }
-  };
+  return root;
+}
 
-  window.addEventListener("keydown", (e: KeyboardEvent) => setKey(e.code, true));
-  window.addEventListener("keyup", (e: KeyboardEvent) => setKey(e.code, false));
+/* ----------------------------- */
+/* Local controls */
+/* ----------------------------- */
+
+function setupLocalControls(noa: any, room: Room): void {
+  const keys = new Set<string>();
+
+  window.addEventListener("keydown", (e: KeyboardEvent) => keys.add(e.code));
+  window.addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.code));
 
   window.addEventListener("mousemove", (e: MouseEvent) => {
-    if (!isPointerLockedTo(canvas)) return;
+    const canvasEl = (noa?.rendering?.canvas as Element | undefined) ?? null;
+    if (document.pointerLockElement !== canvasEl) return;
 
-    const dx = e.movementX || 0;
-    const dy = e.movementY || 0;
+    const sensitivity = 0.0025;
+    const dx = e.movementX * sensitivity;
+    const dy = e.movementY * sensitivity;
 
-    yaw -= dx * CONFIG.mouse.sensitivity;
-    pitch -= dy * CONFIG.mouse.sensitivity;
+    if (typeof noa.camera?.heading === "number") noa.camera.heading -= dx;
 
-    pitch = clamp(pitch, -CONFIG.mouse.maxPitch, CONFIG.mouse.maxPitch);
-
-    noa.camera.heading = yaw;
-    noa.camera.pitch = pitch;
-  });
-
-  noa.on("tick", () => {
-    const move = computeMoveVector(keys, yaw);
-    const speed = CONFIG.player.moveSpeed;
-
-    const body = noa.entities.getPhysicsBody(noa.playerEntity);
-    if (!body) return;
-
-    const vy = body.velocity[1];
-
-    body.velocity[0] = move[0] * speed;
-    body.velocity[2] = move[2] * speed;
-    body.velocity[1] = vy;
-
-    if (keys.jump && isGrounded(noa)) {
-      body.velocity[1] = CONFIG.player.jumpImpulse;
+    if (typeof noa.camera?.pitch === "number") {
+      noa.camera.pitch = clamp(noa.camera.pitch - dy, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
     }
   });
 
-  return {
-    get heading() {
-      return yaw;
-    },
-    get pitch() {
-      return pitch;
-    },
-  };
+  const tickHz = 20;
+  let acc = 0;
+
+  noa.on?.("tick", (dt: number) => {
+    acc += dt;
+    if (acc < 1 / tickHz) return;
+    acc = 0;
+
+    const input = {
+      forward: keys.has("KeyW"),
+      back: keys.has("KeyS"),
+      left: keys.has("KeyA"),
+      right: keys.has("KeyD"),
+      jump: keys.has("Space"),
+      heading: noa.camera?.heading ?? 0,
+      pitch: noa.camera?.pitch ?? 0,
+    };
+
+    room.send("input", input);
+  });
 }
 
-function computeMoveVector(
-  keys: { forward: boolean; back: boolean; left: boolean; right: boolean },
-  yaw: number
-): Vec3 {
-  const forward = (keys.forward ? 1 : 0) - (keys.back ? 1 : 0);
-  const strafe = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+/* ----------------------------- */
+/* Fatal overlay */
+/* ----------------------------- */
 
-  if (forward === 0 && strafe === 0) return [0, 0, 0];
+function showFatalOverlay(err: unknown): void {
+  const msg =
+    err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err);
 
-  const sin = Math.sin(yaw);
-  const cos = Math.cos(yaw);
-
-  // Forward is +Z here (tweak if your world faces another direction)
-  const fx = sin;
-  const fz = cos;
-  const rx = cos;
-  const rz = -sin;
-
-  let mx = fx * forward + rx * strafe;
-  let mz = fz * forward + rz * strafe;
-
-  const len = Math.hypot(mx, mz) || 1;
-  mx /= len;
-  mz /= len;
-
-  return [mx, 0, mz];
-}
-
-function isGrounded(noa: NoaLike): boolean {
-  const p = noa.playerEntity.position as unknown as number[];
-  const x = p[0];
-  const y = p[1];
-  const z = p[2];
-
-  const belowY = Math.floor(y - 0.05);
-  const voxel = noa.world.getBlockID(Math.floor(x), belowY, Math.floor(z));
-  return voxel !== 0;
+  const pre = document.createElement("pre");
+  pre.textContent = msg;
+  pre.style.position = "fixed";
+  pre.style.left = "0";
+  pre.style.top = "0";
+  pre.style.right = "0";
+  pre.style.bottom = "0";
+  pre.style.margin = "0";
+  pre.style.padding = "16px";
+  pre.style.background = "rgba(0,0,0,0.92)";
+  pre.style.color = "#fff";
+  pre.style.whiteSpace = "pre-wrap";
+  pre.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+  pre.style.zIndex = "99999";
+  document.body.appendChild(pre);
 }
 
 function clamp(v: number, a: number, b: number): number {
   return Math.max(a, Math.min(b, v));
-}
-
-/* -------------------------------------------------------------------------- */
-/* Avatar manager                                                             */
-/* -------------------------------------------------------------------------- */
-type AvatarManager = {
-  ensurePlayer: (id: string) => { mesh: BABYLON.Mesh };
-  removePlayer: (id: string) => void;
-  setState: (id: string, state: NetPlayerState) => void;
-  clearAll: () => void;
-};
-
-function createAvatarManager(noa: NoaLike): AvatarManager {
-  const scene = noa.rendering.getScene();
-  const remote = new Map<string, { mesh: BABYLON.Mesh }>();
-
-  const ensurePlayer = (id: string): { mesh: BABYLON.Mesh } => {
-    const existing = remote.get(id);
-    if (existing) return existing;
-
-    const { w, h, d } = CONFIG.avatar.size;
-    const mesh = BABYLON.MeshBuilder.CreateBox(
-      `remote_${id}`,
-      { width: w, height: h, depth: d },
-      scene
-    );
-
-    const mat = new BABYLON.StandardMaterial(`remoteMat_${id}`, scene);
-    mesh.material = mat;
-
-    const obj = { mesh };
-    remote.set(id, obj);
-    return obj;
-  };
-
-  const removePlayer = (id: string): void => {
-    const r = remote.get(id);
-    if (!r) return;
-    r.mesh.dispose();
-    remote.delete(id);
-  };
-
-  const setState = (id: string, state: NetPlayerState): void => {
-    const r = ensurePlayer(id);
-    const pos = state.position ?? ([0, 0, 0] as Vec3);
-    r.mesh.position.set(pos[0], pos[1] + CONFIG.avatar.yOffset, pos[2]);
-    if (typeof state.heading === "number") r.mesh.rotation.y = state.heading;
-  };
-
-  const clearAll = (): void => {
-    for (const id of remote.keys()) removePlayer(id);
-  };
-
-  return { ensurePlayer, removePlayer, setState, clearAll };
-}
-
-/* -------------------------------------------------------------------------- */
-/* Networking glue                                                            */
-/* -------------------------------------------------------------------------- */
-function setupNetworking(args: {
-  noa: NoaLike;
-  socket: SocketLike;
-  avatars: AvatarManager;
-  controls: ControlsHandle;
-}): void {
-  const { noa, socket, avatars, controls } = args;
-
-  let myId: string | null = null;
-
-  socket.on<JoinedPayload>("joined", (payload) => {
-    myId = payload.id;
-
-    for (const p of payload.players || []) {
-      if (!p?.id || p.id === myId) continue;
-      avatars.setState(p.id, p);
-    }
-  });
-
-  socket.on<NetPlayerState>("playerJoined", (p) => {
-    if (!p?.id || p.id === myId) return;
-    avatars.setState(p.id, p);
-  });
-
-  socket.on<{ id: string }>("playerLeft", ({ id }) => {
-    if (!id) return;
-    avatars.removePlayer(id);
-  });
-
-  socket.on<NetPlayerState>("playerState", (p) => {
-    if (!p?.id || p.id === myId) return;
-    avatars.setState(p.id, p);
-  });
-
-  const SEND_HZ = 20;
-  const SEND_INTERVAL_MS = Math.floor(1000 / SEND_HZ);
-  let accMs = 0;
-
-  noa.on("tick", (dt: number) => {
-    accMs += dt;
-    if (accMs < SEND_INTERVAL_MS) return;
-    accMs = 0;
-
-    if (!myId) return;
-
-    const pos = noa.playerEntity.position as unknown as number[];
-    socket.emit<NetPlayerState>("playerState", {
-      id: myId,
-      position: [pos[0], pos[1], pos[2]],
-      heading: controls.heading,
-      pitch: controls.pitch,
-    });
-  });
-}
-
-/* -------------------------------------------------------------------------- */
-/* Optional: JSON WebSocket adapter (typed)                                   */
-/* -------------------------------------------------------------------------- */
-export function createJsonWebSocketAdapter(ws: WebSocket): SocketLike {
-  const handlers = new Map<string, Array<Handler<any>>>();
-
-  ws.addEventListener("message", (evt: MessageEvent) => {
-    let msg: unknown;
-    try {
-      msg = JSON.parse(String(evt.data));
-    } catch {
-      return;
-    }
-    if (!msg || typeof msg !== "object") return;
-
-    const type = (msg as any).type as string | undefined;
-    const data = (msg as any).data as unknown;
-
-    if (!type) return;
-    const list = handlers.get(type);
-    if (!list) return;
-    for (const fn of list) fn(data);
-  });
-
-  return {
-    on<T = unknown>(event: string, fn: Handler<T>) {
-      if (!handlers.has(event)) handlers.set(event, []);
-      handlers.get(event)!.push(fn as Handler<any>);
-    },
-    emit<T = unknown>(event: string, payload: T) {
-      ws.send(JSON.stringify({ type: event, data: payload }));
-    },
-  };
 }
