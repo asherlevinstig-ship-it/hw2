@@ -5,8 +5,12 @@
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
- * - First-person arm rendered in a BABYLON UtilityLayer (bulletproof "always on top")
- *   and attached to camera using CAMERA WORLD MATRIX (fixes "arm floating in air")
+ * - First-person arm rendered in a BABYLON UtilityLayer (always on top)
+ *   - Better looking arm (forearm + hand + thumb merged)
+ *   - Positioned more on screen
+ *   - Walk bob + sway
+ *   - Punch animation triggered by mine/place
+ *   - Uses camera WORLD MATRIX to keep it attached (no floating)
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -249,10 +253,17 @@ function getTargetInfo() {
   };
 }
 
+// Punch animation triggers
+let armPunch = 0; // 0..1 impulse
+let armPunchVel = 0;
+
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   const target = getTargetInfo();
   if (!target) return;
+
+  // kick punch
+  armPunchVel = 10;
 
   const { x, y, z } = target.pos;
   noa.world.setBlockID(AIR_ID, x, y, z);
@@ -263,6 +274,9 @@ noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
   const target = getTargetInfo();
   if (!target) return;
+
+  // kick punch
+  armPunchVel = 10;
 
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
@@ -309,7 +323,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (UTILITY LAYER, always on top, camera WORLD MATRIX)
+   10. First-person arm (UTILITY LAYER, on top, camera WORLD MATRIX)
 ================================ */
 let fpArmReady = false;
 
@@ -352,47 +366,86 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
     return;
   }
 
-  // Reduce near-plane clipping (helps if anything ends up very close)
+  // Reduce near-plane clipping
   try {
     if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
   } catch {}
 
-  // Create a UtilityLayer (renders AFTER the main scene; great for viewmodels)
+  // Create UtilityLayer (renders after main scene)
   fpArmUILayer = new BABYLON.UtilityLayerRenderer(scene);
   fpArmUILayer.utilityLayerScene.autoClear = false;
 
   fpArmUIScene = fpArmUILayer.utilityLayerScene;
-
-  // Ensure the utility scene uses the same active camera reference
   fpArmUIScene.activeCamera = cam;
 
-  fpArmRoot = new BABYLON.TransformNode("fpArmRoot", fpArmUIScene);
+  // Build a nicer arm model (forearm + hand + thumb) and merge into one mesh
+  const armRoot = new BABYLON.TransformNode("fpArmRoot", fpArmUIScene);
+  fpArmRoot = armRoot;
 
-  fpArmMesh = BABYLON.MeshBuilder.CreateBox("fpArm", { width: 0.6, height: 1.6, depth: 0.6 }, fpArmUIScene);
-  fpArmMesh.parent = fpArmRoot;
+  // Forearm
+  const forearm = BABYLON.MeshBuilder.CreateCylinder(
+    "fpForearm",
+    { height: 1.35, diameter: 0.32, tessellation: 16 },
+    fpArmUIScene
+  );
+  forearm.parent = armRoot;
+  forearm.position.set(0, -0.55, 0);
+  forearm.rotation.x = Math.PI / 2; // point forward
+  forearm.scaling.y = 1.05;
 
-  // shoulder-ish pivot
-  fpArmMesh.position.set(0, -0.8, 0);
+  // Hand
+  const hand = BABYLON.MeshBuilder.CreateBox(
+    "fpHand",
+    { width: 0.38, height: 0.28, depth: 0.55 },
+    fpArmUIScene
+  );
+  hand.parent = armRoot;
+  hand.position.set(0.03, -0.72, 0.62);
+  hand.rotation.x = Math.PI / 2;
 
+  // Thumb nub
+  const thumb = BABYLON.MeshBuilder.CreateBox(
+    "fpThumb",
+    { width: 0.12, height: 0.12, depth: 0.28 },
+    fpArmUIScene
+  );
+  thumb.parent = armRoot;
+  thumb.position.set(0.20, -0.78, 0.58);
+  thumb.rotation.x = Math.PI / 2;
+  thumb.rotation.z = -0.55;
+
+  // Merge meshes (disposes sources)
+  const merged = BABYLON.Mesh.MergeMeshes([forearm, hand, thumb], true, true, undefined, false, true);
+  if (!merged) {
+    console.warn("[FP] Failed to merge arm meshes");
+    return;
+  }
+
+  fpArmMesh = merged;
+  fpArmMesh.name = "fpArm";
+  fpArmMesh.parent = armRoot;
+
+  // Material: unlit + outline so it reads well against blocks
   const mat = new BABYLON.StandardMaterial("fpArmMat", fpArmUIScene);
   mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0);
-  mat.diffuseColor = new BABYLON.Color3(0.2, 0.8, 1.0);
+  mat.emissiveColor = new BABYLON.Color3(0.15, 0.65, 1.0);
+  mat.diffuseColor = new BABYLON.Color3(0.15, 0.65, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
-
-  // Utility layer should already be on top, but also don't write depth
   mat.disableDepthWrite = true;
 
   fpArmMesh.material = mat;
 
-  fpArmMesh.alwaysSelectAsActiveMesh = true;
   fpArmMesh.isPickable = false;
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
+  fpArmMesh.alwaysSelectAsActiveMesh = true;
 
-  // Avoid any layer-mask mismatch issues
   fpArmMesh.layerMask = 0xffffffff;
+
+  fpArmMesh.renderOutline = true;
+  fpArmMesh.outlineWidth = 0.06;
+  fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
 
   fpArmReady = true;
 
@@ -413,10 +466,10 @@ function updateFirstPersonArm(dtSec: number) {
   const cam = getNoaCamera(baseScene);
   if (!cam) return;
 
-  // Keep utility layer scene camera in sync (NOA may replace/retarget camera internals)
+  // Keep utility layer scene camera in sync
   fpArmUIScene.activeCamera = cam;
 
-  // Movement speed for bob (from NOA player entity)
+  // Movement speed for bob
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   if (!pos) return;
 
@@ -435,18 +488,23 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // ---- IMPORTANT: use camera WORLD transform (NOT cam.position) ----
+  // Punch impulse + decay
+  armPunch += armPunchVel * dtSec;
+  armPunchVel *= Math.pow(0.02, dtSec);
+  armPunch *= Math.pow(0.10, dtSec);
+  armPunch = Math.min(1, armPunch);
+
+  const punch01 = Math.sin(armPunch * Math.PI); // 0..1..0
+
+  // Camera WORLD transform (NOT cam.position)
   cam.computeWorldMatrix();
   const camWorld = cam.getWorldMatrix();
 
-  // World position from matrix translation
   const camWorldPos = new BABYLON.Vector3(camWorld.m[12], camWorld.m[13], camWorld.m[14]);
 
-  // World rotation from matrix decomposition
   const camWorldRot = new BABYLON.Quaternion();
   camWorld.decompose(undefined, camWorldRot, undefined);
 
-  // Basis vectors derived from world rotation (no Matrix.FromQuaternion)
   const rotM = new BABYLON.Matrix();
   camWorldRot.toRotationMatrix(rotM);
 
@@ -454,21 +512,26 @@ function updateFirstPersonArm(dtSec: number) {
   const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
   const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 1, 0), rotM).normalize();
 
-  // Always in front-right-down of camera
+  // More on screen: closer + more right + lower
   const base = camWorldPos
-    .add(forward.scale(1.2))
-    .add(right.scale(0.65))
-    .add(up.scale(-0.65 + bob));
+    .add(forward.scale(0.95 + punch01 * 0.30))
+    .add(right.scale(0.95))
+    .add(up.scale(-0.85 + bob));
 
   fpArmRoot.position.copyFrom(base);
-
-  // Follow camera WORLD rotation
   fpArmRoot.rotationQuaternion = camWorldRot.clone();
 
-  // Add swing on the mesh itself (local-ish)
-  fpArmMesh.rotation.x = 0.2 + Math.sin(armTime) * 0.12 * walk;
-  fpArmMesh.rotation.y = 0.0;
-  fpArmMesh.rotation.z = -0.25 + Math.cos(armTime) * 0.09 * walk + sway * 0.05;
+  // Walk swing
+  const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk;
+  const swingZ = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
+
+  // Punch rotation
+  const punchRotX = -punch01 * 0.25;
+  const punchRotY = punch01 * 0.15;
+
+  fpArmMesh.rotation.x = swingX + punchRotX;
+  fpArmMesh.rotation.y = punchRotY;
+  fpArmMesh.rotation.z = swingZ;
 }
 
 /* ===============================
