@@ -1,20 +1,9 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Multiplayer NOA v0.33 + Colyseus (Path B)
- * - Server-authoritative chunk streaming ("worldDataNeeded" -> "chunkData")
- * - Mine / place blocks ("mineBlock" / "placeBlock" -> "blockUpdate")
- * - Multiplayer transforms ("existingPlayers", "playerJoined", "playerLeft",
- *   "playerTransformOther", "playersSnapshot")
- *
- * Rendering fix:
- * - Remote players are rendered as BIG emissive Babylon spheres ("markers")
- * - We robustly find the Babylon scene from noa.rendering (getScene/_scene/scene)
- * - Markers are forced active and made hard to cull
- *
- * Debug:
- * - Logs all net events
- * - Exposes `room` on globalThis.room for DevTools
+ * Key change:
+ * - Remote player markers are inserted through NOA rendering (addMeshToScene/addMesh)
+ *   so they end up in the ACTUAL scene being rendered.
  */
 
 import { Engine } from "noa-engine";
@@ -75,7 +64,7 @@ const noa = new Engine({
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-  chunkSize: 32, // MUST match server authoritative chunkSize
+  chunkSize: 32,
 });
 
 /* ===============================
@@ -211,7 +200,6 @@ function applyChunkFromServer(msg: any) {
 
   const data = pending.data;
 
-  // Must match server packing: i + CS*(j + CS*k)
   let n = 0;
   for (let k = 0; k < CS; k++) {
     for (let j = 0; j < CS; j++) {
@@ -232,9 +220,7 @@ function applyChunkFromServer(msg: any) {
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
   (noa.inputs as any).bind?.("alt-fire", "mouse2");
-} catch {
-  // ignore
-}
+} catch {}
 
 function getTargetInfo() {
   const tgt = (noa as any).targetedBlock;
@@ -276,52 +262,83 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Remote Player Markers (Rendering Proof)
+   9. Remote Player Rendering (NOA-attached markers)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
 const markers = new Map<string, BABYLON.Mesh>();
 
-function getNoaSceneMaybe(): BABYLON.Scene | null {
+function getRenderedScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
   if (!r) return null;
 
-  // Try multiple known variants
   const s1 = (typeof r.getScene === "function" ? r.getScene() : null) as BABYLON.Scene | null;
   const s2 = (r._scene ?? null) as BABYLON.Scene | null;
   const s3 = (r.scene ?? null) as BABYLON.Scene | null;
 
-  const scene = s1 ?? s2 ?? s3 ?? null;
-  return scene ?? null;
+  return (s1 ?? s2 ?? s3) ?? null;
+}
+
+function attachMeshToNoa(mesh: BABYLON.AbstractMesh): boolean {
+  const r = (noa as any).rendering as any;
+  if (!r) return false;
+
+  // Preferred: NOA helper (varies by build)
+  if (typeof r.addMeshToScene === "function") {
+    r.addMeshToScene(mesh);
+    return true;
+  }
+  if (typeof r.addMesh === "function") {
+    r.addMesh(mesh);
+    return true;
+  }
+
+  // Fallback: add to scene directly
+  const scene = getRenderedScene();
+  if (scene) {
+    mesh._scene = scene as any; // not ideal, but helps some builds
+    (mesh as any).parent = null;
+    return true;
+  }
+
+  return false;
 }
 
 function ensureMarker(id: string): BABYLON.Mesh | null {
   const existing = markers.get(id);
   if (existing) return existing;
 
-  const scene = getNoaSceneMaybe();
+  const scene = getRenderedScene();
   if (!scene) return null;
 
-  // Big sphere so it's impossible to miss
-  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 2.5 }, scene);
+  // Create in the known scene (required by MeshBuilder)
+  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0 }, scene);
 
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
   mat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
   mat.disableLighting = true;
   m.material = mat;
 
-  // Force render
+  // Force render / reduce culling problems
   m.alwaysSelectAsActiveMesh = true;
   m.isPickable = false;
   m.checkCollisions = false;
-
-  // Make culling less likely
   (m as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
 
-  markers.set(id, m);
+  // Make sure it shares camera layer mask
+  const cam = scene.activeCamera;
+  if (cam && typeof cam.layerMask === "number") {
+    m.layerMask = cam.layerMask;
+  } else {
+    m.layerMask = 0xffffffff;
+  }
 
-  console.log("[RENDER] created remote marker", id, "sceneUid=", scene.uid);
+  // Ensure it is actually attached via NOA rendering pipe
+  const ok = attachMeshToNoa(m);
+  console.log("[RENDER] created remote marker", id, "sceneUid=", scene.uid, "attachedViaNoa=", ok);
+
+  markers.set(id, m);
   return m;
 }
 
@@ -335,7 +352,7 @@ function removeMarker(id: string) {
   }
 }
 
-/* Apply cached transforms every tick */
+/* Apply transforms each tick */
 (noa as any).on("tick", () => {
   if (!room) return;
 
@@ -346,7 +363,7 @@ function removeMarker(id: string) {
     if (!marker) continue;
 
     marker.position.x = t.x;
-    marker.position.y = t.y + 2.0; // float above head so it's visible
+    marker.position.y = t.y + 6.0; // big lift to ensure visible over terrain
     marker.position.z = t.z;
   }
 });
@@ -372,27 +389,22 @@ async function connect() {
     console.log("[NET] endpoint =", ENDPOINT);
     console.log("[NET] joined room:", { name: room.name, sessionId: room.sessionId });
 
-    // expose for DevTools debugging
     (globalThis as any).room = room;
 
     updateOverlay();
 
-    // flush queued chunk requests
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
 
-    // world streaming
     room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
-    // block updates
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // existing players
     room.onMessage("existingPlayers", (players: any) => {
       const len = Array.isArray(players) ? players.length : 0;
       console.log("[NET] existingPlayers:", len, players);
@@ -410,7 +422,6 @@ async function connect() {
       }
     });
 
-    // player joined
     room.onMessage("playerJoined", (p: any) => {
       console.log("[NET] playerJoined:", p);
 
@@ -425,7 +436,6 @@ async function connect() {
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
-    // player left
     room.onMessage("playerLeft", (p: any) => {
       console.log("[NET] playerLeft:", p);
       const id = normId(p);
@@ -433,7 +443,6 @@ async function connect() {
       removeMarker(id);
     });
 
-    // other player transform
     room.onMessage("playerTransformOther", (p: any) => {
       console.log("[NET] playerTransformOther:", p);
 
@@ -448,7 +457,6 @@ async function connect() {
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
-    // periodic snapshot
     room.onMessage("playersSnapshot", (players: any) => {
       const len = Array.isArray(players) ? players.length : 0;
       console.log("[NET] playersSnapshot:", len, players);
@@ -468,7 +476,6 @@ async function connect() {
       }
     });
 
-    // you joined
     room.onMessage("youJoined", (p: any) => {
       console.log("🟦 youJoined:", p);
     });
