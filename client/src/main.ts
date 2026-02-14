@@ -1,9 +1,11 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Key change:
- * - Remote player markers are inserted through NOA rendering (addMeshToScene/addMesh)
- *   so they end up in the ACTUAL scene being rendered.
+ * Fixes:
+ * 1) Apply authoritative spawn from server ("youJoined") to the local NOA player.
+ * 2) Do NOT send playerMove until after "youJoined" arrives (prevents spawn overwrite / stacking).
+ * 3) Remote markers created in the actual rendered Babylon scene, with a stable cached scene ref.
+ * 4) Slightly improved scene/attachment safety + helpful render debug logs.
  */
 
 import { Engine } from "noa-engine";
@@ -62,7 +64,7 @@ const noa = new Engine({
   debug: true,
   container: appEl,
   inverseY: false,
-  playerStart: [0, 20, 0],
+  playerStart: [0, 20, 0], // will be overridden by server spawn via "youJoined"
   tickRate: 30,
   chunkSize: 32,
 });
@@ -269,6 +271,9 @@ type NetTransform = { x: number; y: number; z: number; yaw?: number };
 const netTransforms = new Map<string, NetTransform>();
 const markers = new Map<string, BABYLON.Mesh>();
 
+let cachedScene: BABYLON.Scene | null = null;
+let cachedSceneUid: string | number | null = null;
+
 function getRenderedScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
   if (!r) return null;
@@ -280,11 +285,25 @@ function getRenderedScene(): BABYLON.Scene | null {
   return (s1 ?? s2 ?? s3) ?? null;
 }
 
+function getStableRenderedScene(): BABYLON.Scene | null {
+  const s = getRenderedScene();
+  if (!s) return cachedScene;
+
+  const uid = (s as any).uid as string | number | undefined;
+
+  if (!cachedScene || cachedSceneUid !== uid) {
+    cachedScene = s;
+    cachedSceneUid = uid ?? null;
+    console.log("[RENDER] cachedScene set -> uid=", uid, "meshes=", s.meshes.length);
+  }
+
+  return cachedScene;
+}
+
 function attachMeshToNoa(mesh: BABYLON.AbstractMesh): boolean {
   const r = (noa as any).rendering as any;
   if (!r) return false;
 
-  // Preferred: NOA helper (varies by build)
   if (typeof r.addMeshToScene === "function") {
     r.addMeshToScene(mesh);
     return true;
@@ -294,25 +313,16 @@ function attachMeshToNoa(mesh: BABYLON.AbstractMesh): boolean {
     return true;
   }
 
-  // Fallback: add to scene directly
-  const scene = getRenderedScene();
-  if (scene) {
-    mesh._scene = scene as any; // not ideal, but helps some builds
-    (mesh as any).parent = null;
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 function ensureMarker(id: string): BABYLON.Mesh | null {
   const existing = markers.get(id);
   if (existing) return existing;
 
-  const scene = getRenderedScene();
+  const scene = getStableRenderedScene();
   if (!scene) return null;
 
-  // Create in the known scene (required by MeshBuilder)
   const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0 }, scene);
 
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
@@ -320,13 +330,11 @@ function ensureMarker(id: string): BABYLON.Mesh | null {
   mat.disableLighting = true;
   m.material = mat;
 
-  // Force render / reduce culling problems
   m.alwaysSelectAsActiveMesh = true;
   m.isPickable = false;
   m.checkCollisions = false;
   (m as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
 
-  // Make sure it shares camera layer mask
   const cam = scene.activeCamera;
   if (cam && typeof cam.layerMask === "number") {
     m.layerMask = cam.layerMask;
@@ -334,9 +342,15 @@ function ensureMarker(id: string): BABYLON.Mesh | null {
     m.layerMask = 0xffffffff;
   }
 
-  // Ensure it is actually attached via NOA rendering pipe
   const ok = attachMeshToNoa(m);
-  console.log("[RENDER] created remote marker", id, "sceneUid=", scene.uid, "attachedViaNoa=", ok);
+
+  console.log("[RENDER] created remote marker", {
+    id,
+    sceneUid: (scene as any).uid,
+    sceneMeshes: scene.meshes.length,
+    attachedViaNoa: ok,
+    activeCamera: scene.activeCamera?.name ?? "(none)",
+  });
 
   markers.set(id, m);
   return m;
@@ -352,7 +366,6 @@ function removeMarker(id: string) {
   }
 }
 
-/* Apply transforms each tick */
 (noa as any).on("tick", () => {
   if (!room) return;
 
@@ -363,9 +376,18 @@ function removeMarker(id: string) {
     if (!marker) continue;
 
     marker.position.x = t.x;
-    marker.position.y = t.y + 6.0; // big lift to ensure visible over terrain
+    marker.position.y = t.y + 6.0;
     marker.position.z = t.z;
   }
+});
+
+let sceneLogTick = 0;
+(noa as any).on("tick", () => {
+  sceneLogTick++;
+  if (sceneLogTick % 180 !== 0) return;
+  const s = getStableRenderedScene();
+  if (!s) return;
+  console.log("[RENDER] scene tick", { uid: (s as any).uid, meshes: s.meshes.length, cam: s.activeCamera?.name ?? "(none)" });
 });
 
 /* ===============================
@@ -378,6 +400,8 @@ function normId(p: any): string | null {
   if (typeof p === "string") return p;
   return null;
 }
+
+let canSendMoves = false;
 
 async function connect() {
   try {
@@ -478,6 +502,21 @@ async function connect() {
 
     room.onMessage("youJoined", (p: any) => {
       console.log("🟦 youJoined:", p);
+
+      const x = Number(p.x);
+      const y = Number(p.y);
+      const z = Number(p.z);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+
+      try {
+        noa.ents.setPosition(noa.playerEntity, [x, y, z]);
+        console.log("[NET] Applied server spawn to local player:", { x, y, z });
+      } catch (e) {
+        console.warn("[NET] Failed to setPosition for local player:", e);
+      }
+
+      canSendMoves = true;
+      updateOverlay("Spawn synced.");
     });
   } catch (e) {
     console.error("Connection Error:", e);
@@ -494,7 +533,9 @@ let tickCount = 0;
 (noa as any).on("tick", () => {
   tickCount++;
 
-  if (room && tickCount % 3 === 0) {
+  if (!room || !canSendMoves) return;
+
+  if (tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
 
