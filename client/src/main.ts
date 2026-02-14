@@ -44,7 +44,8 @@ void (async function boot(): Promise<void> {
     const client = new Client(endpoint);
 
     // Change "world" if your room name differs
-   const room = await joinRoom(client, "MyRoom");
+   const room = await joinRoom(client, "my_room");
+
 
 
     console.log("✅ Joined room successfully");
