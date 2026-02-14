@@ -10,8 +10,9 @@
  *   1) Scene swaps: NOA/Babylon can replace the scene (uid changes). We detect it,
  *      dispose the old arm, and rebuild in the active scene.
  *   2) Viewmodel attachment: arm root is parented to the active camera.
- *   3) Always visible: renderingGroupId = 3 (default max), disableDepthWrite + depthFunction ALWAYS,
+ *   3) Always visible: renderingGroupId in default range (1), disableDepthWrite + depthFunction ALWAYS,
  *      never culled, always active, infinite distance.
+ *   4) Correct camera-local forward offset: +Z (0.75) so the arm is in front for Babylon LH defaults.
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -340,7 +341,6 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 
 /* ===============================
    10. First-person arm (MAIN SCENE viewmodel)
-   ✅ Scene-swap safe rebuild
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -367,7 +367,6 @@ function disposeFirstPersonArm() {
 function setupFirstPersonArm(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
 
-  // ✅ if NOA swapped scenes, rebuild in active scene
   if (fpArmReady && fpArmSceneUid !== (uid ?? null)) {
     console.warn("[FP] Scene changed - rebuilding arm", { from: fpArmSceneUid, to: uid });
     disposeFirstPersonArm();
@@ -392,12 +391,11 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
 
-  // ✅ TRUE VIEWMODEL: parent to camera
+  // ✅ viewmodel attach
   fpArmRoot.parent = cam;
 
-  // NOTE: Many Babylon cameras look down -Z. If your arm is behind you,
-  // flip these Z signs (+0.75 -> -0.75) in both here and update below.
-  fpArmRoot.position.set(0.45, -0.35, -0.75);
+  // ✅ in front of camera for Babylon LH defaults
+  fpArmRoot.position.set(0.45, -0.35, 0.75);
   fpArmRoot.rotationQuaternion = null;
   fpArmRoot.rotation.set(0, 0, 0);
 
@@ -442,7 +440,7 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
 
-  // ✅ Always on top (reliable)
+  // ✅ always on top
   mat.disableDepthWrite = true;
   mat.depthFunction = BABYLON.Constants.ALWAYS;
 
@@ -452,18 +450,16 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // ✅ never cull / always active
+  // ✅ never cull
   (fpArmMesh as any).isInFrustum = () => true;
   (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
   (fpArmMesh as any).infiniteDistance = true;
 
-  // ✅ must be within default groups (0..3)
-  fpArmMesh.renderingGroupId = 3;
+  // ✅ safe default group
+  fpArmMesh.renderingGroupId = 1;
 
-  // Force mask
   fpArmMesh.layerMask = 0xffffffff;
 
-  // Outline for readability
   fpArmMesh.renderOutline = true;
   fpArmMesh.outlineWidth = 0.06;
   fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
@@ -499,7 +495,6 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // punch decay
   armPunch += armPunchVel * dtSec;
   armPunchVel *= Math.pow(0.02, dtSec);
   armPunch *= Math.pow(0.10, dtSec);
@@ -507,12 +502,10 @@ function updateFirstPersonArm(dtSec: number) {
 
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // ✅ root is parented to camera -> update local offset
   fpArmRoot.position.x = 0.45;
   fpArmRoot.position.y = -0.35 + bob;
-  fpArmRoot.position.z = -0.75 - punch01 * 0.20;
+  fpArmRoot.position.z = 0.75 + punch01 * 0.20;
 
-  // local swing
   const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
   const swingZ = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
   const swingY = punch01 * 0.15;
