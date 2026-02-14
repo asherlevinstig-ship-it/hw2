@@ -4,11 +4,11 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
+ * - Remote players rendered via NOA entities + mesh component
  * - First-person arm (camera-attached) with simple walk bob animation
  *
  * Debug:
- * - P toggles pinning first remote model in front of camera (local-only debug)
+ * - P toggles pinning first remote marker in front of camera (local-only)
  * - O toggles extra debug overlay line
  */
 
@@ -278,7 +278,7 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Rendering Helpers (Scene access)
+   9. Babylon scene access (stable)
 ================================ */
 function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
@@ -308,7 +308,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (camera attached)
+   10. First-person arm (VERY OBVIOUS)
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -326,32 +326,33 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
   fpArmRoot.parent = cam;
 
-  // camera-local placement (tweak to taste)
-  fpArmRoot.position.set(0.55, -0.55, 1.05);
-  fpArmRoot.rotation.set(0.15, 0.0, 0.0);
+  // camera-local placement (made extra visible)
+  fpArmRoot.position.set(0.65, -0.65, 1.15);
+  fpArmRoot.rotation.set(0.2, 0.0, 0.0);
 
-  // "Minecraft-ish" right arm
+  // Bigger, unmistakable arm
   fpArmMesh = BABYLON.MeshBuilder.CreateBox(
     "fpArm",
-    { width: 0.45, height: 1.2, depth: 0.45 },
+    { width: 0.6, height: 1.6, depth: 0.6 },
     scene
   );
   fpArmMesh.parent = fpArmRoot;
-  fpArmMesh.position.set(0, -0.6, 0);
+  fpArmMesh.position.set(0, -0.8, 0);
 
   const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
-  mat.disableLighting = false;
-  mat.diffuseColor = new BABYLON.Color3(0.9, 0.75, 0.6);
+  mat.disableLighting = true; // always bright
+  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0); // bright cyan so you cannot miss it
+  mat.diffuseColor = new BABYLON.Color3(0.2, 0.8, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   fpArmMesh.material = mat;
 
-  // draw on top (reduce clipping)
-  fpArmMesh.renderingGroupId = 2;
+  // Always on top
+  fpArmMesh.renderingGroupId = 3;
   (fpArmMesh.material as BABYLON.StandardMaterial).disableDepthWrite = true;
   (fpArmMesh.material as any).disableDepthTest = true;
 
   fpArmReady = true;
-  console.log("[FP] First-person arm created");
+  console.log("[FP] First-person arm created (cyan)");
 }
 
 function updateFirstPersonArm(dtSec: number) {
@@ -370,28 +371,27 @@ function updateFirstPersonArm(dtSec: number) {
   lastLocalPos = [pos[0], pos[1], pos[2]];
 
   const walk = Math.min(1, speed / 5);
-
   armTime += dtSec * (2.5 + walk * 6.0);
 
-  const bob = Math.sin(armTime * 2.0) * 0.03 * walk;
-  const sway = Math.sin(armTime) * 0.15 * walk;
+  const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
+  const sway = Math.sin(armTime) * 0.25 * walk;
 
-  fpArmRoot.position.x = 0.55 + sway * 0.05;
-  fpArmRoot.position.y = -0.55 + bob;
-  fpArmRoot.position.z = 1.05;
+  fpArmRoot.position.x = 0.65 + sway * 0.08;
+  fpArmRoot.position.y = -0.65 + bob;
+  fpArmRoot.position.z = 1.15;
 
-  fpArmRoot.rotation.x = 0.15 + Math.sin(armTime) * 0.08 * walk;
+  fpArmRoot.rotation.x = 0.2 + Math.sin(armTime) * 0.12 * walk;
   fpArmRoot.rotation.y = 0.0;
-  fpArmRoot.rotation.z = -0.15 + Math.cos(armTime) * 0.06 * walk;
+  fpArmRoot.rotation.z = -0.25 + Math.cos(armTime) * 0.09 * walk;
 }
 
 /* ===============================
    11. Remote Player Rendering (NOA Entities + Mesh Component)
+   NOTE: Remote players are still spheres for now.
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
-
 const remoteEnts = new Map<string, number>();
 const remoteMeshes = new Map<string, BABYLON.Mesh>();
 
@@ -407,54 +407,14 @@ document.addEventListener("keydown", (e) => {
 
 function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
-  mat.emissiveColor = new BABYLON.Color3(1, 0, 0);
-  mat.diffuseColor = new BABYLON.Color3(1, 0, 0);
-  mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.disableLighting = true;
+  mat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1);
+  mat.diffuseColor = new BABYLON.Color3(1, 0.1, 0.1);
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.alpha = 1;
   mat.backFaceCulling = false;
   (mat as any).fogEnabled = false;
   return mat;
-}
-
-function forceRemoteVisible(mesh: BABYLON.Mesh) {
-  mesh.setEnabled(true);
-  mesh.isVisible = true;
-  mesh.visibility = 1;
-  mesh.scaling.set(4, 4, 4);
-
-  mesh.alwaysSelectAsActiveMesh = true;
-  mesh.isPickable = false;
-  mesh.checkCollisions = false;
-  (mesh as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
-
-  mesh.renderingGroupId = 1;
-
-  const mat = mesh.material as BABYLON.StandardMaterial | null;
-  if (mat) {
-    mat.disableDepthWrite = false;
-    (mat as any).disableDepthTest = false;
-  }
-}
-
-function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
-  const scene = mesh.getScene();
-  const cam = scene.activeCamera as any;
-  if (!cam) return;
-
-  const camPos: BABYLON.Vector3 =
-    cam.position instanceof BABYLON.Vector3
-      ? cam.position
-      : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
-
-  const fwd: BABYLON.Vector3 =
-    typeof cam.getForwardRay === "function"
-      ? cam.getForwardRay(1).direction
-      : new BABYLON.Vector3(0, 0, 1);
-
-  mesh.position.x = camPos.x + fwd.x * 8;
-  mesh.position.y = camPos.y + fwd.y * 8;
-  mesh.position.z = camPos.z + fwd.z * 8;
 }
 
 function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | null {
@@ -465,14 +425,20 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   const scene = getStableScene();
   if (!scene) return null;
 
-  const mesh = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 1.0, segments: 16 }, scene);
+  // Small by default (NO MORE GIANT RED BALL)
+  const mesh = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 1.0, segments: 12 }, scene);
   mesh.material = makeRemoteMaterial(scene, id);
 
   const cam = scene.activeCamera;
   if (cam && typeof cam.layerMask === "number") mesh.layerMask = cam.layerMask;
   else mesh.layerMask = 0xffffffff;
 
-  forceRemoteVisible(mesh);
+  mesh.setEnabled(true);
+  mesh.isVisible = true;
+  mesh.visibility = 1;
+  mesh.isPickable = false;
+  mesh.checkCollisions = false;
+  mesh.renderingGroupId = 1;
 
   let eid: number | null = null;
   try {
@@ -512,7 +478,6 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
   remoteMeshes.set(id, mesh);
 
   console.log("[RENDER] remote entity created", { id, eid });
-
   return { eid, mesh };
 }
 
@@ -536,6 +501,26 @@ function removeRemote(id: string) {
   }
 }
 
+function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
+  const scene = mesh.getScene();
+  const cam = scene.activeCamera as any;
+  if (!cam) return;
+
+  const camPos: BABYLON.Vector3 =
+    cam.position instanceof BABYLON.Vector3
+      ? cam.position
+      : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
+
+  const fwd: BABYLON.Vector3 =
+    typeof cam.getForwardRay === "function"
+      ? cam.getForwardRay(1).direction
+      : new BABYLON.Vector3(0, 0, 1);
+
+  mesh.position.x = camPos.x + fwd.x * 6;
+  mesh.position.y = camPos.y + fwd.y * 6;
+  mesh.position.z = camPos.z + fwd.z * 6;
+}
+
 /* Apply remote transforms each tick */
 (noa as any).on("tick", () => {
   if (!room) return;
@@ -549,6 +534,7 @@ function removeRemote(id: string) {
     const { eid, mesh } = created;
 
     if (pinRemoteMarkerInFront) {
+      // Pin ONLY affects your local view
       forceRemoteInFrontOfCamera(mesh);
 
       const scene = mesh.getScene();
@@ -723,7 +709,6 @@ let lastTickMs = performance.now();
   const dtSec = Math.min(0.05, (now - lastTickMs) / 1000);
   lastTickMs = now;
 
-  // Setup/animate arm if scene exists
   const scene = getStableScene();
   if (scene) setupFirstPersonArm(scene);
   updateFirstPersonArm(dtSec);
@@ -735,7 +720,7 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Periodic debug (~1/sec)
+  // Debug overlay (~1/sec)
   if (debugTick % 30 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
 
@@ -758,42 +743,5 @@ let lastTickMs = performance.now();
         : "";
 
     if (showExtraDebugOverlay) updateOverlay(line);
-
-    console.log("[DBG]", {
-      local: { x: pos[0], y: pos[1], z: pos[2] },
-      remote: firstRemote ? { id: firstRemote.id, ...firstRemote.t } : null,
-      netCount: netTransforms.size,
-      remoteEntCount: remoteEnts.size,
-      remoteMeshCount: remoteMeshes.size,
-      scene: scene ? { uid: (scene as any).uid, meshes: scene.meshes.length, cam: scene.activeCamera?.name } : null,
-      pinRemoteMarkerInFront,
-    });
-
-    if (firstRemote) {
-      const mesh = remoteMeshes.get(firstRemote.id);
-      const eid = remoteEnts.get(firstRemote.id);
-
-      if (mesh) {
-        console.log("[DBG remote mesh]", {
-          id: firstRemote.id,
-          enabled: mesh.isEnabled(),
-          isVisible: mesh.isVisible,
-          visibility: mesh.visibility,
-          meshPos: { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z },
-          scaling: { x: mesh.scaling.x, y: mesh.scaling.y, z: mesh.scaling.z },
-          layerMask: mesh.layerMask,
-          renderingGroupId: (mesh as any).renderingGroupId,
-        });
-      }
-
-      if (eid != null) {
-        try {
-          const ep = (noa as any).ents.getPosition(eid);
-          console.log("[DBG remote eid pos]", firstRemote.id, ep);
-        } catch (e) {
-          console.log("[DBG remote eid pos] failed", e);
-        }
-      }
-    }
   }
 });
