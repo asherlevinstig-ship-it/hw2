@@ -14,12 +14,19 @@
  * Controls:
  * - V toggles viewmodel overlay scene ON/OFF
  *
+ * Debug controls (viewmodel):
+ * - B toggles VM debug visuals (axes + screen frame)
+ * - N toggles VM tuning mode (enables hotkey nudging)
+ * - Arrow keys: move VM anchor (x/y)
+ * - 1/2: rotX down/up
+ * - 3/4: rotY down/up
+ * - 5/6: rotZ down/up
+ *
  * Viewmodel:
  * - Minecraft-ish blocky arm (boxes)
  * - Screen-space HUD (orthographic) anchored bottom-right
  * - Punch animates on mine/place (deterministic)
- * - Pose tuned to look "held" rather than edge-on
- * - Uses delta yaw/pitch for sway (NOT absolute yaw)
+ * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
  */
 
 import { Engine } from "noa-engine";
@@ -142,35 +149,114 @@ const hotbar = [
 let selectedSlot = 0;
 let viewModelEnabled = true;
 
+/* ===============================
+   6.1 Viewmodel Debug/Tuning State
+================================ */
+let vmDebug = true; // B toggles debug visuals (axes + screen frame)
+let vmTuning = true; // N toggles tuning (enables nudging)
+
+let vmBaseXMul = 0.82; // baseX = r * vmBaseXMul
+let vmBaseY = -0.72;
+
+let vmRotX = 0.35;
+let vmRotY = 0.15;
+let vmRotZ = -0.85;
+
+// responsiveness
+let vmPitchMul = 0.45;
+let vmPunchRotMul = 0.75;
+let vmTurnSwayMulY = 0.35;
+let vmTurnSwayMulZ = 0.25;
+let vmPunchMoveX = 0.12;
+let vmPunchMoveY = 0.08;
+
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
+
+  const dbg = vmDebug ? "ON" : "OFF";
+  const tune = vmTuning ? "ON" : "OFF";
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
+    <strong>VM Debug:</strong> ${dbg} | <strong>VM Tune:</strong> ${tune}<br>
     -------------------------<br>
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Block<br>
     [WASD] Move  |  [Space] Jump<br>
     [V] Toggle Viewmodel<br>
+    [B] Toggle VM Debug (axes/frame)<br>
+    [N] Toggle VM Tuning (hotkeys)<br>
+    [Arrows] Move VM | [1-6] Rotate VM<br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
 updateOverlay();
 
 document.addEventListener("keydown", (e) => {
+  // hotbar select (top row keys)
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
     updateOverlay();
     return;
   }
+
   if (e.key === "v" || e.key === "V") {
     viewModelEnabled = !viewModelEnabled;
     updateOverlay(viewModelEnabled ? "Viewmodel: ON" : "Viewmodel: OFF");
     return;
+  }
+
+  if (e.key === "b" || e.key === "B") {
+    vmDebug = !vmDebug;
+    updateOverlay(vmDebug ? "VM Debug: ON" : "VM Debug: OFF");
+    return;
+  }
+
+  if (e.key === "n" || e.key === "N") {
+    vmTuning = !vmTuning;
+    updateOverlay(vmTuning ? "VM Tuning: ON" : "VM Tuning: OFF");
+    return;
+  }
+
+  if (!vmTuning) return;
+
+  // Move anchor
+  if (e.key === "ArrowLeft") vmBaseXMul -= 0.01;
+  if (e.key === "ArrowRight") vmBaseXMul += 0.01;
+  if (e.key === "ArrowUp") vmBaseY += 0.01;
+  if (e.key === "ArrowDown") vmBaseY -= 0.01;
+
+  // Rotate base pose
+  // NOTE: also used for hotbar, but once selectedSlot is set this still works for tuning
+  if (e.key === "1") vmRotX -= 0.05;
+  if (e.key === "2") vmRotX += 0.05;
+  if (e.key === "3") vmRotY -= 0.05;
+  if (e.key === "4") vmRotY += 0.05;
+  if (e.key === "5") vmRotZ -= 0.05;
+  if (e.key === "6") vmRotZ += 0.05;
+
+  if (
+    [
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+    ].includes(e.key)
+  ) {
+    updateOverlay(
+      `VM: xMul=${vmBaseXMul.toFixed(2)} y=${vmBaseY.toFixed(2)} | ` +
+        `rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)})`
+    );
   }
 });
 
@@ -329,6 +415,10 @@ let vmArmRoot: BABYLON.TransformNode | null = null;
 
 let vmEngineHooked = false;
 
+// Debug meshes
+let vmAxes: BABYLON.TransformNode | null = null;
+let vmFrame: BABYLON.LinesMesh | null = null;
+
 function ensureVmScene(noaScene: BABYLON.Scene) {
   if (vmReady && vmScene && vmCam && vmRoot && vmArmRoot) return;
 
@@ -358,6 +448,18 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     vmCam.orthoRight = r;
     vmCam.orthoTop = 1;
     vmCam.orthoBottom = -1;
+
+    // update frame if present
+    if (vmFrame && vmFrame.getScene()) {
+      const pts = [
+        new BABYLON.Vector3(-r, -1, 0),
+        new BABYLON.Vector3(r, -1, 0),
+        new BABYLON.Vector3(r, 1, 0),
+        new BABYLON.Vector3(-r, 1, 0),
+        new BABYLON.Vector3(-r, -1, 0),
+      ];
+      BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts, instance: vmFrame });
+    }
   };
 
   updateOrtho();
@@ -372,7 +474,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  // Upper arm + forearm + hand (slightly more compact than before)
   const upper = BABYLON.MeshBuilder.CreateBox(
     "vmUpperArm",
     { width: 0.16, height: 0.44, depth: 0.16 },
@@ -404,7 +505,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   // Unlit material, always on top
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
-  armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55); // skin-ish
+  armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
   armMat.diffuseColor = armMat.emissiveColor.clone();
   armMat.specularColor = new BABYLON.Color3(0, 0, 0);
   armMat.backFaceCulling = false;
@@ -423,6 +524,53 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
 
+  // Debug visuals: axes and screen frame
+  const ensureVmDebugMeshes = () => {
+    if (!vmScene || !vmRoot || !vmCam) return;
+
+    if (!vmAxes) {
+      vmAxes = new BABYLON.TransformNode("vmAxes", vmScene);
+      vmAxes.parent = vmRoot;
+
+      const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
+        const l = BABYLON.MeshBuilder.CreateLines(
+          name,
+          { points: [BABYLON.Vector3.Zero(), to] },
+          vmScene!
+        );
+        l.color = color;
+        l.isPickable = false;
+        (l as any).isInFrustum = () => true;
+        l.parent = vmAxes!;
+        l.renderingGroupId = 3;
+        return l;
+      };
+
+      // X=red, Y=green, Z=blue
+      makeAxis("vmAxisX", new BABYLON.Vector3(0.35, 0, 0), new BABYLON.Color3(1, 0, 0));
+      makeAxis("vmAxisY", new BABYLON.Vector3(0, 0.35, 0), new BABYLON.Color3(0, 1, 0));
+      makeAxis("vmAxisZ", new BABYLON.Vector3(0, 0, 0.35), new BABYLON.Color3(0, 0.5, 1));
+    }
+
+    if (!vmFrame) {
+      const r = (vmCam.orthoRight ?? 1) as number;
+      const pts = [
+        new BABYLON.Vector3(-r, -1, 0),
+        new BABYLON.Vector3(r, -1, 0),
+        new BABYLON.Vector3(r, 1, 0),
+        new BABYLON.Vector3(-r, 1, 0),
+        new BABYLON.Vector3(-r, -1, 0),
+      ];
+      vmFrame = BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts }, vmScene);
+      vmFrame.color = new BABYLON.Color3(1, 1, 0); // yellow
+      vmFrame.isPickable = false;
+      (vmFrame as any).isInFrustum = () => true;
+      vmFrame.renderingGroupId = 3;
+    }
+  };
+
+  ensureVmDebugMeshes();
+
   // Hook engine end-of-frame once
   if (!vmEngineHooked) {
     vmEngineHooked = true;
@@ -430,6 +578,11 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     engine.onEndFrameObservable.add(() => {
       if (!viewModelEnabled) return;
       if (!vmScene) return;
+
+      // toggle debug visibility just before render
+      if (vmAxes) vmAxes.setEnabled(vmDebug);
+      if (vmFrame) vmFrame.setEnabled(vmDebug);
+
       vmScene.render();
     });
   }
@@ -504,13 +657,12 @@ function updateViewmodel(dtSec: number) {
   // Screen-space bounds: x in [-r,r], y in [-1,1]
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  // Anchor bottom-right; pulled LEFT a bit so we see the arm, not just its edge
-  const baseX = r * 0.82;
-  const baseY = -0.72;
+  // Anchor (tunable)
+  const baseX = r * vmBaseXMul;
+  const baseY = vmBaseY;
 
-  // Punch moves arm more noticeably
-  const x = baseX + sway * 0.55 - punch01 * 0.12;
-  const y = baseY + bob * 0.65 - punch01 * 0.08;
+  const x = baseX + sway * 0.55 - punch01 * vmPunchMoveX;
+  const y = baseY + bob * 0.65 - punch01 * vmPunchMoveY;
 
   vmRoot.position.set(x, y, 0);
 
@@ -530,13 +682,20 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // Pose tuned to look "held" and not edge-on:
-  // - reduce Y rotation a LOT (too much makes it thin)
-  // - moderate roll
-  // - stronger pitch response
-  vmArmRoot.rotation.x = 0.35 + pitchInfluence * 0.45 - punch01 * 0.75 + lookSway * 0.35;
-  vmArmRoot.rotation.y = 0.15 + turnSway * 0.35;
-  vmArmRoot.rotation.z = -0.85 + swing - turnSway * 0.25;
+  vmArmRoot.rotation.x =
+    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
+  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
+
+  // Optional: show live numbers occasionally while debugging
+  // (keep it light to avoid spam)
+  if (vmDebug && Math.random() < 0.02) {
+    updateOverlay(
+      `VM: xMul=${vmBaseXMul.toFixed(2)} y=${vmBaseY.toFixed(2)} | ` +
+        `rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | ` +
+        `pitch=${pitchNow.toFixed(2)} dyaw=${dyaw.toFixed(3)}`
+    );
+  }
 }
 
 /* ===============================
