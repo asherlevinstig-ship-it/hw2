@@ -36,6 +36,11 @@
  * - Punch animates on mine/place (deterministic)
  * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
  * - Mirroring (scale.x = -1) makes it read as a right-hand viewmodel
+ *
+ * IMPORTANT NETWORK UPGRADES IN THIS VERSION:
+ * - Pointer lock detection uses document.pointerLockElement (reliable)
+ * - ChunkData supports binary voxels (Uint8Array / ArrayBuffer) OR legacy number[]
+ * - ChunkData is validated against pending chunk coords (hardening)
  */
 
 import { Engine } from "noa-engine";
@@ -100,26 +105,33 @@ const noa = new Engine({
 });
 
 /* ===============================
-   4.1 Pointer Lock
+   4.1 Pointer Lock (reliable)
 ================================ */
-function requestPointerLock() {
+function getNoaCanvas(): HTMLElement | null {
   try {
     const scene = (noa as any).rendering?.getScene?.();
-    const canvas =
-      scene?.getEngine?.()?.getRenderingCanvas?.() ??
-      (noa as any).container ??
-      appEl;
+    const canvas = scene?.getEngine?.()?.getRenderingCanvas?.();
+    if (canvas) return canvas as HTMLElement;
+  } catch {}
+  return (noa as any).container ?? appEl;
+}
 
-    if (canvas?.requestPointerLock) canvas.requestPointerLock();
+function requestPointerLock() {
+  const el = getNoaCanvas();
+  try {
+    el?.requestPointerLock?.();
   } catch {
-    if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
+    // ignore
   }
 }
 
 appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
-  return !!(noa.container as any)?.hasPointerLock;
+  const el = document.pointerLockElement;
+  if (!el) return false;
+  const target = getNoaCanvas();
+  return !!target && el === target;
 }
 
 /* ===============================
@@ -261,7 +273,13 @@ window.addEventListener(
       e.key === "ArrowUp" ||
       e.key === "ArrowDown";
 
-    const isRotKey = e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
+    const isRotKey =
+      e.key === "7" ||
+      e.key === "8" ||
+      e.key === "9" ||
+      e.key === "0" ||
+      e.key === "-" ||
+      e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -299,13 +317,25 @@ window.addEventListener(
 /* ===============================
    7. World Streaming (Path B)
 ================================ */
-type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
+type PendingChunk = {
+  data: any;
+  chunkSize: number;
+  x: number;
+  y: number;
+  z: number;
+};
+
+type ChunkDataMsg = {
+  id: string;
+  chunkSize: number;
+  x: number;
+  y: number;
+  z: number;
+  voxels: unknown; // Uint8Array | ArrayBuffer | number[]
+};
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<
-  string,
-  { id: string; chunkSize: number; x: number; y: number; z: number }
->();
+const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
 const worldAny = noa.world as any;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -322,28 +352,64 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-function applyChunkFromServer(msg: any) {
+function toU8View(vox: unknown): Uint8Array | null {
+  // Prefer binary
+  if (vox instanceof Uint8Array) return vox;
+  if (vox instanceof ArrayBuffer) return new Uint8Array(vox);
+  if (ArrayBuffer.isView(vox) && (vox as any).buffer instanceof ArrayBuffer) {
+    const v = vox as ArrayBufferView;
+    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  }
+
+  // Legacy JSON array
+  if (Array.isArray(vox)) {
+    const arr = vox as unknown[];
+    const u = new Uint8Array(arr.length);
+    for (let i = 0; i < arr.length; i++) u[i] = (Number(arr[i]) | 0) & 255;
+    return u;
+  }
+
+  return null;
+}
+
+function applyChunkFromServer(msg: ChunkDataMsg) {
   if (!msg || typeof msg.id !== "string") return;
 
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
+
+  // Hardening: ensure coords match what NOA requested for this id
+  if (
+    typeof msg.x === "number" &&
+    typeof msg.y === "number" &&
+    typeof msg.z === "number"
+  ) {
+    if (msg.x !== pending.x || msg.y !== pending.y || msg.z !== pending.z) {
+      // mismatch = ignore (prevents corruption / malicious mismatch)
+      return;
+    }
+  }
 
   const CS =
     typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
       ? msg.chunkSize
       : pending.chunkSize;
 
-  const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
+  const u8 = toU8View(msg.voxels);
+  if (!u8) return;
+
   const expected = CS * CS * CS;
-  if (voxels.length !== expected) return;
+  if (u8.length !== expected) return;
 
   const data = pending.data;
 
+  // Packing matches server idx = i + CS*(j + CS*k)
+  // Client NOA expects: for k, for j, for i (same as your previous loop)
   let n = 0;
   for (let k = 0; k < CS; k++) {
     for (let j = 0; j < CS; j++) {
       for (let i = 0; i < CS; i++) {
-        data.set(i, j, k, voxels[n++] | 0);
+        data.set(i, j, k, u8[n++] | 0);
       }
     }
   }
@@ -385,6 +451,8 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
+
+  // Optimistic local update (server remains authoritative)
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -399,6 +467,7 @@ noa.inputs.down.on("alt-fire", () => {
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
 
+  // Don't place into player's feet
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
@@ -406,6 +475,7 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
+  // Optimistic local update (server remains authoritative)
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
@@ -877,7 +947,7 @@ async function connect() {
       room.send("worldDataNeeded", req);
     }
 
-    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
+    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg as ChunkDataMsg));
 
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {

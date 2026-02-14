@@ -3,6 +3,7 @@
 //
 // Path B (server authoritative chunks) + multiplayer:
 // - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
+// - Chunk streaming is BINARY (Uint8Array) (Colyseus will msgpack it efficiently)
 // - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
 // - Player movement is relayed to others via "playerTransformOther"
 // - Periodic "playersSnapshot" for robustness
@@ -10,9 +11,12 @@
 // - Spawn Y computed from SAME terrain function (so nobody spawns underground)
 //
 // Extra hardening/debug in this version:
-// - On join: send an immediate playersSnapshot to the joiner + broadcast a snapshot to everyone
-//   (eliminates race conditions around existingPlayers/playerJoined ordering)
+// - On join: send an immediate playersSnapshot to the joiner
+// - Optional join-broadcast snapshot removed (periodic snapshot already converges state)
 // - Throttled debug logs for moves and snapshots
+// - Movement anti-teleport: rejects impossible speed jumps
+// - Block edit reach validation: rejects edits too far from player's last known position
+// - Chunk request hardening: validates payload + clamps coords
 //
 // NOTE: Keep your server room name as "my_room" in defineServer config.
 
@@ -34,7 +38,7 @@ type ChunkDataMsg = {
   x: number;
   y: number;
   z: number;
-  voxels: number[]; // JSON-friendly; optimize later to binary
+  voxels: Uint8Array; // BINARY (preferred)
 };
 
 type PlayerInfo = {
@@ -81,6 +85,12 @@ export class MyRoom extends Room {
 
   // Sanity bounds
   private readonly maxAbsCoord = 100000;
+
+  // Anti-teleport / speed cap
+  private readonly maxSpeedBlocksPerSec = 12;
+
+  // Block edit reach cap
+  private readonly maxEditDistance = 8;
 
   // Debug throttles
   private lastMoveLogAt = 0;
@@ -148,7 +158,7 @@ export class MyRoom extends Room {
         x: cx,
         y: cy,
         z: cz,
-        voxels: Array.from(chunk),
+        voxels: chunk, // ✅ binary
       };
 
       client.send("chunkData", msg);
@@ -163,6 +173,7 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
+      // Rate limit
       if (now - pl.lastMoveAt < this.minMoveIntervalMs) return;
 
       if (typeof payload !== "object" || payload === null) return;
@@ -174,6 +185,19 @@ export class MyRoom extends Room {
       const y = clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord);
       const z = clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord);
       const yaw = isFiniteNumber(maybe.yaw) ? maybe.yaw : pl.yaw;
+
+      // Anti-teleport / impossible speed
+      const dtSec = Math.max(0.001, (now - Math.max(0, pl.lastMoveAt)) / 1000);
+      const maxDist = this.maxSpeedBlocksPerSec * dtSec;
+
+      const dx = x - pl.x;
+      const dy = y - pl.y;
+      const dz = z - pl.z;
+
+      // Allow some slack for jitter (factor 2)
+      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 4) {
+        return;
+      }
 
       pl.x = x;
       pl.y = y;
@@ -187,7 +211,13 @@ export class MyRoom extends Room {
       // Throttled debug
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
-        console.log("[MOVE]", { id: client.sessionId, x: +x.toFixed(2), y: +y.toFixed(2), z: +z.toFixed(2), yaw: +yaw.toFixed(2) });
+        console.log("[MOVE]", {
+          id: client.sessionId,
+          x: +x.toFixed(2),
+          y: +y.toFixed(2),
+          z: +z.toFixed(2),
+          yaw: +yaw.toFixed(2),
+        });
       }
     });
 
@@ -202,6 +232,9 @@ export class MyRoom extends Room {
       const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
+
+      // Reach validation
+      if (!this.isWithinEditRange(client, x, y, z)) return;
 
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
     });
@@ -219,6 +252,9 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const id = toInt(clamp(maybe.id, 0, 255));
 
+      // Reach validation
+      if (!this.isWithinEditRange(client, x, y, z)) return;
+
       this.setBlockAuthoritative(x, y, z, id);
     });
 
@@ -234,12 +270,34 @@ export class MyRoom extends Room {
   onJoin(client: Client, options: any) {
     console.log("➕ onJoin", client.sessionId, options);
 
-    // deterministic spawn grid so players don't overlap
-    const index = this.players.size; // BEFORE adding
+    // Deterministic spawn grid but choose first free slot (no overlap if others remain)
     const spacing = 6;
 
-    const spawnX = (index % 4) * spacing;
-    const spawnZ = Math.floor(index / 4) * spacing;
+    let spawnX = 0;
+    let spawnZ = 0;
+
+    let slot = 0;
+    while (true) {
+      const sx = (slot % 4) * spacing;
+      const sz = Math.floor(slot / 4) * spacing;
+
+      let occupied = false;
+      for (const p of this.players.values()) {
+        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) {
+          occupied = true;
+          break;
+        }
+      }
+
+      if (!occupied) {
+        spawnX = sx;
+        spawnZ = sz;
+        break;
+      }
+
+      slot++;
+      if (slot > 4096) break; // safety
+    }
 
     // compute ground height using the SAME terrain function (surface Y)
     const surfaceY = this.heightAt(spawnX, spawnZ);
@@ -277,7 +335,6 @@ export class MyRoom extends Room {
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
 
     // ✅ Hardening: immediately send a full snapshot to the joiner (authoritative state)
-    // This reduces any race/ordering issues on the client.
     const allNow = Array.from(this.players.values()).map((p) => ({
       id: p.id,
       x: p.x,
@@ -286,9 +343,6 @@ export class MyRoom extends Room {
       yaw: p.yaw,
     }));
     client.send("playersSnapshot", allNow);
-
-    // ✅ Optional: broadcast a fresh snapshot to everyone after join so all clients converge quickly
-    this.broadcast("playersSnapshot", allNow);
 
     console.log("[JOIN STATE]", {
       joined: client.sessionId,
@@ -316,6 +370,18 @@ export class MyRoom extends Room {
   }
 
   // =========================
+  // Validation helpers
+  // =========================
+  private isWithinEditRange(client: Client, x: number, y: number, z: number): boolean {
+    const p = this.players.get(client.sessionId);
+    if (!p) return false;
+    const dx = x - p.x;
+    const dy = y - p.y;
+    const dz = z - p.z;
+    return dx * dx + dy * dy + dz * dz <= this.maxEditDistance * this.maxEditDistance;
+  }
+
+  // =========================
   // World internals
   // =========================
   private chunkKey(cx: number, cy: number, cz: number): string {
@@ -331,10 +397,7 @@ export class MyRoom extends Room {
   }
 
   private heightAt(worldX: number, worldZ: number): number {
-    const h =
-      this.baseHeight +
-      Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
-
+    const h = this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
     return h;
   }
 
@@ -383,8 +446,9 @@ export class MyRoom extends Room {
     const lz = mod(z, CS);
 
     const chunk = this.getOrCreateChunk(cx, cy, cz);
-    chunk[this.idx(lx, ly, lz)] = clamp(toInt(id), 0, 255);
+    const v = clamp(toInt(id), 0, 255);
+    chunk[this.idx(lx, ly, lz)] = v;
 
-    this.broadcast("blockUpdate", { x, y, z, id: clamp(toInt(id), 0, 255) });
+    this.broadcast("blockUpdate", { x, y, z, id: v });
   }
 }
