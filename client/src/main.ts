@@ -1,14 +1,17 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * PATH B (server-authoritative chunks) - FIXED:
- * - Forces chunkSize 32 to match server
- * - Queues worldDataNeeded requests until connected
- * - Applies chunkData reliably
+ * Fixes:
+ * - PATH B chunk streaming (server authoritative)
+ * - Queue chunk requests until connected
+ * - Force chunkSize 32
+ * - NOA 0.33 camera API: use noa.camera.heading / noa.camera.pitch
+ * - Babylon is NOT global in Vite: explicitly import BABYLON and use it for avatars
  */
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
+import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
 /* ===============================
    1. Colyseus Setup
@@ -59,16 +62,14 @@ document.body.appendChild(overlay);
 
 /* ===============================
    4. NOA Engine Initialization
-================================
-   IMPORTANT: force chunkSize = 32 to match server
- */
+================================ */
 const noa = new Engine({
   debug: true,
   container: appEl,
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-  chunkSize: 32, // <<< CRITICAL: must match server authoritative chunkSize
+  chunkSize: 32, // must match server
 });
 
 /* ===============================
@@ -154,18 +155,12 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   7. Terrain (PATH B: Server Chunk Streaming) - FIXED
+   7. Terrain (PATH B: Server Chunk Streaming)
 ================================ */
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
-// pending chunk buffers keyed by noa chunk id
 const pendingChunks = new Map<string, PendingChunk>();
-
-// requests waiting for the room to connect
-const queuedRequests = new Map<
-  string,
-  { id: string; chunkSize: number; x: number; y: number; z: number }
->();
+const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
 
 const worldAny = noa.world as any;
 
@@ -173,7 +168,6 @@ let firstChunkLogged = false;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
   if (!room) {
-    // queue until connected (prevents "sky only")
     queuedRequests.set(req.id, req);
     return;
   }
@@ -190,13 +184,7 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 
   pendingChunks.set(id, { data, chunkSize: CS, x, y, z });
 
-  sendChunkRequest({
-    id,
-    chunkSize: CS,
-    x,
-    y,
-    z,
-  });
+  sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
 function applyChunkFromServer(msg: any) {
@@ -205,21 +193,21 @@ function applyChunkFromServer(msg: any) {
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
-  // Server is authoritative about chunkSize
-  const CS = typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
+  const CS =
+    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
+      ? msg.chunkSize
+      : pending.chunkSize;
 
   const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
   const expected = CS * CS * CS;
 
   if (voxels.length !== expected) {
     console.warn("⚠️ chunkData wrong size", { got: voxels.length, expected, msg });
-    // keep pending so we can retry if needed
     return;
   }
 
   const data = pending.data;
 
-  // Fill noa data buffer: data.set(i, j, k, id)
   // Must match server packing: i + CS*(j + CS*k)
   let n = 0;
   for (let k = 0; k < CS; k++) {
@@ -263,11 +251,7 @@ noa.inputs.down.on("fire", () => {
   if (!target) return;
 
   const { x, y, z } = target.pos;
-
-  // optimistic local update
   noa.world.setBlockID(AIR_ID, x, y, z);
-
-  // authoritative server update
   room?.send("mineBlock", { x, y, z });
 });
 
@@ -289,43 +273,29 @@ noa.inputs.down.on("alt-fire", () => {
     return;
   }
 
-  // optimistic local update
   noa.world.setBlockID(blockToPlace, x, y, z);
-
-  // authoritative server update
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
 
 /* ===============================
-   8.5 Minecraft-style Avatars (Option A - no assets)
+   8.5 Minecraft-style Avatars (Babylon imported, NOT global)
 ================================ */
-
 type Avatar = {
-  root: any;
-  head: any;
-  body: any;
-  armL: any;
-  armR: any;
-  legL: any;
-  legR: any;
+  root: BABYLON.TransformNode;
+  head: BABYLON.Mesh;
+  body: BABYLON.Mesh;
+  armL: BABYLON.Mesh;
+  armR: BABYLON.Mesh;
+  legL: BABYLON.Mesh;
+  legR: BABYLON.Mesh;
   lastPos: { x: number; y: number; z: number };
   lastT: number;
 };
 
 const avatars = new Map<string, Avatar>();
 
-function getBabylonOrThrow() {
-  const BABYLON = (globalThis as any).BABYLON;
-  if (BABYLON) return BABYLON;
-
-  throw new Error(
-    "BABYLON global not found. noa-engine usually provides Babylon globally. " +
-      "If not, install/explicitly import Babylon and update avatar code accordingly."
-  );
-}
-
-function getSceneOrThrow() {
-  const scene = (noa as any).rendering?.getScene?.();
+function getSceneOrThrow(): BABYLON.Scene {
+  const scene = (noa as any).rendering?.getScene?.() as BABYLON.Scene | undefined;
   if (scene) return scene;
   throw new Error("Could not access Babylon scene via noa.rendering.getScene().");
 }
@@ -339,8 +309,7 @@ function colorFromId(id: string) {
   return { r, g, b };
 }
 
-function createAvatar(id: string) {
-  const BABYLON = getBabylonOrThrow();
+function createAvatar(id: string): Avatar {
   const scene = getSceneOrThrow();
 
   const SCALE = 1 / 16;
@@ -366,7 +335,7 @@ function createAvatar(id: string) {
   const matLimb = new BABYLON.StandardMaterial(`matLimb:${id}`, scene);
   matLimb.diffuseColor = new BABYLON.Color3(col.r * 0.5 + 0.25, col.g * 0.5 + 0.25, col.b * 0.5 + 0.25);
 
-  function makeSwingPart(name: string, w: number, h: number, d: number, mat: any) {
+  function makeSwingPart(name: string, w: number, h: number, d: number, mat: BABYLON.Material): BABYLON.Mesh {
     const mesh = BABYLON.MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
     mesh.material = mat;
     mesh.setPivotPoint(new BABYLON.Vector3(0, h / 2, 0));
@@ -475,7 +444,6 @@ function updateAvatar(id: string, x: number, y: number, z: number, yawRad?: numb
 /* ===============================
    9. Networking (Connect & Sync)
 ================================ */
-
 function normId(p: any): string | null {
   if (!p) return null;
   const id = p.id ?? p.sessionId ?? p.sid ?? p.clientId ?? null;
@@ -496,64 +464,39 @@ async function connect() {
     console.log("✅ Joined room:", room.sessionId);
     updateOverlay();
 
-    // flush queued chunk requests now that we're connected
+    // flush queued chunk requests
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
 
-    // server chunk streaming response
-    room.onMessage("chunkData", (msg: any) => {
-      applyChunkFromServer(msg);
-    });
+    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
-    // block updates
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // existing players
     room.onMessage("existingPlayers", (players: any[]) => {
-      console.log("👋 Existing players:", players);
       for (const p of players ?? []) {
         const id = normId(p);
         if (!id || isMe(id)) continue;
-
-        updateAvatar(
-          id,
-          Number(p.x ?? 0),
-          Number(p.y ?? 0),
-          Number(p.z ?? 0),
-          typeof p.yaw === "number" ? p.yaw : undefined
-        );
+        updateAvatar(id, Number(p.x ?? 0), Number(p.y ?? 0), Number(p.z ?? 0), typeof p.yaw === "number" ? p.yaw : undefined);
       }
     });
 
-    // new player
     room.onMessage("playerJoined", (p: any) => {
-      console.log("➕ Player joined:", p);
       const id = normId(p);
       if (!id || isMe(id)) return;
-
-      updateAvatar(
-        id,
-        Number(p.x ?? 0),
-        Number(p.y ?? 0),
-        Number(p.z ?? 0),
-        typeof p.yaw === "number" ? p.yaw : undefined
-      );
+      updateAvatar(id, Number(p.x ?? 0), Number(p.y ?? 0), Number(p.z ?? 0), typeof p.yaw === "number" ? p.yaw : undefined);
     });
 
-    // player left
     room.onMessage("playerLeft", (p: any) => {
-      console.log("➖ Player left:", p);
       const id = normId(p);
       if (!id) return;
       removeAvatar(id);
     });
 
-    // movement updates
     room.onMessage("playerTransformOther", (p: any) => {
       const id = normId(p);
       if (!id || isMe(id)) return;
@@ -561,16 +504,13 @@ async function connect() {
       const x = Number(p.x);
       const y = Number(p.y);
       const z = Number(p.z);
-
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
     });
 
-    // periodic snapshot
     room.onMessage("playersSnapshot", (players: any[]) => {
       if (!Array.isArray(players)) return;
-
       for (const p of players) {
         const id = normId(p);
         if (!id || isMe(id)) continue;
@@ -578,14 +518,12 @@ async function connect() {
         const x = Number(p.x);
         const y = Number(p.y);
         const z = Number(p.z);
-
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
       }
     });
 
-    // optional join ack
     room.onMessage("youJoined", (p: any) => {
       console.log("🟦 youJoined:", p);
     });
@@ -598,31 +536,17 @@ async function connect() {
 connect();
 
 /* ===============================
-   10. Sync Position
+   10. Sync Position (NOA 0.33 camera API)
 ================================ */
-
-function tryGetYaw(): number {
-  const rot = (noa as any).rendering?.getCameraRotation?.();
-  if (rot && typeof rot.y === "number" && Number.isFinite(rot.y)) return rot.y;
-
-  try {
-    const scene = (noa as any).rendering?.getScene?.();
-    const cam = scene?.activeCamera;
-    if (cam && typeof cam.rotation?.y === "number" && Number.isFinite(cam.rotation.y)) return cam.rotation.y;
-  } catch {
-    // ignore
-  }
-
-  return 0;
-}
-
 let tickCount = 0;
 (noa as any).on("tick", () => {
   tickCount++;
 
   if (room && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw = tryGetYaw();
+
+    // NOA >= 0.33: use noa.camera.heading
+    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
 
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
