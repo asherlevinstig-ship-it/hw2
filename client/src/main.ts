@@ -1,21 +1,18 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Adds HARD DEBUG VISIBILITY for remote markers + comprehensive diagnostics,
- * while keeping ALL original gameplay/world/network logic.
+ * Multiplayer voxel client (NOA + Colyseus) with HARD debugging for remote players.
  *
- * What this version adds:
- * - Authoritative spawn applied ("youJoined") + movement gated until spawn received
- * - Stable Babylon scene caching with uid tracking
- * - Remote marker "force visible" settings (scale, render group, optional depth overrides)
- * - Toggleable "PIN marker in front of camera" mode (press P)
- * - Toggleable "overlay extra debug lines" (press O)
- * - Periodic logs for: local pos, first remote pos, marker existence, scene/camera
+ * Key fixes vs your original:
+ * 1) Apply authoritative spawn from server ("youJoined") to local NOA player.
+ * 2) Do NOT send playerMove until after "youJoined" (prevents server spawn overwrite / overlap).
+ * 3) Remote players are rendered as NOA ENTITIES with a mesh component so they inherit NOA's
+ *    render/world-origin transforms (this fixes "pin works but world coords invisible").
  *
- * Controls:
- * - Click to pointer lock
- * - Press P to toggle "pin remote marker in front of camera" (unmissable debug)
- * - Press O to toggle "overlay extra debug lines"
+ * Debug tools:
+ * - P toggles "pin remote marker in front of camera" (local-only)
+ * - O toggles debug overlay extra line
+ * - Periodic console logs for local/remote/scene/marker state
  */
 
 import { Engine } from "noa-engine";
@@ -284,12 +281,15 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Remote Player Rendering + HARD DEBUG
+   9. Remote Player Rendering (NOA Entities + Mesh Component)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
-const markers = new Map<string, BABYLON.Mesh>();
+
+// Remote player NOA entities + meshes
+const remoteEnts = new Map<string, number>();
+const remoteMeshes = new Map<string, BABYLON.Mesh>();
 
 let cachedScene: BABYLON.Scene | null = null;
 let cachedSceneUid: string | number | null = null;
@@ -357,7 +357,7 @@ function forceMarkerAlwaysVisible(marker: BABYLON.Mesh) {
   const mat = marker.material as BABYLON.StandardMaterial | null;
   if (mat) {
     mat.disableDepthWrite = true;
-    (mat as any).disableDepthTest = true; // no @ts-expect-error (fixes TS2578)
+    (mat as any).disableDepthTest = true;
     mat.alpha = 1;
   }
 }
@@ -382,81 +382,128 @@ function forceMarkerInFrontOfCamera(marker: BABYLON.Mesh) {
   marker.position.z = camPos.z + fwd.z * 8;
 }
 
-function attachMeshToNoa(mesh: BABYLON.AbstractMesh): boolean {
-  const r = (noa as any).rendering as any;
-  if (!r) return false;
-
-  if (typeof r.addMeshToScene === "function") {
-    r.addMeshToScene(mesh);
-    return true;
-  }
-  if (typeof r.addMesh === "function") {
-    r.addMesh(mesh);
-    return true;
-  }
-
-  return true;
-}
-
-function ensureMarker(id: string): BABYLON.Mesh | null {
-  const existing = markers.get(id);
-  if (existing) return existing;
+function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | null {
+  const existingEid = remoteEnts.get(id);
+  const existingMesh = remoteMeshes.get(id);
+  if (existingEid != null && existingMesh) return { eid: existingEid, mesh: existingMesh };
 
   const scene = getStableRenderedScene();
   if (!scene) return null;
 
-  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0, segments: 16 }, scene);
-  m.material = makeMarkerMaterial(scene, id);
+  const mesh = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0, segments: 16 }, scene);
+  mesh.material = makeMarkerMaterial(scene, id);
 
   const cam = scene.activeCamera;
-  if (cam && typeof cam.layerMask === "number") {
-    m.layerMask = cam.layerMask;
-  } else {
-    m.layerMask = 0xffffffff;
+  if (cam && typeof cam.layerMask === "number") mesh.layerMask = cam.layerMask;
+  else mesh.layerMask = 0xffffffff;
+
+  forceMarkerAlwaysVisible(mesh);
+
+  // Create NOA entity
+  let eid: number | null = null;
+  try {
+    // noa.ents.add(position, width, height) exists in many builds
+    const maybe = (noa as any).ents.add?.([0, 0, 0], 1, 2);
+    if (typeof maybe === "number") eid = maybe;
+  } catch {}
+
+  if (eid == null) {
+    try {
+      const maybe2 = (noa as any).ents.createEntity?.();
+      if (typeof maybe2 === "number") eid = maybe2;
+    } catch {}
   }
 
-  const ok = attachMeshToNoa(m);
+  if (eid == null) {
+    console.warn("[RENDER] Could not create NOA entity for remote player", id);
+    mesh.dispose();
+    return null;
+  }
 
-  forceMarkerAlwaysVisible(m);
+  // Attach mesh via NOA mesh component so it inherits NOA render transforms
+  try {
+    const meshName = (noa as any).ents?.names?.mesh ?? "mesh";
+    (noa as any).ents.addComponent(eid, meshName, {
+      mesh,
+      offset: [0, 0, 0],
+    });
+  } catch (e) {
+    console.warn("[RENDER] Failed to add mesh component to NOA entity", id, e);
+    mesh.dispose();
+    try {
+      (noa as any).ents.removeEntity?.(eid);
+    } catch {}
+    return null;
+  }
 
-  console.log("[RENDER] created remote marker", {
+  remoteEnts.set(id, eid);
+  remoteMeshes.set(id, mesh);
+
+  console.log("[RENDER] remote entity created", {
     id,
+    eid,
     sceneUid: (scene as any).uid,
-    sceneMeshes: scene.meshes.length,
-    attachedViaNoa: ok,
     cam: scene.activeCamera?.name ?? "(none)",
-    layerMask: m.layerMask,
   });
 
-  markers.set(id, m);
-  return m;
+  return { eid, mesh };
 }
 
-function removeMarker(id: string) {
+function removeRemote(id: string) {
   netTransforms.delete(id);
 
-  const m = markers.get(id);
-  if (m) {
-    m.dispose();
-    markers.delete(id);
+  const eid = remoteEnts.get(id);
+  if (eid != null) {
+    try {
+      (noa as any).ents.removeEntity?.(eid);
+    } catch {}
+    remoteEnts.delete(id);
+  }
+
+  const mesh = remoteMeshes.get(id);
+  if (mesh) {
+    try {
+      mesh.dispose();
+    } catch {}
+    remoteMeshes.delete(id);
   }
 }
 
+/* Apply transforms each tick */
 (noa as any).on("tick", () => {
   if (!room) return;
 
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
 
-    const marker = ensureMarker(id);
-    if (!marker) continue;
+    const created = ensureRemoteEntity(id);
+    if (!created) continue;
+
+    const { eid, mesh } = created;
 
     if (pinRemoteMarkerInFront) {
-      forceMarkerInFrontOfCamera(marker);
-    } else {
-      marker.position.x = t.x;
-      marker.position.y = t.y + 6.0;
-      marker.position.z = t.z;
+      // Local-only debug pin
+      forceMarkerInFrontOfCamera(mesh);
+
+      // Keep entity near camera as well (some NOA culling paths rely on entity pos)
+      const scene = mesh.getScene();
+      const cam = scene.activeCamera as any;
+      if (cam?.position) {
+        (noa as any).ents.setPosition(eid, [cam.position.x, cam.position.y, cam.position.z]);
+      }
+      continue;
+    }
+
+    // ✅ Critical: Move via NOA entity so NOA applies world origin shifts
+    try {
+      (noa as any).ents.setPosition(eid, [t.x, t.y + 6.0, t.z]);
+    } catch {}
+
+    // Optional yaw (visual only)
+    if (typeof t.yaw === "number") {
+      try {
+        mesh.rotation.y = t.yaw;
+      } catch {}
     }
   }
 });
@@ -535,11 +582,11 @@ async function connect() {
       console.log("[NET] playerLeft:", p);
       const id = normId(p);
       if (!id) return;
-      removeMarker(id);
+      removeRemote(id);
     });
 
     room.onMessage("playerTransformOther", (p: any) => {
-      console.log("[NET] playerTransformOther:", p);
+      // console.log("[NET] playerTransformOther:", p);
 
       const id = normId(p);
       if (!id || id === room!.sessionId) return;
@@ -607,7 +654,7 @@ let debugTick = 0;
   tickCount++;
   debugTick++;
 
-  // Send movement (gated)
+  // Send movement (gated until spawn applied)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
@@ -628,14 +675,14 @@ let debugTick = 0;
       }
     }
 
-    const markerCount = markers.size;
+    const markerCount = remoteMeshes.size;
     const netCount = netTransforms.size;
 
     const line =
       showExtraDebugOverlay
         ? `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
           `Remote: ${firstRemote ? `${firstRemote.id} (${firstRemote.t.x.toFixed(2)},${firstRemote.t.y.toFixed(2)},${firstRemote.t.z.toFixed(2)})` : "none"} | ` +
-          `Net=${netCount} Markers=${markerCount} | ` +
+          `Net=${netCount} RemoteEnts=${remoteEnts.size} Meshes=${markerCount} | ` +
           `Scene=${s ? String((s as any).uid) : "null"} Meshes=${s ? s.meshes.length : 0} Cam=${s?.activeCamera?.name ?? "none"} | ` +
           `Pin=${pinRemoteMarkerInFront ? "ON" : "OFF"}`
         : "";
@@ -646,26 +693,38 @@ let debugTick = 0;
       local: { x: pos[0], y: pos[1], z: pos[2] },
       remote: firstRemote ? { id: firstRemote.id, ...firstRemote.t } : null,
       netCount,
-      markerCount,
+      remoteEntCount: remoteEnts.size,
+      remoteMeshCount: markerCount,
       scene: s ? { uid: (s as any).uid, meshes: s.meshes.length, cam: s.activeCamera?.name } : null,
       pinRemoteMarkerInFront,
     });
 
     if (firstRemote) {
-      const m = markers.get(firstRemote.id);
-      if (m) {
-        console.log("[DBG marker]", {
+      const mesh = remoteMeshes.get(firstRemote.id);
+      const eid = remoteEnts.get(firstRemote.id);
+
+      if (mesh) {
+        console.log("[DBG remote mesh]", {
           id: firstRemote.id,
-          enabled: m.isEnabled(),
-          isVisible: m.isVisible,
-          visibility: m.visibility,
-          pos: { x: m.position.x, y: m.position.y, z: m.position.z },
-          scaling: { x: m.scaling.x, y: m.scaling.y, z: m.scaling.z },
-          layerMask: m.layerMask,
-          renderingGroupId: (m as any).renderingGroupId,
+          enabled: mesh.isEnabled(),
+          isVisible: mesh.isVisible,
+          visibility: mesh.visibility,
+          meshPos: { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z },
+          scaling: { x: mesh.scaling.x, y: mesh.scaling.y, z: mesh.scaling.z },
+          layerMask: mesh.layerMask,
+          renderingGroupId: (mesh as any).renderingGroupId,
         });
       } else {
-        console.log("[DBG marker] none for firstRemote yet");
+        console.log("[DBG remote mesh] none for firstRemote yet");
+      }
+
+      if (eid != null) {
+        try {
+          const ep = (noa as any).ents.getPosition(eid);
+          console.log("[DBG remote eid pos]", firstRemote.id, ep);
+        } catch (e) {
+          console.log("[DBG remote eid pos] failed", e);
+        }
       }
     }
   }

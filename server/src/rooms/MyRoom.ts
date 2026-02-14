@@ -6,8 +6,13 @@
 // - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
 // - Player movement is relayed to others via "playerTransformOther"
 // - Periodic "playersSnapshot" for robustness
-// - FIX: deterministic spawn spacing so players don't spawn on top of each other
-// - FIX: spawn Y computed from the SAME terrain function (so nobody spawns underground)
+// - Deterministic spawn spacing so players don't spawn on top of each other
+// - Spawn Y computed from SAME terrain function (so nobody spawns underground)
+//
+// Extra hardening/debug in this version:
+// - On join: send an immediate playersSnapshot to the joiner + broadcast a snapshot to everyone
+//   (eliminates race conditions around existingPlayers/playerJoined ordering)
+// - Throttled debug logs for moves and snapshots
 //
 // NOTE: Keep your server room name as "my_room" in defineServer config.
 
@@ -77,6 +82,10 @@ export class MyRoom extends Room {
   // Sanity bounds
   private readonly maxAbsCoord = 100000;
 
+  // Debug throttles
+  private lastMoveLogAt = 0;
+  private lastSnapshotLogAt = 0;
+
   // =========================
   // World settings (authoritative)
   // =========================
@@ -106,7 +115,14 @@ export class MyRoom extends Room {
         z: p.z,
         yaw: p.yaw,
       }));
+
       this.broadcast("playersSnapshot", all);
+
+      const now = Date.now();
+      if (now - this.lastSnapshotLogAt > 3000) {
+        this.lastSnapshotLogAt = now;
+        console.log("[SNAPSHOT]", { count: all.length, ids: all.map((p) => p.id).slice(0, 5) });
+      }
     }, this.snapshotIntervalMs);
 
     // =========================
@@ -124,7 +140,6 @@ export class MyRoom extends Room {
       const cz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
       const CS = this.chunkSize;
-
       const chunk = this.getOrCreateChunk(cx, cy, cz);
 
       const msg: ChunkDataMsg = {
@@ -168,6 +183,12 @@ export class MyRoom extends Room {
 
       // others only
       this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
+
+      // Throttled debug
+      if (now - this.lastMoveLogAt > 2000) {
+        this.lastMoveLogAt = now;
+        console.log("[MOVE]", { id: client.sessionId, x: +x.toFixed(2), y: +y.toFixed(2), z: +z.toFixed(2), yaw: +yaw.toFixed(2) });
+      }
     });
 
     // =========================
@@ -245,7 +266,7 @@ export class MyRoom extends Room {
 
     client.send("existingPlayers", existingPlayers);
 
-    // Notify others
+    // Notify others about this join
     this.broadcast(
       "playerJoined",
       { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw },
@@ -254,6 +275,26 @@ export class MyRoom extends Room {
 
     // Tell joiner their own spawn
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
+
+    // ✅ Hardening: immediately send a full snapshot to the joiner (authoritative state)
+    // This reduces any race/ordering issues on the client.
+    const allNow = Array.from(this.players.values()).map((p) => ({
+      id: p.id,
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      yaw: p.yaw,
+    }));
+    client.send("playersSnapshot", allNow);
+
+    // ✅ Optional: broadcast a fresh snapshot to everyone after join so all clients converge quickly
+    this.broadcast("playersSnapshot", allNow);
+
+    console.log("[JOIN STATE]", {
+      joined: client.sessionId,
+      spawn: { x: spawnX, y: spawnY, z: spawnZ },
+      players: this.players.size,
+    });
   }
 
   onLeave(client: Client, code?: number) {
@@ -290,7 +331,6 @@ export class MyRoom extends Room {
   }
 
   private heightAt(worldX: number, worldZ: number): number {
-    // Same formula you used client-side for hills
     const h =
       this.baseHeight +
       Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
