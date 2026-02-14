@@ -5,7 +5,7 @@
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
- * - First-person arm (camera-attached) with robust NOA camera detection + simple walk bob animation
+ * - First-person arm (WORLD-SPACE, always in front) + simple walk bob animation
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -308,7 +308,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (robust NOA camera attach)
+   10. First-person arm (WORLD-SPACE, always in front)
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -332,10 +332,7 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
   const c4 = ((noa as any).camera?._camera ?? null) as BABYLON.Camera | null;
   if (c4) return c4;
 
-  const c5 = (scene.activeCamera ?? null) as BABYLON.Camera | null;
-  if (c5) return c5;
-
-  return null;
+  return (scene.activeCamera ?? null) as BABYLON.Camera | null;
 }
 
 function setupFirstPersonArm(scene: BABYLON.Scene) {
@@ -345,26 +342,22 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   if (!cam) {
     if ((setupFirstPersonArm as any)._missed !== true) {
       (setupFirstPersonArm as any)._missed = true;
-      console.warn("[FP] No camera yet - arm will retry when camera exists");
+      console.warn("[FP] No camera yet - will retry");
     }
     return;
   }
 
-  console.log("[FP] Using camera:", {
-    name: cam.name,
-    id: (cam as any).id,
-    layerMask: (cam as any).layerMask,
-    sceneUid: (scene as any).uid,
-  });
+  // Reduce near-plane clipping (helps if anything ends up very close)
+  try {
+    if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
+  } catch {}
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
-  fpArmRoot.parent = cam;
-
-  fpArmRoot.position.set(0.65, -0.65, 1.15);
-  fpArmRoot.rotation.set(0.2, 0.0, 0.0);
 
   fpArmMesh = BABYLON.MeshBuilder.CreateBox("fpArm", { width: 0.6, height: 1.6, depth: 0.6 }, scene);
   fpArmMesh.parent = fpArmRoot;
+
+  // shoulder-ish pivot
   fpArmMesh.position.set(0, -0.8, 0);
 
   const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
@@ -374,21 +367,36 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   fpArmMesh.material = mat;
 
-  // Set layer mask ONLY on mesh (TransformNode doesn't have layerMask)
-  const camMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
-  fpArmMesh.layerMask = camMask;
+  fpArmMesh.alwaysSelectAsActiveMesh = true;
+  fpArmMesh.isPickable = false;
 
-  fpArmMesh.renderingGroupId = 3;
+  // Draw on top
+  fpArmMesh.renderingGroupId = 9;
   mat.disableDepthWrite = true;
   (mat as any).disableDepthTest = true;
 
+  // Match camera layer mask (mesh has it; TransformNode doesn't)
+  const camMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
+  fpArmMesh.layerMask = camMask;
+
   fpArmReady = true;
-  console.log("[FP] Arm created OK");
+
+  console.log("[FP] Arm created OK (world-space attach)", {
+    cam: cam.name,
+    sceneUid: (scene as any).uid,
+    camMask,
+    minZ: (cam as any).minZ,
+  });
 }
 
 function updateFirstPersonArm(dtSec: number) {
-  if (!fpArmReady || !fpArmRoot) return;
+  if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
 
+  const scene = fpArmMesh.getScene();
+  const cam = getNoaCamera(scene);
+  if (!cam) return;
+
+  // Movement speed for bob (from NOA player entity)
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   if (!pos) return;
 
@@ -407,13 +415,42 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  fpArmRoot.position.x = 0.65 + sway * 0.08;
-  fpArmRoot.position.y = -0.65 + bob;
-  fpArmRoot.position.z = 1.15;
+  // Camera basis in world space
+  const forward =
+    typeof (cam as any).getForwardRay === "function"
+      ? (cam as any).getForwardRay(1).direction.clone()
+      : new BABYLON.Vector3(0, 0, 1);
 
-  fpArmRoot.rotation.x = 0.2 + Math.sin(armTime) * 0.12 * walk;
-  fpArmRoot.rotation.y = 0.0;
-  fpArmRoot.rotation.z = -0.25 + Math.cos(armTime) * 0.09 * walk;
+  const up = BABYLON.Vector3.Up();
+  const right = BABYLON.Vector3.Cross(up, forward).normalize();
+
+  const camPos = (cam as any).position as BABYLON.Vector3;
+
+  // Always in front-right-down of camera
+  const base = camPos
+    .add(forward.scale(1.2))
+    .add(right.scale(0.65))
+    .add(up.scale(-0.65 + bob));
+
+  fpArmRoot.position.copyFrom(base);
+
+  // Follow camera rotation (prefer quaternion)
+  const q =
+    (cam as any).absoluteRotationQuaternion ??
+    (cam as any).rotationQuaternion ??
+    null;
+
+  if (q && q.clone) {
+    fpArmRoot.rotationQuaternion = q.clone();
+  } else {
+    fpArmRoot.rotationQuaternion = null;
+    fpArmRoot.rotation.copyFrom((cam as any).rotation ?? BABYLON.Vector3.Zero());
+  }
+
+  // Add swing on the mesh itself (local-ish)
+  fpArmMesh.rotation.x = 0.2 + Math.sin(armTime) * 0.12 * walk;
+  fpArmMesh.rotation.y = 0.0;
+  fpArmMesh.rotation.z = -0.25 + Math.cos(armTime) * 0.09 * walk + sway * 0.05;
 }
 
 /* ===============================
@@ -538,7 +575,9 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
       : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
 
   const fwd: BABYLON.Vector3 =
-    typeof cam.getForwardRay === "function" ? cam.getForwardRay(1).direction : new BABYLON.Vector3(0, 0, 1);
+    typeof cam.getForwardRay === "function"
+      ? cam.getForwardRay(1).direction
+      : new BABYLON.Vector3(0, 0, 1);
 
   mesh.position.x = camPos.x + fwd.x * 6;
   mesh.position.y = camPos.y + fwd.y * 6;
@@ -736,7 +775,7 @@ let sceneHookedForArm = false;
 
   const scene = getStableScene();
 
-  // Robust: also hook onBeforeRender once scene exists, so arm creation can happen even if timing differs
+  // Hook render loop once scene exists for extra robustness
   if (scene && !sceneHookedForArm) {
     sceneHookedForArm = true;
     scene.onBeforeRenderObservable.add(() => {
