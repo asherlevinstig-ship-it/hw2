@@ -37,12 +37,18 @@
  * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
  * - Mirroring (scale.x = -1) makes it read as a right-hand viewmodel
  *
- * BEST FIXES INCLUDED:
- * - Pointer lock check is RELAXED: if browser says locked, we accept it.
- * - Pointer lock request tries multiple elements (canvas + appEl) for robustness.
- * - ChunkData supports binary voxels (Uint8Array / ArrayBuffer) OR legacy number[]
- * - ChunkData is validated against pending chunk coords (hardening)
- * - TypeScript strict-null safe: appEl is non-null by construction (IIFE).
+ * BEST FIXES INCLUDED (for mouse look + mouse actions):
+ * - Pointer lock requests the *Babylon render canvas* whenever possible.
+ * - Uses both click and mousedown (user gesture) to satisfy strict browsers.
+ * - hasPointerLock trusts browser pointerLockElement OR NOA's internal flag.
+ * - Prevents default browser handling of right/middle mouse buttons.
+ *
+ * Chunk streaming:
+ * - Accepts voxels as Uint8Array / ArrayBuffer / TypedArrayView / number[].
+ * - Validates chunk coords against NOA pending request (hardening).
+ *
+ * TS strict-null:
+ * - appEl is non-null by construction via IIFE.
  */
 
 import { Engine } from "noa-engine";
@@ -79,6 +85,15 @@ appEl.style.left = "0";
 appEl.style.right = "0";
 appEl.style.zIndex = "1";
 
+// Prevent browser from eating mouse buttons while playing
+window.addEventListener(
+  "mousedown",
+  (e) => {
+    if (e.button === 1 || e.button === 2) e.preventDefault();
+  },
+  { passive: false }
+);
+
 /* ===============================
    3. UI Overlay Setup
 ================================ */
@@ -110,34 +125,70 @@ const noa = new Engine({
 });
 
 /* ===============================
-   4.1 Pointer Lock (BEST solution: relaxed + robust request)
+   4.1 Pointer Lock (robust + NOA-friendly)
 ================================ */
-function getNoaCanvas(): HTMLElement | null {
+function getNoaSceneUnsafe(): any {
   try {
-    const scene = (noa as any).rendering?.getScene?.();
-    const canvas = scene?.getEngine?.()?.getRenderingCanvas?.();
-    if (canvas) return canvas as HTMLElement;
-  } catch {}
-  return null;
+    return (noa as any).rendering?.getScene?.() ?? (noa as any).rendering?._scene ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function getRenderCanvas(): HTMLElement | null {
+  try {
+    const scene = getNoaSceneUnsafe();
+    const canvas = scene?.getEngine?.()?.getRenderingCanvas?.() ?? null;
+    return canvas as HTMLElement | null;
+  } catch {
+    return null;
+  }
 }
 
 function requestPointerLock() {
-  // Try canvas first (Babylon typical), then appEl fallback.
-  const canvas = getNoaCanvas();
-  try {
-    canvas?.requestPointerLock?.();
-  } catch {}
-  try {
-    appEl.requestPointerLock?.();
-  } catch {}
+  // 1) Prefer the Babylon render canvas (this is what NOA/Babylon expect)
+  const canvas = getRenderCanvas();
+  if (canvas?.requestPointerLock) {
+    try {
+      canvas.requestPointerLock();
+      return;
+    } catch {}
+  }
+
+  // 2) Fallback to NOA container/app element
+  const container = (noa as any).container as any;
+  if (container?.requestPointerLock) {
+    try {
+      container.requestPointerLock();
+      return;
+    } catch {}
+  }
+
+  if (appEl.requestPointerLock) {
+    try {
+      appEl.requestPointerLock();
+      return;
+    } catch {}
+  }
 }
+
+// Use BOTH click + mousedown to satisfy strict “user gesture” browsers
+appEl.addEventListener(
+  "mousedown",
+  (e) => {
+    e.preventDefault();
+    requestPointerLock();
+  },
+  { passive: false }
+);
 
 appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
-  // BEST: Trust the browser. If pointerLockElement exists, we consider ourselves locked.
-  // This avoids strict element equality issues across NOA/Babylon versions.
-  return !!document.pointerLockElement;
+  // Trust browser OR NOA's internal flag
+  const browserLocked = !!document.pointerLockElement;
+  const noaLocked = !!(((noa as any).container as any)?.hasPointerLock);
+  return browserLocked || noaLocked;
 }
 
 /* ===============================
@@ -337,7 +388,7 @@ type ChunkDataMsg = {
   x: number;
   y: number;
   z: number;
-  voxels: unknown; // Uint8Array | ArrayBuffer | number[]
+  voxels: unknown; // Uint8Array | ArrayBuffer | TypedArrayView | number[]
 };
 
 const pendingChunks = new Map<string, PendingChunk>();
@@ -360,17 +411,21 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 
 function toU8View(vox: unknown): Uint8Array | null {
   if (vox instanceof Uint8Array) return vox;
+
   if (vox instanceof ArrayBuffer) return new Uint8Array(vox);
+
   if (ArrayBuffer.isView(vox) && (vox as any).buffer instanceof ArrayBuffer) {
     const v = vox as ArrayBufferView;
     return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   }
+
   if (Array.isArray(vox)) {
     const arr = vox as unknown[];
     const u = new Uint8Array(arr.length);
     for (let i = 0; i < arr.length; i++) u[i] = (Number(arr[i]) | 0) & 255;
     return u;
   }
+
   return null;
 }
 
@@ -380,6 +435,7 @@ function applyChunkFromServer(msg: ChunkDataMsg) {
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
+  // Hardening: ensure coords match NOA request for this id
   if (typeof msg.x === "number" && typeof msg.y === "number" && typeof msg.z === "number") {
     if (msg.x !== pending.x || msg.y !== pending.y || msg.z !== pending.z) return;
   }
@@ -443,6 +499,8 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
+
+  // optimistic client update
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -464,6 +522,7 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
+  // optimistic client update
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
@@ -637,7 +696,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   if (!vmEngineHooked) {
     vmEngineHooked = true;
-
     engine.onEndFrameObservable.add(() => {
       if (!viewModelEnabled) return;
       if (!vmScene) return;
