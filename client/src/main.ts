@@ -7,6 +7,7 @@
  * 3) Networking message alignment with your server:
  *    - client sends: "playerMove"
  *    - client receives: "playerTransformOther", "playersSnapshot", "playerJoined", "playerLeft", "existingPlayers", "youJoined"
+ * 4) TypeScript build fix: does NOT access room.id directly (uses safe accessor)
  *
  * Notes:
  * - Your server currently does NOT implement chunk streaming messages ("worldDataNeeded", "chunkData", "worldData"),
@@ -60,7 +61,13 @@ void (async function boot(): Promise<void> {
     setupPlayerNetworking(noa, room, avatars);
     setupLocalControls(noa, room);
 
-    console.log("✅ Client booted", { endpoint, roomName: room.name, roomId: room.id });
+    // TS-safe room id accessor (sdk versions differ: roomId vs id)
+    const roomId =
+      (room as unknown as { roomId?: string }).roomId ??
+      (room as unknown as { id?: string }).id ??
+      "unknown";
+
+    console.log("✅ Client booted", { endpoint, roomName: room.name, roomId });
   } catch (err) {
     console.error("❌ Boot error:", err);
     showFatalOverlay(err);
@@ -300,7 +307,7 @@ function setupLocalControls(noa: any, room: Room): void {
   let acc = 0;
 
   noa.on?.("tick", (dt: number) => {
-    // Basic local movement (optional). If you already have noa movement controls, remove this.
+    // Minimal WASD movement so something moves even if noa controls aren't configured.
     applyBasicNoaMovement(noa, keys, dt);
 
     acc += dt;
@@ -343,16 +350,16 @@ function applyBasicNoaMovement(noa: any, keys: Set<string>, dt: number): void {
 
   // Try common noa player entity access patterns
   const ent = noa?.playerEntity;
-  const bodies = noa?.entities?.getPhysicsBody ? noa.entities.getPhysicsBody(ent) : null;
+  const body = noa?.entities?.getPhysicsBody ? noa.entities.getPhysicsBody(ent) : null;
 
   // If noa physics body is available, set velocity
-  if (bodies?.velocity) {
-    bodies.velocity[0] = vx;
-    bodies.velocity[2] = vz;
+  if (body?.velocity) {
+    body.velocity[0] = vx;
+    body.velocity[2] = vz;
 
     if (keys.has("Space")) {
       // naive jump, only if nearly not moving vertically
-      if (Math.abs(bodies.velocity[1]) < 0.01) bodies.velocity[1] = jumpSpeed;
+      if (Math.abs(body.velocity[1]) < 0.01) body.velocity[1] = jumpSpeed;
     }
     return;
   }
@@ -366,6 +373,7 @@ function applyBasicNoaMovement(noa: any, keys: Set<string>, dt: number): void {
 
   posArr[0] += vx * dt;
   posArr[2] += vz * dt;
+
   if (keys.has("Space")) posArr[1] += jumpSpeed * dt * 0.15;
 }
 
