@@ -4,12 +4,8 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players rendered via NOA entities + mesh component
+ * - Remote players rendered via Babylon meshes (visible to others)
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
- *
- * Why vmScene?
- * NOA's render pipeline ignores arbitrary meshes added to its world scene.
- * vmScene is rendered AFTER NOA each frame via engine.onEndFrameObservable.
  *
  * Controls:
  * - V toggles viewmodel overlay scene ON/OFF
@@ -30,25 +26,11 @@
  * - 9/0: rotY down/up
  * - -/= : rotZ down/up
  *
- * Viewmodel:
- * - Minecraft-ish blocky arm (boxes)
- * - Screen-space HUD (orthographic) anchored bottom-right
- * - Punch animates on mine/place (deterministic)
- * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
- * - Mirroring (scale.x = -1) makes it read as a right-hand viewmodel
- *
- * BEST FIXES INCLUDED (for mouse look + mouse actions):
- * - Pointer lock requests the *Babylon render canvas* whenever possible.
- * - Uses both click and mousedown (user gesture) to satisfy strict browsers.
- * - hasPointerLock trusts browser pointerLockElement OR NOA's internal flag.
- * - Prevents default browser handling of right/middle mouse buttons.
- *
- * Chunk streaming:
- * - Accepts voxels as Uint8Array / ArrayBuffer / TypedArrayView / number[].
- * - Validates chunk coords against NOA pending request (hardening).
- *
- * TS strict-null:
- * - appEl is non-null by construction via IIFE.
+ * Remote players:
+ * - Always-visible avatar mesh (boxy body + head), bright emissive
+ * - LayerMask forced to 0xffffffff for visibility
+ * - We DO NOT add +6 Y offset (was making avatars float / disappear)
+ * - Robust: if NOA mesh component attach fails, we still render the mesh directly
  */
 
 import { Engine } from "noa-engine";
@@ -65,11 +47,8 @@ let room: Room | null = null;
 /* ===============================
    2. DOM & CSS Setup
 ================================ */
-const appEl = (() => {
-  const el = document.querySelector<HTMLDivElement>("#app");
-  if (!el) throw new Error("Missing <div id='app'></div> in index.html");
-  return el;
-})();
+const appEl = document.querySelector<HTMLDivElement>("#app");
+if (!appEl) throw new Error("Missing <div id='app'></div> in index.html");
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -84,15 +63,6 @@ appEl.style.bottom = "0";
 appEl.style.left = "0";
 appEl.style.right = "0";
 appEl.style.zIndex = "1";
-
-// Prevent browser from eating mouse buttons while playing
-window.addEventListener(
-  "mousedown",
-  (e) => {
-    if (e.button === 1 || e.button === 2) e.preventDefault();
-  },
-  { passive: false }
-);
 
 /* ===============================
    3. UI Overlay Setup
@@ -125,70 +95,26 @@ const noa = new Engine({
 });
 
 /* ===============================
-   4.1 Pointer Lock (robust + NOA-friendly)
+   4.1 Pointer Lock
 ================================ */
-function getNoaSceneUnsafe(): any {
-  try {
-    return (noa as any).rendering?.getScene?.() ?? (noa as any).rendering?._scene ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function getRenderCanvas(): HTMLElement | null {
-  try {
-    const scene = getNoaSceneUnsafe();
-    const canvas = scene?.getEngine?.()?.getRenderingCanvas?.() ?? null;
-    return canvas as HTMLElement | null;
-  } catch {
-    return null;
-  }
-}
-
 function requestPointerLock() {
-  // 1) Prefer the Babylon render canvas (this is what NOA/Babylon expect)
-  const canvas = getRenderCanvas();
-  if (canvas?.requestPointerLock) {
-    try {
-      canvas.requestPointerLock();
-      return;
-    } catch {}
-  }
+  try {
+    const scene = (noa as any).rendering?.getScene?.();
+    const canvas =
+      scene?.getEngine?.()?.getRenderingCanvas?.() ??
+      (noa as any).container ??
+      appEl;
 
-  // 2) Fallback to NOA container/app element
-  const container = (noa as any).container as any;
-  if (container?.requestPointerLock) {
-    try {
-      container.requestPointerLock();
-      return;
-    } catch {}
-  }
-
-  if (appEl.requestPointerLock) {
-    try {
-      appEl.requestPointerLock();
-      return;
-    } catch {}
+    if (canvas?.requestPointerLock) canvas.requestPointerLock();
+  } catch {
+    if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
   }
 }
-
-// Use BOTH click + mousedown to satisfy strict “user gesture” browsers
-appEl.addEventListener(
-  "mousedown",
-  (e) => {
-    e.preventDefault();
-    requestPointerLock();
-  },
-  { passive: false }
-);
 
 appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
-  // Trust browser OR NOA's internal flag
-  const browserLocked = !!document.pointerLockElement;
-  const noaLocked = !!(((noa as any).container as any)?.hasPointerLock);
-  return browserLocked || noaLocked;
+  return !!(noa.container as any)?.hasPointerLock;
 }
 
 /* ===============================
@@ -279,8 +205,6 @@ updateOverlay();
 
 /* ===============================
    6.2 Key handling
-   - Normal keydown for hotbar + toggles
-   - Capture-phase keydown to intercept tuning keys BEFORE NOA sees them
 ================================ */
 
 // Normal (bubble) handler: hotbar + toggles
@@ -340,20 +264,17 @@ window.addEventListener(
 
     if (!isArrow && !isRotKey) return;
 
-    // CRITICAL: stop NOA / browser from using these keys
     e.preventDefault();
     e.stopPropagation();
     (e as any).stopImmediatePropagation?.();
 
     const fineMove = e.shiftKey ? 0.003 : 0.01;
 
-    // Move anchor
     if (e.key === "ArrowLeft") vmBaseXMul -= fineMove;
     if (e.key === "ArrowRight") vmBaseXMul += fineMove;
     if (e.key === "ArrowUp") vmBaseY += fineMove;
     if (e.key === "ArrowDown") vmBaseY -= fineMove;
 
-    // Rotate base pose
     const rStep = e.shiftKey ? 0.02 : 0.05;
     if (e.key === "7") vmRotX -= rStep;
     if (e.key === "8") vmRotX += rStep;
@@ -374,22 +295,7 @@ window.addEventListener(
 /* ===============================
    7. World Streaming (Path B)
 ================================ */
-type PendingChunk = {
-  data: any;
-  chunkSize: number;
-  x: number;
-  y: number;
-  z: number;
-};
-
-type ChunkDataMsg = {
-  id: string;
-  chunkSize: number;
-  x: number;
-  y: number;
-  z: number;
-  voxels: unknown; // Uint8Array | ArrayBuffer | TypedArrayView | number[]
-};
+type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
 const pendingChunks = new Map<string, PendingChunk>();
 const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
@@ -409,47 +315,18 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-function toU8View(vox: unknown): Uint8Array | null {
-  if (vox instanceof Uint8Array) return vox;
-
-  if (vox instanceof ArrayBuffer) return new Uint8Array(vox);
-
-  if (ArrayBuffer.isView(vox) && (vox as any).buffer instanceof ArrayBuffer) {
-    const v = vox as ArrayBufferView;
-    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-  }
-
-  if (Array.isArray(vox)) {
-    const arr = vox as unknown[];
-    const u = new Uint8Array(arr.length);
-    for (let i = 0; i < arr.length; i++) u[i] = (Number(arr[i]) | 0) & 255;
-    return u;
-  }
-
-  return null;
-}
-
-function applyChunkFromServer(msg: ChunkDataMsg) {
+function applyChunkFromServer(msg: any) {
   if (!msg || typeof msg.id !== "string") return;
 
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
-  // Hardening: ensure coords match NOA request for this id
-  if (typeof msg.x === "number" && typeof msg.y === "number" && typeof msg.z === "number") {
-    if (msg.x !== pending.x || msg.y !== pending.y || msg.z !== pending.z) return;
-  }
-
   const CS =
-    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
-      ? msg.chunkSize
-      : pending.chunkSize;
+    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
 
-  const u8 = toU8View(msg.voxels);
-  if (!u8) return;
-
+  const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
   const expected = CS * CS * CS;
-  if (u8.length !== expected) return;
+  if (voxels.length !== expected) return;
 
   const data = pending.data;
 
@@ -457,7 +334,7 @@ function applyChunkFromServer(msg: ChunkDataMsg) {
   for (let k = 0; k < CS; k++) {
     for (let j = 0; j < CS; j++) {
       for (let i = 0; i < CS; i++) {
-        data.set(i, j, k, u8[n++] | 0);
+        data.set(i, j, k, voxels[n++] | 0);
       }
     }
   }
@@ -486,7 +363,7 @@ function getTargetInfo() {
 }
 
 /* ---- Viewmodel punch (time-based, deterministic) ---- */
-let punchT = 1; // 0..1 (0 = start, 1 = done)
+let punchT = 1; // 0..1
 function triggerPunch() {
   punchT = 0;
 }
@@ -499,8 +376,6 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
-
-  // optimistic client update
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -522,7 +397,6 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  // optimistic client update
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
@@ -647,8 +521,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   hand.material = armMat;
 
   upper.isPickable = fore.isPickable = hand.isPickable = false;
-  upper.isVisible = fore.isVisible = hand.isVisible = true;
-
   (upper as any).isInFrustum = () => true;
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
@@ -696,6 +568,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   if (!vmEngineHooked) {
     vmEngineHooked = true;
+
     engine.onEndFrameObservable.add(() => {
       if (!viewModelEnabled) return;
       if (!vmScene) return;
@@ -801,26 +674,28 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
 
 /* ===============================
-   11. Remote Player Rendering (NOA Entities + Mesh Component)
+   11. Remote Player Rendering (VISIBLE AVATARS)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const netTransforms = new Map<string, NetTransform>();
+
+// We keep both: NOA entity id (if attached) and mesh root (always exists)
 const remoteEnts = new Map<string, number>();
-const remoteMeshes = new Map<string, BABYLON.Mesh>();
+const remoteRoots = new Map<string, BABYLON.TransformNode>();
+const remoteMeshes = new Map<string, BABYLON.AbstractMesh[]>();
 
 function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
   const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
   mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1);
-  mat.diffuseColor = new BABYLON.Color3(1, 0.1, 0.1);
+  mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
+  mat.diffuseColor = mat.emissiveColor.clone();
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.alpha = 1;
   mat.backFaceCulling = false;
@@ -828,29 +703,64 @@ function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardM
   return mat;
 }
 
-function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | null {
-  const existingEid = remoteEnts.get(id);
-  const existingMesh = remoteMeshes.get(id);
-  if (existingEid != null && existingMesh) return { eid: existingEid, mesh: existingMesh };
+function tryAttachToNoaEntity(eid: number, meshRoot: BABYLON.TransformNode): boolean {
+  try {
+    const names = (noa as any).ents?.names;
+    const meshName = names?.mesh ?? names?.render ?? "mesh";
+    (noa as any).ents.addComponent(eid, meshName, { mesh: meshRoot, offset: [0, 0, 0] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createRemoteAvatar(scene: BABYLON.Scene, id: string) {
+  const root = new BABYLON.TransformNode(`remoteRoot:${id}`, scene);
+
+  const mat = makeRemoteMaterial(scene, id);
+
+  // Simple, obvious avatar: body + head (boxy), with a "nose" to show facing direction
+  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, scene);
+  body.parent = root;
+  body.position.y = 0.6;
+  body.material = mat;
+
+  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: 0.55, height: 0.55, depth: 0.55 }, scene);
+  head.parent = root;
+  head.position.y = 1.45;
+  head.material = mat;
+
+  const nose = BABYLON.MeshBuilder.CreateBox(`remoteNose:${id}`, { width: 0.12, height: 0.12, depth: 0.25 }, scene);
+  nose.parent = head;
+  nose.position.z = 0.4;
+  nose.material = mat;
+
+  // Always render + visible
+  for (const m of [body, head, nose]) {
+    m.isPickable = false;
+    m.checkCollisions = false;
+    m.layerMask = 0xffffffff; // force visible
+    m.renderingGroupId = 2; // draw after terrain
+    (m as any).isInFrustum = () => true;
+  }
+
+  root.setEnabled(true);
+
+  return { root, meshes: [body, head, nose] as BABYLON.AbstractMesh[] };
+}
+
+function ensureRemoteEntity(id: string): { eid: number | null; root: BABYLON.TransformNode } | null {
+  const existingRoot = remoteRoots.get(id);
+  if (existingRoot) return { eid: remoteEnts.get(id) ?? null, root: existingRoot };
 
   const scene = getStableScene();
   if (!scene) return null;
 
-  const mesh = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 1.0, segments: 12 }, scene);
-  mesh.material = makeRemoteMaterial(scene, id);
+  const { root, meshes } = createRemoteAvatar(scene, id);
 
-  const cam = scene.activeCamera;
-  if (cam && typeof (cam as any).layerMask === "number") mesh.layerMask = (cam as any).layerMask;
-  else mesh.layerMask = 0xffffffff;
-
-  mesh.setEnabled(true);
-  mesh.isVisible = true;
-  mesh.visibility = 1;
-  mesh.isPickable = false;
-  mesh.checkCollisions = false;
-  mesh.renderingGroupId = 1;
-
+  // Try to create NOA entity and attach meshRoot via mesh component
   let eid: number | null = null;
+
   try {
     const maybe = (noa as any).ents.add?.([0, 0, 0], 1, 2);
     if (typeof maybe === "number") eid = maybe;
@@ -863,25 +773,22 @@ function ensureRemoteEntity(id: string): { eid: number; mesh: BABYLON.Mesh } | n
     } catch {}
   }
 
-  if (eid == null) {
-    mesh.dispose();
-    return null;
+  // Even if NOA entity fails, we keep the mesh visible by direct Babylon positioning
+  if (eid != null) {
+    const attached = tryAttachToNoaEntity(eid, root);
+    if (attached) remoteEnts.set(id, eid);
+    else {
+      try {
+        (noa as any).ents.removeEntity?.(eid);
+      } catch {}
+      eid = null;
+    }
   }
 
-  try {
-    const meshName = (noa as any).ents?.names?.mesh ?? "mesh";
-    (noa as any).ents.addComponent(eid, meshName, { mesh, offset: [0, 0, 0] });
-  } catch {
-    mesh.dispose();
-    try {
-      (noa as any).ents.removeEntity?.(eid);
-    } catch {}
-    return null;
-  }
+  remoteRoots.set(id, root);
+  remoteMeshes.set(id, meshes);
 
-  remoteEnts.set(id, eid);
-  remoteMeshes.set(id, mesh);
-  return { eid, mesh };
+  return { eid, root };
 }
 
 function removeRemote(id: string) {
@@ -895,13 +802,15 @@ function removeRemote(id: string) {
     remoteEnts.delete(id);
   }
 
-  const mesh = remoteMeshes.get(id);
-  if (mesh) {
+  const root = remoteRoots.get(id);
+  if (root) {
     try {
-      mesh.dispose();
+      root.dispose();
     } catch {}
-    remoteMeshes.delete(id);
+    remoteRoots.delete(id);
   }
+
+  remoteMeshes.delete(id);
 }
 
 /* Apply remote transforms each tick */
@@ -914,16 +823,27 @@ function removeRemote(id: string) {
     const created = ensureRemoteEntity(id);
     if (!created) continue;
 
-    const { eid, mesh } = created;
+    const { eid, root } = created;
 
-    try {
-      (noa as any).ents.setPosition(eid, [t.x, t.y + 6.0, t.z]);
-    } catch {}
+    // IMPORTANT: do NOT add +6.0 on Y (was causing "not visible" / floating)
+    const px = t.x;
+    const py = t.y;
+    const pz = t.z;
+
+    // If attached via NOA entity, set NOA position; otherwise directly set Babylon root
+    if (eid != null) {
+      try {
+        (noa as any).ents.setPosition(eid, [px, py, pz]);
+      } catch {
+        root.position.set(px, py, pz);
+      }
+    } else {
+      root.position.set(px, py, pz);
+    }
 
     if (typeof t.yaw === "number") {
-      try {
-        mesh.rotation.y = t.yaw;
-      } catch {}
+      // root yaw is the avatar facing direction
+      root.rotation.y = t.yaw;
     }
   }
 });
@@ -954,7 +874,7 @@ async function connect() {
       room.send("worldDataNeeded", req);
     }
 
-    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg as ChunkDataMsg));
+    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
