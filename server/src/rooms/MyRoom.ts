@@ -1,27 +1,23 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Path B (server authoritative chunks) + multiplayer + RELIABLE PERSISTENCE:
+// Path B (server authoritative chunks) + multiplayer + BULLETPROOF PERSISTENCE
 //
-// ✅ Fixes "mine/build not remembered on refresh":
-// - autoDispose = false (room stays alive when last client leaves)
-// - immediate disk writes on every block edit (no debounce timing issues)
-// - loads chunk from disk if present, otherwise generates
-// - (Debug-friendly) NO edit-range validation that could silently reject edits
+// ✅ Fixes "world resets on refresh":
+// - autoDispose = false (room stays alive across refresh)
+// - persistence path is anchored to THIS FILE's folder (not process.cwd())
+// - block edits write immediately to disk (atomic tmp->rename)
+// - chunk streaming loads from disk first, else generates
+// - VERY loud logs show writes/loads so you can confirm it's working
 //
-// Networking:
-// - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
-// - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
-// - Player movement is relayed to others via "playerTransformOther"
-// - Periodic "playersSnapshot" for robustness
-// - Deterministic spawn slots so players don't overlap (first-free slot)
-// - Spawn Y computed from SAME terrain function
-//
-// NOTE: Keep your server room name as "my_room" in defineServer config.
+// If it STILL resets after this:
+// - your server is restarting on refresh (dev watch / nodemon / concurrently setup)
+//   and the logs will prove it because "✅ MyRoom created" will print again.
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -80,8 +76,8 @@ export class MyRoom extends Room {
 
   private readonly minMoveIntervalMs = 60;
   private readonly snapshotIntervalMs = 500;
-
   private readonly maxAbsCoord = 100000;
+
   private readonly maxSpeedBlocksPerSec = 18; // generous
 
   private lastMoveLogAt = 0;
@@ -103,10 +99,13 @@ export class MyRoom extends Room {
   private chunks = new Map<string, Uint8Array>();
 
   // =========================
-  // Persistence
+  // Persistence (anchored to this file location)
   // =========================
-  // Stored relative to server process working directory (simple & predictable)
-  private readonly worldDir = path.join(process.cwd(), "world");
+  private readonly __filename = fileURLToPath(import.meta.url);
+  private readonly __dirname = path.dirname(this.__filename);
+
+  // Writes to: server/src/world/chunks  (relative to THIS file)
+  private readonly worldDir = path.resolve(this.__dirname, "..", "world");
   private readonly chunksDir = path.join(this.worldDir, "chunks");
 
   onCreate(options: any) {
@@ -114,10 +113,11 @@ export class MyRoom extends Room {
 
     this.maxClients = 32;
 
-    // ✅ CRITICAL: keep the room alive across refresh (prevents losing in-memory world)
+    // ✅ CRITICAL: keep room alive when empty (refresh disconnect won't wipe RAM state)
     this.autoDispose = false;
 
     this.ensureDirs();
+    console.log("[WORLD] persistence dir:", this.chunksDir);
 
     // Periodic snapshot
     this.clock.setInterval(() => {
@@ -188,7 +188,6 @@ export class MyRoom extends Room {
       const z = clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord);
       const yaw = isFiniteNumber(maybe.yaw) ? maybe.yaw : pl.yaw;
 
-      // generous anti-teleport
       const dtSec = Math.max(0.001, (now - Math.max(0, pl.lastMoveAt)) / 1000);
       const maxDist = this.maxSpeedBlocksPerSec * dtSec;
 
@@ -196,9 +195,7 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 9) {
-        return;
-      }
+      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 9) return;
 
       pl.x = x;
       pl.y = y;
@@ -223,8 +220,8 @@ export class MyRoom extends Room {
     // =========================
     // Block edits (authoritative + persistent)
     // =========================
-    // IMPORTANT: No range validation here (debug-friendly). Server ALWAYS applies.
-    this.onMessage("mineBlock", (_client: Client, payload: unknown) => {
+    // Debug-friendly: always apply edits
+    this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
@@ -233,12 +230,12 @@ export class MyRoom extends Room {
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
+      console.log("[EDIT mineBlock]", { by: client.sessionId, x, y, z });
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
     });
 
-    this.onMessage("placeBlock", (_client: Client, payload: unknown) => {
+    this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
-
       const maybe = payload as Partial<Vec3> & { id?: unknown };
 
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
@@ -249,14 +246,13 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const id = toInt(clamp(maybe.id, 0, 255));
 
+      console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, id });
       this.setBlockAuthoritative(x, y, z, id);
     });
 
     this.onMessage("ping", (client: Client, payload: unknown) => {
       client.send("pong", payload);
     });
-
-    console.log("[WORLD] persistence dir:", this.chunksDir);
   }
 
   // =========================
@@ -341,15 +337,13 @@ export class MyRoom extends Room {
 
   onLeave(client: Client, code?: number) {
     console.log("➖ onLeave", client.sessionId, "code:", code);
-
     const existed = this.players.delete(client.sessionId);
     if (existed) this.broadcast("playerLeft", { id: client.sessionId });
   }
 
   onDispose() {
     console.log("🧹 MyRoom disposed");
-
-    // With autoDispose=false, this should basically never happen unless server shutdown.
+    // With autoDispose=false, should only happen on server shutdown.
     this.players.clear();
   }
 
@@ -373,13 +367,20 @@ export class MyRoom extends Room {
     const fp = this.chunkFilePath(cx, cy, cz);
     try {
       if (!fs.existsSync(fp)) return null;
+
       const buf = fs.readFileSync(fp);
       const expected = this.chunkSize * this.chunkSize * this.chunkSize;
-      if (buf.byteLength !== expected) return null;
+      if (buf.byteLength !== expected) {
+        console.warn("[WORLD] chunk file wrong size, ignoring:", fp, { got: buf.byteLength, expected });
+        return null;
+      }
+
       const out = new Uint8Array(expected);
       out.set(buf);
+      console.log("[WORLD] loaded chunk:", { cx, cy, cz, fp });
       return out;
-    } catch {
+    } catch (e) {
+      console.warn("[WORLD] read failed:", fp, e);
       return null;
     }
   }
@@ -389,13 +390,12 @@ export class MyRoom extends Room {
     const tmp = fp + ".tmp";
     fs.writeFileSync(tmp, Buffer.from(chunk));
     fs.renameSync(tmp, fp);
+    console.log("[WORLD] saved chunk:", { cx, cy, cz, fp });
   }
 
   // =========================
   // World internals
   // =========================
-  // Packing matches client unpack:
-  // idx = i + CS*(j + CS*k)
   private idx(i: number, j: number, k: number): number {
     const CS = this.chunkSize;
     return i + CS * (j + CS * k);
@@ -429,6 +429,7 @@ export class MyRoom extends Room {
       }
     }
 
+    console.log("[WORLD] generated chunk:", { cx, cy, cz });
     return vox;
   }
 
@@ -464,14 +465,13 @@ export class MyRoom extends Room {
     const v = clamp(toInt(id), 0, 255);
     chunk[this.idx(lx, ly, lz)] = v;
 
-    // ✅ IMMEDIATE persist (no debounce, no missed writes)
+    // ✅ immediate persist
     try {
       this.writeChunkToDisk(cx, cy, cz, chunk);
     } catch (e) {
-      console.warn("[WORLD] write failed", { cx, cy, cz }, e);
+      console.warn("[WORLD] write failed:", { cx, cy, cz }, e);
     }
 
-    // Broadcast edit to everyone (including miner/placer)
     this.broadcast("blockUpdate", { x, y, z, id: v });
   }
 }
