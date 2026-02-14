@@ -1,9 +1,17 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Fix: remote players not visible
- * - Do NOT throw if Babylon scene isn't ready.
- * - Cache networked transforms and apply them when scene becomes available.
+ * PATH B (server-authoritative chunks) + FULL NETWORK DEBUG
+ *
+ * Fixes / guarantees:
+ * - Forces chunkSize = 32 (must match server)
+ * - Queues chunk requests until Colyseus room is connected
+ * - Applies "chunkData" to noa via noa.world.setChunkData(id, data)
+ * - Uses NOA v0.33 camera API: noa.camera.heading / noa.camera.pitch
+ * - Imports Babylon explicitly for avatars (no reliance on globalThis.BABYLON)
+ * - Adds ALWAYS-ON network logs for:
+ *    existingPlayers, playerJoined, playersSnapshot, playerTransformOther, playerLeft
+ * - Exposes room as globalThis.room so you can debug from DevTools console
  */
 
 import { Engine } from "noa-engine";
@@ -64,7 +72,7 @@ const noa = new Engine({
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-  chunkSize: 32,
+  chunkSize: 32, // CRITICAL: must match server
 });
 
 /* ===============================
@@ -155,8 +163,8 @@ type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: num
 
 const pendingChunks = new Map<string, PendingChunk>();
 const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
-
 const worldAny = noa.world as any;
+
 let firstChunkLogged = false;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -200,6 +208,7 @@ function applyChunkFromServer(msg: any) {
 
   const data = pending.data;
 
+  // Must match server packing: i + CS*(j + CS*k)
   let n = 0;
   for (let k = 0; k < CS; k++) {
     for (let j = 0; j < CS; j++) {
@@ -220,7 +229,9 @@ function applyChunkFromServer(msg: any) {
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
   (noa.inputs as any).bind?.("alt-fire", "mouse2");
-} catch {}
+} catch {
+  // ignore
+}
 
 function getTargetInfo() {
   const tgt = (noa as any).targetedBlock;
@@ -238,6 +249,7 @@ noa.inputs.down.on("fire", () => {
   if (!target) return;
 
   const { x, y, z } = target.pos;
+
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -255,14 +267,17 @@ noa.inputs.down.on("alt-fire", () => {
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  if (x === px && z === pz && (y === py || y === py + 1)) return;
+  if (x === px && z === pz && (y === py || y === py + 1)) {
+    console.log("❌ Cannot place block: Player is standing here.");
+    return;
+  }
 
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
 
 /* ===============================
-   8.5 Avatars (deferred creation)
+   8.5 Minecraft-style Avatars (deferred creation so it never fails early)
 ================================ */
 type Avatar = {
   root: BABYLON.TransformNode;
@@ -279,7 +294,7 @@ type Avatar = {
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
 const avatars = new Map<string, Avatar>();
-const netTransforms = new Map<string, NetTransform>(); // latest transform per player
+const netTransforms = new Map<string, NetTransform>();
 
 function getSceneMaybe(): BABYLON.Scene | null {
   const scene = (noa as any).rendering?.getScene?.() as BABYLON.Scene | undefined;
@@ -299,7 +314,8 @@ function createAvatarIfPossible(id: string): Avatar | null {
   const scene = getSceneMaybe();
   if (!scene) return null;
 
-  if (avatars.has(id)) return avatars.get(id)!;
+  const existing = avatars.get(id);
+  if (existing) return existing;
 
   const SCALE = 1 / 16;
 
@@ -430,23 +446,22 @@ function updateAvatarPose(av: Avatar, x: number, y: number, z: number, yawRad?: 
   av.lastT = t;
 }
 
-/* apply any cached netTransforms each tick once scene exists */
+/* Apply cached transforms every tick */
 (noa as any).on("tick", () => {
-  // only render others when connected
   if (!room) return;
 
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
 
     const av = createAvatarIfPossible(id);
-    if (!av) continue; // scene not ready yet
+    if (!av) continue;
 
     updateAvatarPose(av, t.x, t.y, t.z, t.yaw);
   }
 });
 
 /* ===============================
-   9. Networking
+   9. Networking (Connect & Debug)
 ================================ */
 function normId(p: any): string | null {
   if (!p) return null;
@@ -461,52 +476,95 @@ async function connect() {
     updateOverlay();
 
     room = await colyseus.joinOrCreate("my_room");
+
     console.log("✅ Joined room:", room.sessionId);
+    console.log("[NET] endpoint =", ENDPOINT);
+    console.log("[NET] joined room:", { name: room.name, sessionId: room.sessionId });
+
+    // expose for DevTools debugging
+    (globalThis as any).room = room;
+
     updateOverlay();
 
-    for (const req of queuedRequests.values()) room.send("worldDataNeeded", req);
+    // flush queued chunk requests
+    for (const req of queuedRequests.values()) {
+      room.send("worldDataNeeded", req);
+    }
 
-    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
+    // ---- WORLD ----
+    room.onMessage("chunkData", (msg: any) => {
+      // console.log("[NET] chunkData", msg?.id);
+      applyChunkFromServer(msg);
+    });
 
+    // ---- BLOCK UPDATES ----
     room.onMessage("blockUpdate", (msg: any) => {
+      // console.log("[NET] blockUpdate", msg);
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    room.onMessage("existingPlayers", (players: any[]) => {
+    // ---- PLAYER DEBUG HANDLERS ----
+    room.onMessage("existingPlayers", (players: any) => {
+      const len = Array.isArray(players) ? players.length : 0;
+      console.log("[NET] existingPlayers:", len, players);
+
       for (const p of players ?? []) {
         const id = normId(p);
         if (!id || id === room!.sessionId) continue;
-        netTransforms.set(id, { x: Number(p.x ?? 0), y: Number(p.y ?? 0), z: Number(p.z ?? 0), yaw: p.yaw });
+
+        const x = Number(p.x ?? 0);
+        const y = Number(p.y ?? 0);
+        const z = Number(p.z ?? 0);
+
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+
+        netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
     });
 
     room.onMessage("playerJoined", (p: any) => {
+      console.log("[NET] playerJoined:", p);
+
       const id = normId(p);
       if (!id || id === room!.sessionId) return;
-      netTransforms.set(id, { x: Number(p.x ?? 0), y: Number(p.y ?? 0), z: Number(p.z ?? 0), yaw: p.yaw });
+
+      const x = Number(p.x ?? 0);
+      const y = Number(p.y ?? 0);
+      const z = Number(p.z ?? 0);
+
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+
+      netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
     room.onMessage("playerLeft", (p: any) => {
+      console.log("[NET] playerLeft:", p);
       const id = normId(p);
       if (!id) return;
       removeAvatar(id);
     });
 
     room.onMessage("playerTransformOther", (p: any) => {
+      console.log("[NET] playerTransformOther:", p);
+
       const id = normId(p);
       if (!id || id === room!.sessionId) return;
 
       const x = Number(p.x);
       const y = Number(p.y);
       const z = Number(p.z);
+
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
-    room.onMessage("playersSnapshot", (players: any[]) => {
+    room.onMessage("playersSnapshot", (players: any) => {
+      const len = Array.isArray(players) ? players.length : 0;
+      console.log("[NET] playersSnapshot:", len, players);
+
       if (!Array.isArray(players)) return;
 
       for (const p of players) {
@@ -516,6 +574,7 @@ async function connect() {
         const x = Number(p.x);
         const y = Number(p.y);
         const z = Number(p.z);
+
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
@@ -534,7 +593,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   10. Sync Position
+   10. Sync Position (NOA v0.33 API)
 ================================ */
 let tickCount = 0;
 (noa as any).on("tick", () => {
