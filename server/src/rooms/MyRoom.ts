@@ -1,23 +1,35 @@
 // server/src/rooms/MyRoom.ts
+// FULL FILE - paste exactly as-is
+//
+// Path B (server authoritative chunks) + multiplayer:
+// - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
+// - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
+// - Player movement is relayed to others via "playerTransformOther"
+// - Periodic "playersSnapshot" for robustness
+// - FIX: deterministic spawn spacing so players don't spawn on top of each other
+// - FIX: spawn Y computed from the SAME terrain function (so nobody spawns underground)
+//
+// NOTE: Keep your server room name as "my_room" in defineServer config.
+
 import { Room, Client } from "colyseus";
 
 type Vec3 = { x: number; y: number; z: number };
 
 type WorldDataNeededMsg = {
-  id: string; // IMPORTANT: client-generated chunk id from noa
-  chunkSize: number;
+  id: string; // noa chunk id
+  chunkSize: number; // client requested (server may ignore)
   x: number; // chunk coord
   y: number; // chunk coord
   z: number; // chunk coord
 };
 
 type ChunkDataMsg = {
-  id: string; // echo back so client can resolve pending request
+  id: string;
   chunkSize: number;
   x: number;
   y: number;
   z: number;
-  voxels: number[]; // flat array length = chunkSize^3, values are block IDs
+  voxels: number[]; // JSON-friendly; optimize later to binary
 };
 
 type PlayerInfo = {
@@ -42,45 +54,50 @@ function toInt(n: number): number {
   return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
 }
 
-// floor division for negatives
 function floorDiv(a: number, b: number): number {
   return Math.floor(a / b);
 }
 
-// mod that works for negatives (result 0..b-1)
 function mod(a: number, b: number): number {
   return ((a % b) + b) % b;
 }
 
 export class MyRoom extends Room {
+  // =========================
+  // Players
+  // =========================
   private players = new Map<string, PlayerInfo>();
 
-  // ---- World / chunk settings ----
-  private readonly chunkSize = 32; // enforce on server for consistency
+  // Movement packet rate limiting
+  private readonly minMoveIntervalMs = 60;
+
+  // Periodic full snapshot
+  private readonly snapshotIntervalMs = 500;
+
+  // Sanity bounds
   private readonly maxAbsCoord = 100000;
 
-  // block ids (match your client)
+  // =========================
+  // World settings (authoritative)
+  // =========================
+  private readonly chunkSize = 32; // MUST match client noa chunkSize
+  private readonly baseHeight = 12;
+
+  // Block IDs (must match client)
   private readonly AIR_ID = 0;
   private readonly GRASS_ID = 1;
   private readonly DIRT_ID = 2;
   private readonly STONE_ID = 3;
 
-  // store chunks in memory (later you can persist to DB/disk)
-  // key = `${cx},${cy},${cz}`
+  // Stored chunks: key = "cx,cy,cz" -> Uint8Array length CS^3
   private chunks = new Map<string, Uint8Array>();
-
-  // Movement packet rate limiting (~16 per second)
-  private readonly minMoveIntervalMs = 60;
-
-  // Periodic full snapshot to reduce "I can't see someone" issues during early dev
-  private readonly snapshotIntervalMs = 500;
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
     this.maxClients = 32;
 
-    // Periodically broadcast a full player list to everyone.
+    // Robust periodic snapshot
     this.clock.setInterval(() => {
       const all = Array.from(this.players.values()).map((p) => ({
         id: p.id,
@@ -93,33 +110,30 @@ export class MyRoom extends Room {
     }, this.snapshotIntervalMs);
 
     // =========================
-    // Path B: Chunk Streaming
+    // Path B: Chunk streaming
     // =========================
     this.onMessage("worldDataNeeded", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<WorldDataNeededMsg>;
 
       if (typeof p.id !== "string" || p.id.length < 1) return;
-
-      // server-enforced chunk size (ignore client request if different)
-      const CS = this.chunkSize;
-
       if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
 
       const cx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
       const cy = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
       const cz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      const chunk = this.getOrCreateChunk(cx, cy, cz, CS);
+      const CS = this.chunkSize;
 
-      // Send chunk only to requester (not broadcast)
+      const chunk = this.getOrCreateChunk(cx, cy, cz);
+
       const msg: ChunkDataMsg = {
         id: p.id,
         chunkSize: CS,
         x: cx,
         y: cy,
         z: cz,
-        voxels: Array.from(chunk), // JSON-friendly; optimize later
+        voxels: Array.from(chunk),
       };
 
       client.send("chunkData", msg);
@@ -152,11 +166,8 @@ export class MyRoom extends Room {
       pl.yaw = yaw;
       pl.lastMoveAt = now;
 
-      this.broadcast(
-        "playerTransformOther",
-        { id: client.sessionId, x, y, z, yaw },
-        { except: client }
-      );
+      // others only
+      this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
     });
 
     // =========================
@@ -176,6 +187,7 @@ export class MyRoom extends Room {
 
     this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
+
       const maybe = payload as Partial<Vec3> & { id?: unknown };
 
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
@@ -184,25 +196,41 @@ export class MyRoom extends Room {
       const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
-
-      const id = toInt(clamp(maybe.id, 0, 255)); // keep simple; clamp to byte
+      const id = toInt(clamp(maybe.id, 0, 255));
 
       this.setBlockAuthoritative(x, y, z, id);
     });
 
+    // Optional ping/pong
     this.onMessage("ping", (client: Client, payload: unknown) => {
       client.send("pong", payload);
     });
   }
 
+  // =========================
+  // Join/Leave
+  // =========================
   onJoin(client: Client, options: any) {
     console.log("➕ onJoin", client.sessionId, options);
 
+    // deterministic spawn grid so players don't overlap
+    const index = this.players.size; // BEFORE adding
+    const spacing = 6;
+
+    const spawnX = (index % 4) * spacing;
+    const spawnZ = Math.floor(index / 4) * spacing;
+
+    // compute ground height using the SAME terrain function (surface Y)
+    const surfaceY = this.heightAt(spawnX, spawnZ);
+
+    // spawn above surface (player will fall onto ground)
+    const spawnY = surfaceY + 8;
+
     const spawn: PlayerInfo = {
       id: client.sessionId,
-      x: 0,
-      y: 20,
-      z: 0,
+      x: spawnX,
+      y: spawnY,
+      z: spawnZ,
       yaw: 0,
       lastMoveAt: 0,
       joinedAt: Date.now(),
@@ -210,18 +238,21 @@ export class MyRoom extends Room {
 
     this.players.set(client.sessionId, spawn);
 
+    // Send existing players to new client
     const existingPlayers = Array.from(this.players.values())
       .filter((pl) => pl.id !== client.sessionId)
       .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z, yaw: pl.yaw }));
 
     client.send("existingPlayers", existingPlayers);
 
+    // Notify others
     this.broadcast(
       "playerJoined",
       { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw },
       { except: client }
     );
 
+    // Tell joiner their own spawn
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
   }
 
@@ -229,58 +260,69 @@ export class MyRoom extends Room {
     console.log("➖ onLeave", client.sessionId, "code:", code);
 
     const existed = this.players.delete(client.sessionId);
-    if (existed) this.broadcast("playerLeft", { id: client.sessionId });
+    if (existed) {
+      this.broadcast("playerLeft", { id: client.sessionId });
+    }
   }
 
   onDispose() {
     console.log("🧹 MyRoom disposed");
     this.players.clear();
-    // keep chunks if you want world to persist beyond room lifetime; otherwise clear:
+
+    // If you want world to persist across room lifecycle, DO NOT clear.
+    // If you want it reset each time, uncomment:
     // this.chunks.clear();
   }
 
   // =========================
   // World internals
   // =========================
-
   private chunkKey(cx: number, cy: number, cz: number): string {
     return `${cx},${cy},${cz}`;
   }
 
-  private idx(i: number, j: number, k: number, CS: number): number {
-    // same iteration order we’ll use on client fill: i + CS*(j + CS*k)
+  // Packing must match client unpack loop:
+  // n increments in order: for k, for j, for i
+  // idx = i + CS*(j + CS*k)
+  private idx(i: number, j: number, k: number): number {
+    const CS = this.chunkSize;
     return i + CS * (j + CS * k);
   }
 
-  private getOrCreateChunk(cx: number, cy: number, cz: number, CS: number): Uint8Array {
+  private heightAt(worldX: number, worldZ: number): number {
+    // Same formula you used client-side for hills
+    const h =
+      this.baseHeight +
+      Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
+
+    return h;
+  }
+
+  private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const key = this.chunkKey(cx, cy, cz);
     const existing = this.chunks.get(key);
     if (existing) return existing;
 
+    const CS = this.chunkSize;
     const vox = new Uint8Array(CS * CS * CS);
-
-    // Your hills formula, but server-side:
-    const baseHeight = 12;
 
     for (let i = 0; i < CS; i++) {
       for (let k = 0; k < CS; k++) {
-        const globalX = cx * CS + i;
-        const globalZ = cz * CS + k;
+        const worldX = cx * CS + i;
+        const worldZ = cz * CS + k;
 
-        const height =
-          baseHeight +
-          Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
+        const height = this.heightAt(worldX, worldZ);
 
         for (let j = 0; j < CS; j++) {
-          const globalY = cy * CS + j;
+          const worldY = cy * CS + j;
 
           let id = this.AIR_ID;
-          if (globalY > height) id = this.AIR_ID;
-          else if (globalY === height) id = this.GRASS_ID;
-          else if (globalY > height - 4) id = this.DIRT_ID;
+          if (worldY > height) id = this.AIR_ID;
+          else if (worldY === height) id = this.GRASS_ID;
+          else if (worldY > height - 4) id = this.DIRT_ID;
           else id = this.STONE_ID;
 
-          vox[this.idx(i, j, k, CS)] = id;
+          vox[this.idx(i, j, k)] = id;
         }
       }
     }
@@ -300,10 +342,9 @@ export class MyRoom extends Room {
     const ly = mod(y, CS);
     const lz = mod(z, CS);
 
-    const chunk = this.getOrCreateChunk(cx, cy, cz, CS);
-    chunk[this.idx(lx, ly, lz, CS)] = clamp(toInt(id), 0, 255);
+    const chunk = this.getOrCreateChunk(cx, cy, cz);
+    chunk[this.idx(lx, ly, lz)] = clamp(toInt(id), 0, 255);
 
-    // Broadcast edit to everyone (including sender)
     this.broadcast("blockUpdate", { x, y, z, id: clamp(toInt(id), 0, 255) });
   }
 }
