@@ -434,6 +434,7 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
 
   fpArmReady = true;
+console.log("[FP] arm mesh id", fpArmMesh?.id, "enabled", fpArmMesh?.isEnabled(), "visible", fpArmMesh?.isVisible, "pos", fpArmRoot?.position);
 
   console.log("[FP] Arm created OK (main-scene viewmodel)", {
     cam: cam.name,
