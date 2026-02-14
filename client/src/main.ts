@@ -1,15 +1,28 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * PURPOSE: diagnose why first-person arm/plane are not visible.
+ * NOA voxel client + Colyseus multiplayer
+ * - Server authoritative chunk streaming (Path B)
+ * - Mine/place block sync
+ * - Remote players rendered via NOA entities + mesh component
+ * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
  *
- * NEW DEBUG WEAPONS:
- * - Compute TRUE camera pose from inverse view matrix (confirmed needed)
- * - Enumerate ALL cameras frequently
- * - Log which camera is actually active each render
- * - FORCE render via activeCamera.renderList (toggle with L)
- * - Force camera.layerMask to all-bits in debug mode
- * - Force arm renderingGroupId = 0 (so it cannot be skipped by group filtering)
+ * ✅ CAMERA TRUTH (confirmed):
+ * In this NOA setup, Babylon FreeCamera.position stays at (0,0,0).
+ * The REAL camera world pose comes from inverse(viewMatrix).
+ *
+ * ✅ NEW DEBUG (forward sign theory):
+ * Some rigs have inverse(viewMatrix) "forward" pointing backwards.
+ * We now render TWO debug planes:
+ *   - +basis.forward  (magenta)
+ *   - -basis.forward  (cyan)
+ * We also compare basis.forward vs cam.getForwardRay().direction,
+ * and flip forward for the ARM if dot < 0.
+ *
+ * Debug controls:
+ * - P toggles pinning remote marker in front of camera (local-only debug)
+ * - O toggles extra debug overlay line
+ * - L toggles FORCE renderList mode (camera renders arm/planes explicitly)
  */
 
 import { Engine } from "noa-engine";
@@ -128,10 +141,10 @@ const hotbar = [
   { id: WOOD_ID, name: "Wood" },
   { id: LEAVES_ID, name: "Leaves" },
 ];
-let selectedSlot = 0;
 
+let selectedSlot = 0;
 let showExtraDebugOverlay = true;
-let FORCE_RENDERLIST_MODE = true; // toggle with L
+let FORCE_RENDERLIST_MODE = true;
 
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
@@ -390,12 +403,15 @@ function getTrueCameraRotationQuat(cam: BABYLON.Camera): BABYLON.Quaternion {
 }
 
 /* ===============================
-   11. Arm / Debug plane
+   11. Arm / Debug planes
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
 let fpArmMesh: BABYLON.Mesh | null = null;
-let fpDbgPlane: BABYLON.Mesh | null = null;
+
+let fpDbgPlanePlus: BABYLON.Mesh | null = null;  // +basis.forward (magenta)
+let fpDbgPlaneMinus: BABYLON.Mesh | null = null; // -basis.forward (cyan)
+
 let fpArmSceneUid: string | number | null = null;
 
 let lastLocalPos: [number, number, number] | null = null;
@@ -404,41 +420,49 @@ let armTime = 0;
 function disposeArm() {
   try { fpArmMesh?.dispose(false, true); } catch {}
   try { fpArmRoot?.dispose(false, true); } catch {}
-  try { fpDbgPlane?.dispose(false, true); } catch {}
+  try { fpDbgPlanePlus?.dispose(false, true); } catch {}
+  try { fpDbgPlaneMinus?.dispose(false, true); } catch {}
   fpArmMesh = null;
   fpArmRoot = null;
-  fpDbgPlane = null;
+  fpDbgPlanePlus = null;
+  fpDbgPlaneMinus = null;
   fpArmReady = false;
   fpArmSceneUid = null;
 }
 
-function ensureDebugPlane(scene: BABYLON.Scene) {
-  if (fpDbgPlane && !fpDbgPlane.isDisposed()) return;
+function makePlane(scene: BABYLON.Scene, name: string, color: BABYLON.Color3) {
+  const p = BABYLON.MeshBuilder.CreatePlane(name, { size: 1.5 }, scene);
+  const m = new BABYLON.StandardMaterial(name + "_MAT", scene);
+  m.disableLighting = true;
+  m.emissiveColor = color;
+  m.diffuseColor = color;
+  m.specularColor = new BABYLON.Color3(0, 0, 0);
+  m.backFaceCulling = false;
+  m.disableDepthWrite = true;
+  m.depthFunction = BABYLON.Constants.ALWAYS;
+  p.material = m;
 
-  fpDbgPlane = BABYLON.MeshBuilder.CreatePlane("ARM_DEBUG_PLANE", { size: 1.5 }, scene);
+  p.renderingGroupId = 0;
+  p.layerMask = 0xffffffff;
+  p.isPickable = false;
+  p.setEnabled(true);
+  p.isVisible = true;
 
-  const dbgMat = new BABYLON.StandardMaterial("ARM_DEBUG_PLANE_MAT", scene);
-  dbgMat.emissiveColor = new BABYLON.Color3(1, 0, 1);
-  dbgMat.diffuseColor = new BABYLON.Color3(1, 0, 1);
-  dbgMat.specularColor = new BABYLON.Color3(0, 0, 0);
-  dbgMat.disableLighting = true;
-  dbgMat.backFaceCulling = false;
-  dbgMat.disableDepthWrite = true;
-  dbgMat.depthFunction = BABYLON.Constants.ALWAYS;
+  (p as any).isInFrustum = () => true;
+  (p as any).alwaysSelectAsActiveMesh = true;
+  return p;
+}
 
-  fpDbgPlane.material = dbgMat;
+function ensureDebugPlanes(scene: BABYLON.Scene) {
+  if (
+    fpDbgPlanePlus && !fpDbgPlanePlus.isDisposed() &&
+    fpDbgPlaneMinus && !fpDbgPlaneMinus.isDisposed()
+  ) return;
 
-  // IMPORTANT: group 0 so NOA cannot skip a higher group
-  fpDbgPlane.renderingGroupId = 0;
-  fpDbgPlane.layerMask = 0xffffffff;
-  fpDbgPlane.isPickable = false;
-  fpDbgPlane.setEnabled(true);
-  fpDbgPlane.isVisible = true;
+  fpDbgPlanePlus = makePlane(scene, "ARM_DEBUG_PLANE_PLUS", new BABYLON.Color3(1, 0, 1));   // magenta
+  fpDbgPlaneMinus = makePlane(scene, "ARM_DEBUG_PLANE_MINUS", new BABYLON.Color3(0, 1, 1)); // cyan
 
-  (fpDbgPlane as any).isInFrustum = () => true;
-  (fpDbgPlane as any).alwaysSelectAsActiveMesh = true;
-
-  console.log("[ARMDBG] Debug plane created (group 0)", { sceneUid: (scene as any).uid });
+  console.log("[ARMDBG] Created TWO debug planes: +forward (magenta) and -forward (cyan)");
 }
 
 function setupArm(scene: BABYLON.Scene) {
@@ -455,21 +479,33 @@ function setupArm(scene: BABYLON.Scene) {
 
   fpArmSceneUid = uid ?? null;
 
-  ensureDebugPlane(scene);
+  ensureDebugPlanes(scene);
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
   fpArmRoot.parent = null;
   fpArmRoot.position.set(0, 0, 0);
   fpArmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
-  const forearm = BABYLON.MeshBuilder.CreateCylinder("fpForearm", { height: 1.35, diameter: 0.32, tessellation: 16 }, scene);
+  const forearm = BABYLON.MeshBuilder.CreateCylinder(
+    "fpForearm",
+    { height: 1.35, diameter: 0.32, tessellation: 16 },
+    scene
+  );
   forearm.rotation.x = Math.PI / 2;
 
-  const hand = BABYLON.MeshBuilder.CreateBox("fpHand", { width: 0.38, height: 0.28, depth: 0.55 }, scene);
+  const hand = BABYLON.MeshBuilder.CreateBox(
+    "fpHand",
+    { width: 0.38, height: 0.28, depth: 0.55 },
+    scene
+  );
   hand.position.z = 0.62;
   hand.rotation.x = Math.PI / 2;
 
-  const thumb = BABYLON.MeshBuilder.CreateBox("fpThumb", { width: 0.12, height: 0.12, depth: 0.28 }, scene);
+  const thumb = BABYLON.MeshBuilder.CreateBox(
+    "fpThumb",
+    { width: 0.12, height: 0.12, depth: 0.28 },
+    scene
+  );
   thumb.position.set(0.20, -0.06, 0.56);
   thumb.rotation.x = Math.PI / 2;
   thumb.rotation.z = -0.55;
@@ -496,10 +532,9 @@ function setupArm(scene: BABYLON.Scene) {
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // IMPORTANT: group 0
+  // IMPORTANT: group 0, never culled
   fpArmMesh.renderingGroupId = 0;
   fpArmMesh.layerMask = 0xffffffff;
-
   (fpArmMesh as any).isInFrustum = () => true;
   (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
 
@@ -517,28 +552,19 @@ function applyForceRenderList(scene: BABYLON.Scene) {
   if (!cam) return;
 
   if (!FORCE_RENDERLIST_MODE) {
-    // Restore to default behaviour if toggled off
-    if ((cam as any).renderList && (cam as any).renderList.length) {
-      console.log("[ARMDBG] renderList cleared");
-    }
     (cam as any).renderList = null;
     return;
   }
 
-  // Force camera to render ONLY these debug meshes in addition to normal scene
-  // Some pipelines treat renderList as exclusive; so we keep it minimal for debugging.
-  // If this makes world disappear, it confirms renderList is being used.
   const list: BABYLON.AbstractMesh[] = [];
   if (fpArmMesh) list.push(fpArmMesh);
-  if (fpDbgPlane) list.push(fpDbgPlane);
+  if (fpDbgPlanePlus) list.push(fpDbgPlanePlus);
+  if (fpDbgPlaneMinus) list.push(fpDbgPlaneMinus);
 
   (cam as any).renderList = list;
 
   // Ensure masks overlap
   try { cam.layerMask = 0xffffffff; } catch {}
-
-  // Ensure camera is actually active
-  try { scene.activeCamera = cam; } catch {}
 }
 
 function updateArm(dtSec: number) {
@@ -576,8 +602,47 @@ function updateArm(dtSec: number) {
 
   // TRUE pose
   const camPosTrue = getTrueCameraWorldPos(cam);
-  const { forward, right, up } = getTrueCameraBasis(cam);
+  const basis = getTrueCameraBasis(cam);
 
+  // Determine correct forward sign by comparing to Babylon forward ray
+  let forward = basis.forward.clone();
+  let rayFwd: BABYLON.Vector3 | null = null;
+  try {
+    rayFwd = cam.getForwardRay(1).direction.clone().normalize();
+  } catch {}
+
+  if (rayFwd) {
+    const dot = BABYLON.Vector3.Dot(rayFwd, forward);
+    const flipped = dot < 0;
+    if (flipped) forward = forward.scale(-1);
+
+    if ((updateArm as any)._dotLogged !== true) {
+      (updateArm as any)._dotLogged = true;
+      console.log("[ARMDBG] forward sign check", {
+        basisFwd: basis.forward.asArray(),
+        rayFwd: rayFwd.asArray(),
+        dot,
+        flipped,
+      });
+    }
+  }
+
+  const right = basis.right;
+  const up = basis.up;
+
+  // Place TWO planes using RAW basis.forward (no flip) so we can visually confirm
+  if (fpDbgPlanePlus && !fpDbgPlanePlus.isDisposed()) {
+    fpDbgPlanePlus.position.copyFrom(camPosTrue.add(basis.forward.scale(2.5)));
+    if (!fpDbgPlanePlus.rotationQuaternion) fpDbgPlanePlus.rotationQuaternion = new BABYLON.Quaternion();
+    fpDbgPlanePlus.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
+  }
+  if (fpDbgPlaneMinus && !fpDbgPlaneMinus.isDisposed()) {
+    fpDbgPlaneMinus.position.copyFrom(camPosTrue.add(basis.forward.scale(-2.5)));
+    if (!fpDbgPlaneMinus.rotationQuaternion) fpDbgPlaneMinus.rotationQuaternion = new BABYLON.Quaternion();
+    fpDbgPlaneMinus.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
+  }
+
+  // Arm offsets (use possibly flipped forward)
   const distFwd = 0.75 + punch01 * 0.20;
   const distRight = 0.45;
   const distUp = -0.35 + bob;
@@ -597,14 +662,7 @@ function updateArm(dtSec: number) {
   fpArmMesh.rotation.y = punch01 * 0.15;
   fpArmMesh.rotation.z = -0.35 + Math.cos(armTime * 1.2) * 0.12 * walk + sway * 0.06;
 
-  // debug plane
-  if (fpDbgPlane && !fpDbgPlane.isDisposed()) {
-    fpDbgPlane.position.copyFrom(camPosTrue.add(forward.scale(2.5)));
-    if (!fpDbgPlane.rotationQuaternion) fpDbgPlane.rotationQuaternion = new BABYLON.Quaternion();
-    fpDbgPlane.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
-  }
-
-  // one-time log
+  // one-time snapshot
   if ((updateArm as any)._logged !== true) {
     (updateArm as any)._logged = true;
     console.log("[ARMDBG] camPos/trueCamPos/armPos", {
@@ -629,19 +687,12 @@ function logAllCameras(scene: BABYLON.Scene) {
   console.log("[ARMDBG] cameras:", data);
 }
 
-/* Render loop hook */
+/* Render loop hook (ONLY ONE IMPLEMENTATION) */
 function hookScene(scene: BABYLON.Scene) {
   if ((scene as any).__armHooked) return;
   (scene as any).__armHooked = true;
 
   scene.onBeforeRenderObservable.add(() => {
-    // WHICH camera is actually active right now?
-    // If this changes, that's why you can't see the arm.
-    if ((hookScene as any)._lastCam !== scene.activeCamera) {
-      (hookScene as any)._lastCam = scene.activeCamera;
-      console.log("[ARMDBG] activeCamera changed ->", scene.activeCamera?.name);
-    }
-
     setupArm(scene);
     updateArm(1 / 60);
     applyForceRenderList(scene);
