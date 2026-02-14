@@ -7,18 +7,20 @@
  * - Remote players rendered via NOA entities + mesh component
  * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
  *
- * ✅ THIS VERSION INCLUDES:
- * 1) Full debugging instrumentation (ARMDBG + CANVAS + render loop hook)
- * 2) Scene-swap safe rebuilding of the arm (NOA/Babylon scene uid changes)
- * 3) WORLD-FOLLOW viewmodel positioning (NOT parenting), using:
- *    - cam.position
- *    - cam.getForwardRay().direction
- *    - computed right/up basis
- *    This avoids weird camera parent transform chains.
- * 4) Always-on-top material, valid rendering group, never cull, always active
- * 5) A magenta debug plane that is ALSO world-followed (so it can’t disappear due to parenting)
+ * ✅ THIS VERSION INCLUDES (NEW THEORY):
+ * Many NOA/Babylon camera rigs keep cam.position at (0,0,0) and drive the view matrix.
+ * So we now derive the TRUE camera pose from the INVERSE VIEW MATRIX:
+ *  - trueCamPos = inverse(viewMatrix).translation
+ *  - basis vectors = inverse(viewMatrix) axes
+ *  - rotation quaternion = decompose(inverse(viewMatrix)).rotation
  *
- * Debug:
+ * ✅ FULL DEBUGGING:
+ * - CANVAS log on scene swap
+ * - ARMDBG logs (cam.position vs trueCamPos, basis, arm pos)
+ * - World-follow debug plane + arm using TRUE camera pose
+ * - Render-loop hook for guaranteed per-frame updates
+ *
+ * Debug controls:
  * - P toggles pinning remote marker in front of camera (local-only debug)
  * - O toggles extra debug overlay line
  */
@@ -360,7 +362,43 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 }
 
 /* ===============================
-   10. First-person viewmodel: WORLD-FOLLOW + FULL DEBUG
+   10. TRUE camera pose helpers (NEW THEORY)
+================================ */
+function getTrueCameraWorldPos(cam: BABYLON.Camera): BABYLON.Vector3 {
+  // World pos = inverse(viewMatrix).translation
+  try {
+    const invView = cam.getViewMatrix().clone();
+    invView.invert();
+    return new BABYLON.Vector3(invView.m[12], invView.m[13], invView.m[14]);
+  } catch {
+    return (cam as any)._globalPosition?.clone?.() ?? cam.position.clone();
+  }
+}
+
+function getTrueCameraBasis(cam: BABYLON.Camera) {
+  // Basis from inverse view matrix axes
+  const view = cam.getViewMatrix();
+  const inv = view.clone();
+  inv.invert();
+
+  const right = new BABYLON.Vector3(inv.m[0], inv.m[1], inv.m[2]).normalize();
+  const up = new BABYLON.Vector3(inv.m[4], inv.m[5], inv.m[6]).normalize();
+  const forward = new BABYLON.Vector3(inv.m[8], inv.m[9], inv.m[10]).normalize();
+
+  return { forward, right, up };
+}
+
+function getTrueCameraRotationQuat(cam: BABYLON.Camera): BABYLON.Quaternion {
+  const view = cam.getViewMatrix();
+  const inv = view.clone();
+  inv.invert();
+  const rot = new BABYLON.Quaternion();
+  inv.decompose(undefined, rot, undefined);
+  return rot;
+}
+
+/* ===============================
+   11. First-person viewmodel: WORLD-FOLLOW (TRUE POSE) + FULL DEBUG
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -393,6 +431,21 @@ function debugArmStatus(tag: string) {
     }
   } catch {}
 
+  const camPos = cam ? cam.position.asArray() : null;
+  const trueCamPos = cam ? getTrueCameraWorldPos(cam).asArray() : null;
+
+  let f: number[] | null = null;
+  let r: number[] | null = null;
+  let u: number[] | null = null;
+  try {
+    if (cam) {
+      const basis = getTrueCameraBasis(cam);
+      f = basis.forward.asArray();
+      r = basis.right.asArray();
+      u = basis.up.asArray();
+    }
+  } catch {}
+
   console.log(`[ARMDBG:${tag}]`, {
     sceneUid: (scene as any).uid,
     activeCam: cam?.name ?? null,
@@ -411,8 +464,11 @@ function debugArmStatus(tag: string) {
     armLayerMask: armByName ? (armByName as any).layerMask : null,
     camLayerMask: cam ? (cam as any).layerMask : null,
     renderingGroupId: armByName ? (armByName as any).renderingGroupId : null,
-    camPos: cam ? (cam as any).position?.asArray?.() ?? null : null,
-    camAbsRot: cam ? (cam as any).absoluteRotation?.asArray?.() ?? null : null,
+    camPos,
+    trueCamPos,
+    basisFwd: f,
+    basisRight: r,
+    basisUp: u,
   });
 }
 
@@ -432,36 +488,6 @@ function disposeFirstPersonArm() {
   fpDbgPlane = null;
   fpArmReady = false;
   fpArmSceneUid = null;
-}
-
-function getCameraBasis(cam: BABYLON.Camera) {
-  // Legacy typings: computeWorldMatrix() takes 0 args here
-  try {
-    cam.computeWorldMatrix();
-  } catch {}
-
-  // Forward via Babylon ray (correct sign)
-  let forward = new BABYLON.Vector3(0, 0, 1);
-  try {
-    forward = cam.getForwardRay(1).direction.clone();
-  } catch {}
-  if (forward.lengthSquared() < 1e-6) forward = new BABYLON.Vector3(0, 0, 1);
-  forward.normalize();
-
-  // World up is +Y
-  const worldUp = BABYLON.Vector3.Up();
-
-  // Right = up x forward
-  let right = BABYLON.Vector3.Cross(worldUp, forward);
-  if (right.lengthSquared() < 1e-6) right = BABYLON.Vector3.Right();
-  right.normalize();
-
-  // True up = forward x right
-  let up = BABYLON.Vector3.Cross(forward, right);
-  if (up.lengthSquared() < 1e-6) up = BABYLON.Vector3.Up();
-  up.normalize();
-
-  return { forward, right, up };
 }
 
 function ensureDebugPlane(scene: BABYLON.Scene) {
@@ -490,7 +516,7 @@ function ensureDebugPlane(scene: BABYLON.Scene) {
   (fpDbgPlane as any).alwaysSelectAsActiveMesh = true;
   (fpDbgPlane as any).infiniteDistance = true;
 
-  console.log("[ARMDBG] Created ARM_DEBUG_PLANE (magenta, WORLD-FOLLOW)", {
+  console.log("[ARMDBG] Created ARM_DEBUG_PLANE (magenta, TRUE-POSE WORLD-FOLLOW)", {
     sceneUid: (scene as any).uid,
   });
 }
@@ -597,7 +623,7 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 
   fpArmReady = true;
 
-  console.log("[FP] Arm created OK (WORLD-FOLLOW viewmodel)", {
+  console.log("[FP] Arm created OK (TRUE-POSE WORLD-FOLLOW viewmodel)", {
     cam: cam.name,
     sceneUid: (scene as any).uid,
     camMask: (cam as any).layerMask,
@@ -641,37 +667,25 @@ function updateFirstPersonArm(dtSec: number) {
 
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // Camera basis
-  const { forward, right, up } = getCameraBasis(cam);
-
-  // Camera world position
-  const camPos = cam.position.clone();
+  // TRUE camera pose from matrices
+  const camPosTrue = getTrueCameraWorldPos(cam);
+  const { forward, right, up } = getTrueCameraBasis(cam);
 
   // Offsets
   const distFwd = 0.75 + punch01 * 0.20;
   const distRight = 0.45;
   const distUp = -0.35 + bob;
 
-  const armPos = camPos
+  const armPos = camPosTrue
     .add(forward.scale(distFwd))
     .add(right.scale(distRight))
     .add(up.scale(distUp));
 
   fpArmRoot.position.copyFrom(armPos);
 
-  // Match camera rotation (world-ish)
+  // Match camera rotation using decomposed inverse view matrix
   if (!fpArmRoot.rotationQuaternion) fpArmRoot.rotationQuaternion = new BABYLON.Quaternion();
-  try {
-    const q = (cam as any).absoluteRotation as BABYLON.Quaternion | undefined;
-    if (q && typeof q.x === "number") fpArmRoot.rotationQuaternion.copyFrom(q);
-    else {
-      const rq = (cam as any).rotationQuaternion as BABYLON.Quaternion | undefined;
-      fpArmRoot.rotationQuaternion.copyFrom(rq ?? BABYLON.Quaternion.Identity());
-    }
-  } catch {
-    const rq = (cam as any).rotationQuaternion as BABYLON.Quaternion | undefined;
-    fpArmRoot.rotationQuaternion.copyFrom(rq ?? BABYLON.Quaternion.Identity());
-  }
+  fpArmRoot.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
 
   // Animate mesh locally (swing)
   const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
@@ -682,30 +696,35 @@ function updateFirstPersonArm(dtSec: number) {
   fpArmMesh.rotation.y = swingY;
   fpArmMesh.rotation.z = swingZ;
 
-  // Move debug plane to camera forward (world-follow)
+  // Move debug plane to camera forward (TRUE-POSE world-follow)
   if (fpDbgPlane && !fpDbgPlane.isDisposed()) {
-    const dbgPos = camPos.add(forward.scale(2.5));
+    const dbgPos = camPosTrue.add(forward.scale(2.5));
     fpDbgPlane.position.copyFrom(dbgPos);
 
-    // Face camera (copy quaternion)
-    try {
-      if (!fpDbgPlane.rotationQuaternion) fpDbgPlane.rotationQuaternion = new BABYLON.Quaternion();
-      const q = (cam as any).absoluteRotation as BABYLON.Quaternion | undefined;
-      if (q && typeof q.x === "number") fpDbgPlane.rotationQuaternion.copyFrom(q);
-      else {
-        const rq = (cam as any).rotationQuaternion as BABYLON.Quaternion | undefined;
-        fpDbgPlane.rotationQuaternion.copyFrom(rq ?? BABYLON.Quaternion.Identity());
-      }
-    } catch {
-      const rq = (cam as any).rotationQuaternion as BABYLON.Quaternion | undefined;
-      fpDbgPlane.rotationQuaternion?.copyFrom(rq ?? BABYLON.Quaternion.Identity());
-    }
+    if (!fpDbgPlane.rotationQuaternion) fpDbgPlane.rotationQuaternion = new BABYLON.Quaternion();
+    fpDbgPlane.rotationQuaternion.copyFrom(getTrueCameraRotationQuat(cam));
   }
 
   // One-time cam/arm position log
   if ((updateFirstPersonArm as any)._logged !== true) {
     (updateFirstPersonArm as any)._logged = true;
-    console.log("[ARMDBG] camPos/armPos", { camPos: camPos.asArray(), armPos: armPos.asArray() });
+    console.log("[ARMDBG] camPos/trueCamPos/armPos", {
+      camPos: cam.position.asArray(),
+      trueCamPos: camPosTrue.asArray(),
+      armPos: armPos.asArray(),
+    });
+  }
+
+  // Optional: spot-check every ~2 seconds in render loop
+  if ((updateFirstPersonArm as any)._t == null) (updateFirstPersonArm as any)._t = 0;
+  (updateFirstPersonArm as any)._t += dtSec;
+  if ((updateFirstPersonArm as any)._t > 2.0) {
+    (updateFirstPersonArm as any)._t = 0;
+    console.log("[ARMDBG] periodic pose", {
+      camPos: cam.position.asArray(),
+      trueCamPos: camPosTrue.asArray(),
+      fwd: forward.asArray(),
+    });
   }
 }
 
@@ -722,7 +741,7 @@ function hookArmToSceneRender(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   11. Remote Player Rendering (NOA Entities + Mesh Component)
+   12. Remote Player Rendering (NOA Entities + Mesh Component)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -837,19 +856,12 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
   const cam = scene.activeCamera as any;
   if (!cam) return;
 
-  const camPos: BABYLON.Vector3 =
-    cam.position instanceof BABYLON.Vector3
-      ? cam.position
-      : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
+  const camPosTrue = getTrueCameraWorldPos(cam as any);
+  const { forward } = getTrueCameraBasis(cam as any);
 
-  const fwd: BABYLON.Vector3 =
-    typeof cam.getForwardRay === "function"
-      ? cam.getForwardRay(1).direction
-      : new BABYLON.Vector3(0, 0, 1);
-
-  mesh.position.x = camPos.x + fwd.x * 6;
-  mesh.position.y = camPos.y + fwd.y * 6;
-  mesh.position.z = camPos.z + fwd.z * 6;
+  mesh.position.x = camPosTrue.x + forward.x * 6;
+  mesh.position.y = camPosTrue.y + forward.y * 6;
+  mesh.position.z = camPosTrue.z + forward.z * 6;
 }
 
 /* Apply remote transforms each tick */
@@ -867,11 +879,13 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
     if (pinRemoteMarkerInFront) {
       forceRemoteInFrontOfCamera(mesh);
 
+      // (debug only) keep NOA entity near camera
       const scene = mesh.getScene();
-      const cam = scene.activeCamera as any;
-      if (cam?.position) {
+      const cam = (getNoaCamera(scene) ?? scene.activeCamera) as any;
+      if (cam) {
+        const camPosTrue = getTrueCameraWorldPos(cam);
         try {
-          (noa as any).ents.setPosition(eid, [cam.position.x, cam.position.y, cam.position.z]);
+          (noa as any).ents.setPosition(eid, [camPosTrue.x, camPosTrue.y, camPosTrue.z]);
         } catch {}
       }
       continue;
@@ -890,7 +904,7 @@ function forceRemoteInFrontOfCamera(mesh: BABYLON.Mesh) {
 });
 
 /* ===============================
-   12. Networking (Connect & Debug)
+   13. Networking (Connect & Debug)
 ================================ */
 function normId(p: any): string | null {
   if (!p) return null;
@@ -1024,7 +1038,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick: local move send + arm debug + periodic overlay
+   14. Tick: local move send + arm debug + overlay
 ================================ */
 let tickCount = 0;
 let debugTick = 0;
