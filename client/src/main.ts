@@ -5,20 +5,22 @@
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component
- * - First-person arm rendered in a SECOND Babylon scene (viewmodel overlay)
+ * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
- * WHY second scene?
- * Your logs prove:
- *  - Arm exists, positions are correct, forward is correct
- *  - But nothing shows (including debug planes)
- *  - camera.renderList is ignored (world stays when forced)
- * => NOA render pipeline is not drawing arbitrary meshes from the scene
- * => Render viewmodel in its own scene, drawn AFTER NOA each frame.
+ * Why vmScene?
+ * NOA's render pipeline ignores arbitrary meshes added to its world scene
+ * (camera.renderList is ignored and extra meshes never show). vmScene is
+ * rendered AFTER NOA each frame via engine.onEndFrameObservable.
  *
- * Debug controls:
+ * Controls:
  * - P toggles pinning remote marker in front of camera (local-only debug)
  * - O toggles extra debug overlay line
  * - V toggles viewmodel overlay scene ON/OFF
+ *
+ * Viewmodel:
+ * - Minecraft-ish blocky arm (boxes)
+ * - Subtle bottom-right placement (barely visible)
+ * - Responds to yaw/pitch + walk bob/sway + punch
  */
 
 import { Engine } from "noa-engine";
@@ -400,7 +402,7 @@ let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
 
 let vmRoot: BABYLON.TransformNode | null = null;
-let vmArmMesh: BABYLON.Mesh | null = null;
+let vmArmRoot: BABYLON.TransformNode | null = null;
 
 let vmPlanePlus: BABYLON.Mesh | null = null;  // magenta (+forward indicator)
 let vmPlaneMinus: BABYLON.Mesh | null = null; // cyan (-forward indicator)
@@ -408,7 +410,7 @@ let vmPlaneMinus: BABYLON.Mesh | null = null; // cyan (-forward indicator)
 let vmEngineHooked = false;
 
 function ensureVmScene(noaScene: BABYLON.Scene) {
-  if (vmReady && vmScene && vmCam) return;
+  if (vmReady && vmScene && vmCam && vmRoot && vmArmRoot) return;
 
   const engine = noaScene.getEngine();
 
@@ -441,61 +443,50 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   updateOrtho();
   engine.onResizeObservable.add(() => updateOrtho());
 
-  // Root for arm
+  // Root for screenspace placement
   vmRoot = new BABYLON.TransformNode("vmRoot", vmScene);
   vmRoot.position.set(0, 0, 0);
   vmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
-  // Build arm mesh in vmScene
-  const forearm = BABYLON.MeshBuilder.CreateCylinder(
-    "vmForearm",
-    { height: 0.7, diameter: 0.22, tessellation: 16 },
-    vmScene
-  );
-  forearm.rotation.z = Math.PI / 2;
+  // --- Minecraft-ish blocky arm ---
+  vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
+  vmArmRoot.parent = vmRoot;
 
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "vmHand",
-    { width: 0.32, height: 0.22, depth: 0.35 },
-    vmScene
-  );
-  hand.position.x = 0.45;
+  // Upper arm + forearm + hand
+  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
 
-  const thumb = BABYLON.MeshBuilder.CreateBox(
-    "vmThumb",
-    { width: 0.10, height: 0.10, depth: 0.18 },
-    vmScene
-  );
-  thumb.position.set(0.55, -0.07, 0.10);
-  thumb.rotation.z = -0.55;
+  upper.parent = vmArmRoot;
+  fore.parent = vmArmRoot;
+  hand.parent = vmArmRoot;
 
-  const merged = BABYLON.Mesh.MergeMeshes([forearm, hand, thumb], true, true, undefined, false, true);
-  if (!merged) {
-    console.warn("[VM] Failed to merge viewmodel arm meshes");
-  } else {
-    vmArmMesh = merged;
-    vmArmMesh.name = "vmArm";
-    vmArmMesh.parent = vmRoot;
+  upper.position.set(0.00, 0.22, 0.00);
+  fore.position.set(0.00, -0.18, 0.02);
+  hand.position.set(0.00, -0.48, 0.04);
 
-    const mat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
-    mat.disableLighting = true;
-    mat.emissiveColor = new BABYLON.Color3(0.15, 0.65, 1.0);
-    mat.diffuseColor = new BABYLON.Color3(0.15, 0.65, 1.0);
-    mat.specularColor = new BABYLON.Color3(0, 0, 0);
-    mat.backFaceCulling = false;
-    mat.disableDepthWrite = true;
-    mat.depthFunction = BABYLON.Constants.ALWAYS;
-    vmArmMesh.material = mat;
+  // Unlit material, always on top
+  const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
+  armMat.disableLighting = true;
+  armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55); // skin-ish
+  armMat.diffuseColor = armMat.emissiveColor.clone();
+  armMat.specularColor = new BABYLON.Color3(0, 0, 0);
+  armMat.backFaceCulling = false;
+  armMat.disableDepthWrite = true;
+  armMat.depthFunction = BABYLON.Constants.ALWAYS;
 
-    vmArmMesh.isPickable = false;
-    vmArmMesh.isVisible = true;
-    vmArmMesh.setEnabled(true);
+  upper.material = armMat;
+  fore.material = armMat;
+  hand.material = armMat;
 
-    (vmArmMesh as any).isInFrustum = () => true;
-    (vmArmMesh as any).alwaysSelectAsActiveMesh = true;
-  }
+  upper.isPickable = fore.isPickable = hand.isPickable = false;
+  upper.isVisible = fore.isVisible = hand.isVisible = true;
 
-  // Debug planes (screenspace)
+  (upper as any).isInFrustum = () => true;
+  (fore as any).isInFrustum = () => true;
+  (hand as any).isInFrustum = () => true;
+
+  // Debug planes (screenspace) - you can disable once happy
   const makePlane = (name: string, color: BABYLON.Color3) => {
     const p = BABYLON.MeshBuilder.CreatePlane(name, { size: 0.35 }, vmScene!);
     const m = new BABYLON.StandardMaterial(name + "_MAT", vmScene!);
@@ -535,24 +526,46 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   console.log("[VM] vmScene created and hooked to engine end-of-frame");
 }
 
-/* Update viewmodel transforms per frame (screenspace) */
+/* ===============================
+   11.1 Viewmodel animation (screenspace)
+================================ */
 let vmTime = 0;
-let lastLocalPos: [number, number, number] | null = null;
+let lastLocalPosVM: [number, number, number] | null = null;
+
+function readNoaYaw(): number {
+  const h = (noa as any).camera?.heading;
+  return typeof h === "number" && Number.isFinite(h) ? h : 0;
+}
+
+function readNoaPitch(): number {
+  const camAny = (noa as any).camera as any;
+  const p1 = camAny?.pitch;
+  const p2 = camAny?._pitch;
+  const p3 = camAny?.rotX;
+  const p4 = camAny?.rotation?.[0];
+  const v =
+    (typeof p1 === "number" && Number.isFinite(p1) ? p1 :
+     typeof p2 === "number" && Number.isFinite(p2) ? p2 :
+     typeof p3 === "number" && Number.isFinite(p3) ? p3 :
+     typeof p4 === "number" && Number.isFinite(p4) ? p4 :
+     0);
+  return v;
+}
 
 function updateViewmodel(dtSec: number) {
-  if (!vmReady || !vmScene || !vmCam || !vmRoot) return;
+  if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   if (!viewModelEnabled) return;
 
   // Compute walk speed from NOA player
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   let speed = 0;
-  if (pos && lastLocalPos) {
-    const dx = pos[0] - lastLocalPos[0];
-    const dz = pos[2] - lastLocalPos[2];
+  if (pos && lastLocalPosVM) {
+    const dx = pos[0] - lastLocalPosVM[0];
+    const dz = pos[2] - lastLocalPosVM[2];
     const dist = Math.sqrt(dx * dx + dz * dz);
     speed = dist / Math.max(0.0001, dtSec);
   }
-  if (pos) lastLocalPos = [pos[0], pos[1], pos[2]];
+  if (pos) lastLocalPosVM = [pos[0], pos[1], pos[2]];
 
   const walk = Math.min(1, speed / 5);
   vmTime += dtSec * (2.5 + walk * 6.0);
@@ -560,36 +573,41 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
-  // punch decay (reuse same globals as mine/place)
+  // punch decay
   armPunch += armPunchVel * dtSec;
   armPunchVel *= Math.pow(0.02, dtSec);
   armPunch *= Math.pow(0.10, dtSec);
   armPunch = Math.min(1, armPunch);
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // Screen-space placement:
-  // Ortho bounds: x in [-r,r], y in [-1,1]
+  // Screen-space bounds: x in [-r,r], y in [-1,1]
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  // Place arm near lower-right
-  const baseX = r * 0.55;
-  const baseY = -0.45;
+  // Tucked into bottom-right, barely visible (Minecraft-ish)
+  const baseX = r * 0.78;
+  const baseY = -0.72;
 
-  const x = baseX + sway + punch01 * 0.04;
-  const y = baseY + bob - punch01 * 0.03;
+  const x = baseX + sway * 0.6 + punch01 * 0.03;
+  const y = baseY + bob * 0.7 - punch01 * 0.02;
 
   vmRoot.position.set(x, y, 0);
 
-  if (!vmRoot.rotationQuaternion) vmRoot.rotationQuaternion = new BABYLON.Quaternion();
-  vmRoot.rotationQuaternion.copyFromFloats(0, 0, 0, 1);
+  // Read view angles
+  const yaw = readNoaYaw();
+  const pitch = readNoaPitch();
 
-  if (vmArmMesh) {
-    vmArmMesh.rotation.x = 0;
-    vmArmMesh.rotation.y = 0;
-    vmArmMesh.rotation.z = -0.35 + Math.cos(vmTime * 1.2) * 0.12 * walk - punch01 * 0.35;
-  }
+  const pitchInfluence = BABYLON.Scalar.Clamp(pitch, -1.2, 1.2);
+  const yawInfluence = BABYLON.Scalar.Clamp(yaw, -Math.PI, Math.PI);
 
-  // Debug planes: show where +forward / -forward would be (purely visual now)
+  // Minecraft-ish swing: mostly roll, some pitch response
+  const swing = Math.sin(vmTime * 1.7) * 0.25 * walk;
+
+  // Base pose angled down-left like MC
+  vmArmRoot.rotation.x = 0.35 + pitchInfluence * 0.25 - punch01 * 0.35;
+  vmArmRoot.rotation.y = -0.25; // slight inward
+  vmArmRoot.rotation.z = -0.85 + swing - yawInfluence * 0.04; // roll dominates
+
+  // Place debug markers top-left (optional)
   if (vmPlanePlus) vmPlanePlus.position.set(-r * 0.60, 0.70, 0);
   if (vmPlaneMinus) vmPlaneMinus.position.set(-r * 0.40, 0.70, 0);
 }
@@ -888,21 +906,17 @@ let lastTickMs = performance.now();
 
   const scene = getStableScene();
   if (scene) {
-    // Ensure viewmodel overlay scene exists (shared engine/canvas)
     ensureVmScene(scene);
   }
 
-  // Update viewmodel transforms (positions in screenspace)
   updateViewmodel(dtSec);
 
-  // Send local movement periodically
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Periodic debug overlay line
   if (debugTick % 30 === 0 && showExtraDebugOverlay) {
     const pos = noa.ents.getPosition(noa.playerEntity);
 
@@ -914,6 +928,7 @@ let lastTickMs = performance.now();
         extra += ` | trueCamPos=(${truePos.x.toFixed(2)},${truePos.y.toFixed(2)},${truePos.z.toFixed(2)})`;
       }
       extra += ` | vm=${vmReady ? "READY" : "NO"} | vmOn=${viewModelEnabled ? "YES" : "NO"}`;
+      extra += ` | yaw=${readNoaYaw().toFixed(2)} pitch=${readNoaPitch().toFixed(2)}`;
     }
 
     updateOverlay(extra);
