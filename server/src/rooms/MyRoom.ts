@@ -8,6 +8,7 @@ import { Room, Client } from "colyseus";
  * - mineBlock: validates basic payload, broadcasts blockUpdate (id=0 => air)
  * - placeBlock: validates basic payload, broadcasts blockUpdate (id=block id)
  * - ping/pong
+ * - (NEW) periodic snapshot: broadcasts all players to everyone (helps if any join/move packets are missed)
  *
  * NOTE:
  * - This version intentionally RELAXES validation (distance/world-state)
@@ -23,7 +24,9 @@ type PlayerInfo = {
   x: number;
   y: number;
   z: number;
+  yaw: number; // optional for later; currently always 0 unless you add it from client
   lastMoveAt: number;
+  joinedAt: number;
 };
 
 function isFiniteNumber(n: unknown): n is number {
@@ -32,6 +35,11 @@ function isFiniteNumber(n: unknown): n is number {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+function toInt(n: number): number {
+  // fast floor, consistent for negatives too
+  return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
 }
 
 export class MyRoom extends Room {
@@ -43,18 +51,34 @@ export class MyRoom extends Room {
   // Sanity bounds for any incoming coords
   private readonly maxAbsCoord = 100000;
 
-  // Allowed block ids for debug build (0=air, 1..6 from your client hotbar)
+  // Allowed block ids for debug build (0=air, 1..5 from your client hotbar; keep 6 if you plan one more)
   private readonly minBlockId = 0;
   private readonly maxBlockId = 6;
+
+  // Periodic full snapshot to reduce "I can't see someone" issues during early dev
+  private readonly snapshotIntervalMs = 500;
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
     this.maxClients = 32;
 
+    // Periodically broadcast a full player list to everyone.
+    // This makes clients resilient if they miss a join/move packet early on.
+    this.clock.setInterval(() => {
+      const all = Array.from(this.players.values()).map((p) => ({
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        yaw: p.yaw,
+      }));
+      this.broadcast("playersSnapshot", all);
+    }, this.snapshotIntervalMs);
+
     /**
-     * Client -> Server: playerMove { x, y, z }
-     * Server stores last known position and broadcasts to others only.
+     * Client -> Server: playerMove { x, y, z, yaw? }
+     * Stores last known position and broadcasts to others only.
      */
     this.onMessage("playerMove", (client: Client, payload: unknown) => {
       const now = Date.now();
@@ -67,7 +91,7 @@ export class MyRoom extends Room {
 
       // Validate payload
       if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<Vec3>;
+      const maybe = payload as Partial<Vec3> & { yaw?: unknown };
 
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
 
@@ -75,17 +99,17 @@ export class MyRoom extends Room {
       const y = clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord);
       const z = clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord);
 
+      // Optional yaw (safe default)
+      const yaw = isFiniteNumber(maybe.yaw) ? maybe.yaw : p.yaw;
+
       p.x = x;
       p.y = y;
       p.z = z;
+      p.yaw = yaw;
       p.lastMoveAt = now;
 
       // Broadcast to others (do NOT send back to sender to avoid jitter)
-      this.broadcast(
-        "playerTransformOther",
-        { id: client.sessionId, x, y, z },
-        { except: client }
-      );
+      this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
     });
 
     /**
@@ -104,9 +128,9 @@ export class MyRoom extends Room {
       const maybe = payload as Partial<Vec3>;
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
 
-      const x = Math.floor(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const y = Math.floor(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const z = Math.floor(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
+      const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
       // Broadcast the edit: set block to air (0)
       this.broadcast("blockUpdate", { x, y, z, id: 0 });
@@ -130,11 +154,11 @@ export class MyRoom extends Room {
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
       if (!isFiniteNumber(maybe.id)) return;
 
-      const x = Math.floor(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const y = Math.floor(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const z = Math.floor(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
+      const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      const id = Math.floor(clamp(maybe.id, this.minBlockId, this.maxBlockId));
+      const id = toInt(clamp(maybe.id, this.minBlockId, this.maxBlockId));
 
       this.broadcast("blockUpdate", { x, y, z, id });
     });
@@ -155,7 +179,9 @@ export class MyRoom extends Room {
       x: 0,
       y: 8,
       z: 0,
+      yaw: 0,
       lastMoveAt: 0,
+      joinedAt: Date.now(),
     };
 
     this.players.set(client.sessionId, spawn);
@@ -163,24 +189,24 @@ export class MyRoom extends Room {
     // Send existing players to new client
     const existingPlayers = Array.from(this.players.values())
       .filter((pl) => pl.id !== client.sessionId)
-      .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z }));
+      .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z, yaw: pl.yaw }));
 
     client.send("existingPlayers", existingPlayers);
 
     // Notify others that a new player joined
-    this.broadcast(
-      "playerJoined",
-      { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z },
-      { except: client }
-    );
+    this.broadcast("playerJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw }, { except: client });
+
+    // Also send the joiner their own spawn info (handy if client wants it)
+    client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
   }
 
   onLeave(client: Client, code?: number) {
     console.log("➖ onLeave", client.sessionId, "code:", code);
 
-    this.players.delete(client.sessionId);
-
-    this.broadcast("playerLeft", { id: client.sessionId });
+    const existed = this.players.delete(client.sessionId);
+    if (existed) {
+      this.broadcast("playerLeft", { id: client.sessionId });
+    }
   }
 
   onDispose() {

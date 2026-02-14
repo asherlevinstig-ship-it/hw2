@@ -14,7 +14,7 @@ let room: Room | null = null;
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("Missing <div id='app'></div> in index.html");
 
-// Prevent right-click menu (Minecraft-like)
+// Prevent right-click menu
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // Fullscreen styles
@@ -57,16 +57,14 @@ const noa = new Engine({
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-
-  // If you want to guarantee 32, uncomment:
+  // If you want to force 32, uncomment:
   // chunkSize: 32,
 });
 
 /* ===============================
-   4.1 Pointer Lock Helpers
+   4.1 Pointer Lock
 ================================ */
 function requestPointerLock() {
-  // Try to lock the actual render canvas if possible
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
@@ -76,13 +74,15 @@ function requestPointerLock() {
 
     if (canvas?.requestPointerLock) canvas.requestPointerLock();
   } catch {
-    // Fallback: try appEl anyway
     if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
   }
 }
 
-// Click to lock (Minecraft-like)
 appEl.addEventListener("click", () => requestPointerLock());
+
+function hasPointerLock(): boolean {
+  return !!(noa.container as any)?.hasPointerLock;
+}
 
 /* ===============================
    5. Register Blocks & Materials
@@ -116,7 +116,6 @@ const hotbar = [
   { id: WOOD_ID, name: "Wood" },
   { id: LEAVES_ID, name: "Leaves" },
 ];
-
 let selectedSlot = 0;
 
 function updateOverlay(extraLine = "") {
@@ -145,64 +144,52 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   7. Terrain Generation (Hills) - FIXED
+   7. Terrain Generation (Hills)
 ================================ */
 const worldAny = noa.world as any;
 let firstChunkLogged = false;
 
-worldAny.on(
-  "worldDataNeeded",
-  (id: string, data: any, x: number, y: number, z: number) => {
-    // Derive chunk size from the chunk data (avoids hardcoding 32)
-    const CS = data.shape?.[0] ?? 32;
+worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: number) => {
+  const CS = data.shape?.[0] ?? 32;
 
-    if (!firstChunkLogged) {
-      firstChunkLogged = true;
-      console.log("✅ worldDataNeeded firing. chunkSize =", CS, "coords =", { x, y, z });
-    }
+  if (!firstChunkLogged) {
+    firstChunkLogged = true;
+    console.log("✅ worldDataNeeded firing. chunkSize =", CS, "coords =", { x, y, z });
+  }
 
-    // Add base height so chunks around y=0 aren't empty
-    const baseHeight = 12;
+  const baseHeight = 12;
 
-    for (let i = 0; i < CS; i++) {
-      for (let k = 0; k < CS; k++) {
-        const globalX = x * CS + i;
-        const globalZ = z * CS + k;
+  for (let i = 0; i < CS; i++) {
+    for (let k = 0; k < CS; k++) {
+      const globalX = x * CS + i;
+      const globalZ = z * CS + k;
 
-        // Sine wave hills
-        const height =
-          baseHeight +
-          Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
+      const height = baseHeight + Math.floor(Math.sin(globalX / 15) * 6 + Math.cos(globalZ / 15) * 6);
 
-        for (let j = 0; j < CS; j++) {
-          const globalY = y * CS + j;
+      for (let j = 0; j < CS; j++) {
+        const globalY = y * CS + j;
 
-          if (globalY > height) data.set(i, j, k, AIR_ID);
-          else if (globalY === height) data.set(i, j, k, GRASS_ID);
-          else if (globalY > height - 4) data.set(i, j, k, DIRT_ID);
-          else data.set(i, j, k, STONE_ID);
-        }
+        if (globalY > height) data.set(i, j, k, AIR_ID);
+        else if (globalY === height) data.set(i, j, k, GRASS_ID);
+        else if (globalY > height - 4) data.set(i, j, k, DIRT_ID);
+        else data.set(i, j, k, STONE_ID);
       }
     }
-
-    noa.world.setChunkData(id, data);
   }
-);
+
+  noa.world.setChunkData(id, data);
+});
 
 /* ===============================
-   8. Input & Interaction Logic
+   8. Interaction Logic (Mine/Place)
 ================================ */
 
-// Try to ensure bindings exist (depends on noa setup/version)
+// Try to ensure bindings exist (depends on noa version)
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
   (noa.inputs as any).bind?.("alt-fire", "mouse2");
 } catch {
   // no-op
-}
-
-function hasPointerLock(): boolean {
-  return !!(noa.container as any)?.hasPointerLock;
 }
 
 function getTargetInfo() {
@@ -217,41 +204,33 @@ function getTargetInfo() {
 
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
-
   const target = getTargetInfo();
   if (!target) return;
 
   const { x, y, z } = target.pos;
-  // Local update (instant feedback)
   noa.world.setBlockID(AIR_ID, x, y, z);
-  // Network update
   room?.send("mineBlock", { x, y, z });
 });
 
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
-
   const target = getTargetInfo();
   if (!target) return;
 
   const { x, y, z } = target.adj;
   const blockToPlace = hotbar[selectedSlot].id;
 
-  // Prevent placing inside player
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  // Basic "no place where you stand" check (feet+head)
   if (x === px && z === pz && (y === py || y === py + 1)) {
     console.log("❌ Cannot place block: Player is standing here.");
     return;
   }
 
-  // Local update
   noa.world.setBlockID(blockToPlace, x, y, z);
-  // Network update
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
 
@@ -277,7 +256,6 @@ function getBabylonOrThrow() {
   const BABYLON = (globalThis as any).BABYLON;
   if (BABYLON) return BABYLON;
 
-  // If this triggers, tell me what noa.rendering contains and I’ll wire it differently.
   throw new Error(
     "BABYLON global not found. noa-engine usually provides Babylon globally. " +
       "If not, install/explicitly import Babylon and update avatar code accordingly."
@@ -291,7 +269,6 @@ function getSceneOrThrow() {
 }
 
 function colorFromId(id: string) {
-  // Deterministic-ish hash -> 0..1 RGB
   let h = 2166136261;
   for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
   const r = ((h >>> 0) & 255) / 255;
@@ -304,44 +281,29 @@ function createAvatar(id: string) {
   const BABYLON = getBabylonOrThrow();
   const scene = getSceneOrThrow();
 
-  // Minecraft pixels to world units: 16px = 1 block
   const SCALE = 1 / 16;
 
-  // Classic model
-  const headSize = 8 * SCALE; // 0.5
-  const bodyW = 8 * SCALE; // 0.5
-  const bodyH = 12 * SCALE; // 0.75
-  const bodyD = 4 * SCALE; // 0.25
-  const limbW = 4 * SCALE; // 0.25
-  const limbH = 12 * SCALE; // 0.75
-  const limbD = 4 * SCALE; // 0.25
+  const headSize = 8 * SCALE;
+  const bodyW = 8 * SCALE;
+  const bodyH = 12 * SCALE;
+  const bodyD = 4 * SCALE;
+  const limbW = 4 * SCALE;
+  const limbH = 12 * SCALE;
+  const limbD = 4 * SCALE;
 
   const root = new BABYLON.TransformNode(`avatar:${id}`, scene);
 
   const col = colorFromId(id);
 
   const matHead = new BABYLON.StandardMaterial(`matHead:${id}`, scene);
-  matHead.diffuseColor = new BABYLON.Color3(
-    col.r * 0.8 + 0.1,
-    col.g * 0.8 + 0.1,
-    col.b * 0.8 + 0.1
-  );
+  matHead.diffuseColor = new BABYLON.Color3(col.r * 0.8 + 0.1, col.g * 0.8 + 0.1, col.b * 0.8 + 0.1);
 
   const matBody = new BABYLON.StandardMaterial(`matBody:${id}`, scene);
-  matBody.diffuseColor = new BABYLON.Color3(
-    col.r * 0.6 + 0.2,
-    col.g * 0.6 + 0.2,
-    col.b * 0.6 + 0.2
-  );
+  matBody.diffuseColor = new BABYLON.Color3(col.r * 0.6 + 0.2, col.g * 0.6 + 0.2, col.b * 0.6 + 0.2);
 
   const matLimb = new BABYLON.StandardMaterial(`matLimb:${id}`, scene);
-  matLimb.diffuseColor = new BABYLON.Color3(
-    col.r * 0.5 + 0.25,
-    col.g * 0.5 + 0.25,
-    col.b * 0.5 + 0.25
-  );
+  matLimb.diffuseColor = new BABYLON.Color3(col.r * 0.5 + 0.25, col.g * 0.5 + 0.25, col.b * 0.5 + 0.25);
 
-  // Part helper: box with pivot at top (for swinging)
   function makeSwingPart(name: string, w: number, h: number, d: number, mat: any) {
     const mesh = BABYLON.MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
     mesh.material = mat;
@@ -358,11 +320,7 @@ function createAvatar(id: string) {
   head.isPickable = false;
   head.checkCollisions = false;
 
-  const body = BABYLON.MeshBuilder.CreateBox(
-    `body:${id}`,
-    { width: bodyW, height: bodyH, depth: bodyD },
-    scene
-  );
+  const body = BABYLON.MeshBuilder.CreateBox(`body:${id}`, { width: bodyW, height: bodyH, depth: bodyD }, scene);
   body.material = matBody;
   body.parent = root;
   body.isPickable = false;
@@ -373,26 +331,20 @@ function createAvatar(id: string) {
   const legL = makeSwingPart(`legL:${id}`, limbW, limbH, limbD, matLimb);
   const legR = makeSwingPart(`legR:${id}`, limbW, limbH, limbD, matLimb);
 
-  // Layout (root ~ feet)
   const feetY = 0;
 
-  // Legs: pivot at top, so place them at hip height
   legL.position.set(-bodyW * 0.25, feetY + limbH, 0);
   legR.position.set(bodyW * 0.25, feetY + limbH, 0);
 
-  // Body: centered above legs
   body.position.set(0, feetY + limbH + bodyH * 0.5, 0);
 
-  // Arms: pivot at top, place at shoulder height
   const shoulderY = feetY + limbH + bodyH;
   armL.position.set(-bodyW * 0.75, shoulderY, 0);
   armR.position.set(bodyW * 0.75, shoulderY, 0);
 
-  // Head: centered on top
   head.position.set(0, shoulderY + headSize * 0.5, 0);
 
   const now = performance.now();
-
   const avatar: Avatar = {
     root,
     head,
@@ -429,13 +381,12 @@ function updateAvatar(id: string, x: number, y: number, z: number, yawRad?: numb
     av.root.rotation.y = yawRad;
   }
 
-  // Simple limb swing based on movement speed
   const t = performance.now();
   const dt = Math.max(0.001, (t - av.lastT) / 1000);
 
   const dx = x - av.lastPos.x;
   const dz = z - av.lastPos.z;
-  const speed = Math.sqrt(dx * dx + dz * dz) / dt; // units/s
+  const speed = Math.sqrt(dx * dx + dz * dz) / dt;
 
   const isMoving = speed > 0.2;
   const swing = isMoving ? Math.min(1, speed / 4) : 0;
@@ -465,12 +416,14 @@ function updateAvatar(id: string, x: number, y: number, z: number, yawRad?: numb
 
 function normId(p: any): string | null {
   if (!p) return null;
-  // try common fields
   const id = p.id ?? p.sessionId ?? p.sid ?? p.clientId ?? null;
   if (id != null) return String(id);
-  // sometimes server sends just the string id
   if (typeof p === "string") return p;
   return null;
+}
+
+function isMe(id: string): boolean {
+  return !!room && id === room.sessionId;
 }
 
 async function connect() {
@@ -481,19 +434,20 @@ async function connect() {
     console.log("✅ Joined room:", room.sessionId);
     updateOverlay();
 
-    // 1) Block Updates (World)
+    // 1) Block updates
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // 2) Existing Players (Initial Load)
+    // 2) Existing players (initial load)
     room.onMessage("existingPlayers", (players: any[]) => {
       console.log("👋 Existing players:", players);
       for (const p of players ?? []) {
         const id = normId(p);
-        if (!id) continue;
+        if (!id || isMe(id)) continue;
+
         updateAvatar(
           id,
           Number(p.x ?? 0),
@@ -504,11 +458,12 @@ async function connect() {
       }
     });
 
-    // 3) New Player Joined
+    // 3) New player joined
     room.onMessage("playerJoined", (p: any) => {
       console.log("➕ Player joined:", p);
       const id = normId(p);
-      if (!id) return;
+      if (!id || isMe(id)) return;
+
       updateAvatar(
         id,
         Number(p.x ?? 0),
@@ -518,7 +473,7 @@ async function connect() {
       );
     });
 
-    // 4) Player Left
+    // 4) Player left
     room.onMessage("playerLeft", (p: any) => {
       console.log("➖ Player left:", p);
       const id = normId(p);
@@ -526,18 +481,41 @@ async function connect() {
       removeAvatar(id);
     });
 
-    // 5) Other Player Movement
+    // 5) Other player movement
     room.onMessage("playerTransformOther", (p: any) => {
-      // Expected: { id, x, y, z, yaw? }
       const id = normId(p);
-      if (!id) return;
+      if (!id || isMe(id)) return;
 
       const x = Number(p.x);
       const y = Number(p.y);
       const z = Number(p.z);
+
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
+    });
+
+    // 6) Periodic snapshot (robustness)
+    room.onMessage("playersSnapshot", (players: any[]) => {
+      if (!Array.isArray(players)) return;
+
+      for (const p of players) {
+        const id = normId(p);
+        if (!id || isMe(id)) continue;
+
+        const x = Number(p.x);
+        const y = Number(p.y);
+        const z = Number(p.z);
+
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+
+        updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
+      }
+    });
+
+    // 7) Optional server ack for own join
+    room.onMessage("youJoined", (p: any) => {
+      console.log("🟦 youJoined:", p);
     });
   } catch (e) {
     console.error("Connection Error:", e);
@@ -551,12 +529,32 @@ connect();
    10. Sync Position
 ================================ */
 
+function tryGetYaw(): number {
+  // Yaw handling varies by NOA version; keep safe fallback
+  // Many setups expose camera rotation via rendering
+  const rot = (noa as any).rendering?.getCameraRotation?.();
+  if (rot && typeof rot.y === "number" && Number.isFinite(rot.y)) return rot.y;
+
+  // Fallback: try to read from Babylon active camera
+  try {
+    const scene = (noa as any).rendering?.getScene?.();
+    const cam = scene?.activeCamera;
+    if (cam && typeof cam.rotation?.y === "number" && Number.isFinite(cam.rotation.y)) return cam.rotation.y;
+  } catch {
+    // ignore
+  }
+
+  return 0;
+}
+
 let tickCount = 0;
 (noa as any).on("tick", () => {
   tickCount++;
 
   if (room && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2] });
+    const yaw = tryGetYaw();
+
+    room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 });
