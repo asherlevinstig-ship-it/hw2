@@ -4,21 +4,26 @@
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Remote players debug rendering via SECOND Babylon scene (rpScene) rendered AFTER NOA
+ * - Remote players rendered in a SECOND Babylon scene (rpScene) rendered AFTER NOA
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
  * Why rpScene?
- * NOA/Babylon scene used by noa-engine can swap cameras, layerMasks, and rendering groups.
- * rpScene renders AFTER NOA, just like the arm, so it is guaranteed visible.
+ * NOA’s world scene/camera/layerMask/renderGroups can be swapped/managed internally.
+ * Rendering remotes in our own scene *after* NOA guarantees they appear (like the arm).
  *
  * Controls:
  * - V toggles viewmodel overlay ON/OFF
- * - P toggles Remote Player Debug overlay ON/OFF (screen-space markers)
+ * - P toggles Remote Player overlay ON/OFF
+ * - O toggles Remote "X-RAY" (always visible) ON/OFF
  *
  * Debug controls (viewmodel):
  * - B toggles VM debug visuals (axes + screen frame)
  * - N toggles VM tuning mode (enables hotkey nudging)
  * - M toggles VM mirror (fixes "wrong direction"/handedness)
+ *
+ * IMPORTANT FIX:
+ * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
+ * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
  */
 
 import { Engine } from "noa-engine";
@@ -98,6 +103,7 @@ function requestPointerLock() {
     if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
   }
 }
+
 appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
@@ -140,8 +146,9 @@ const hotbar = [
 let selectedSlot = 0;
 let viewModelEnabled = true;
 
-// Remote player debug overlay toggle
-let remoteDebugEnabled = true;
+// Remote overlay toggles
+let remotePlayersEnabled = true;
+let remoteXray = true; // always visible by default (debug)
 
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
@@ -166,20 +173,43 @@ let vmTurnSwayMulZ = 0.25;
 let vmPunchMoveX = 0.12;
 let vmPunchMoveY = 0.08;
 
-// Debug state for networking (overlay)
+/* ===============================
+   6.2 Remote state (DECLARED EARLY to avoid TDZ)
+================================ */
+type NetTransform = { x: number; y: number; z: number; yaw?: number };
+const netTransforms = new Map<string, NetTransform>();
+
 let lastSnapshotIds: string[] = [];
 let lastSnapshotAt = 0;
 let lastTransformAt = 0;
+
+/* ===============================
+   6.3 Overlay
+================================ */
+function getClosestRemoteDistance(): number | null {
+  if (!room) return null;
+  const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
+  if (!me) return null;
+
+  let best: number | null = null;
+  for (const [id, t] of netTransforms.entries()) {
+    if (id === room.sessionId) continue;
+    const dx = t.x - me[0];
+    const dy = t.y - me[1];
+    const dz = t.z - me[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (best == null || d < best) best = d;
+  }
+  return best;
+}
 
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
 
-  const netCount = netTransforms.size;
-  const meshCount = rpMarkers.size;
   const snapAge = lastSnapshotAt ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s` : "n/a";
   const xformAge = lastTransformAt ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s` : "n/a";
-  const snapPreview = lastSnapshotIds.slice(0, 5).join(", ");
+  const snapPreview = lastSnapshotIds.slice(0, 6).join(", ");
 
   const closest = getClosestRemoteDistance();
   const closestStr = closest == null ? "n/a" : `${closest.toFixed(2)}m`;
@@ -188,7 +218,8 @@ function updateOverlay(extraLine = "") {
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
-    <strong>Remote Debug:</strong> ${remoteDebugEnabled ? "ON" : "OFF"}<br>
+    <strong>Remote Players:</strong> ${remotePlayersEnabled ? "ON" : "OFF"} |
+    <strong>Xray:</strong> ${remoteXray ? "ON" : "OFF"}<br>
     <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} |
     <strong>VM Tune:</strong> ${vmTuning ? "ON" : "OFF"} |
     <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
@@ -197,25 +228,25 @@ function updateOverlay(extraLine = "") {
     [1-5] Select Block<br>
     [WASD] Move  |  [Space] Jump<br>
     [V] Toggle Viewmodel<br>
-    [P] Toggle Remote Debug overlay<br>
+    [P] Toggle Remote Players<br>
+    [O] Toggle Remote Xray<br>
     [B] Toggle VM Debug (axes/frame)<br>
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
     <span style="opacity:.9">Remote debug:</span><br>
-    <span style="opacity:.9">netTransforms=${netCount} markers=${meshCount}</span><br>
+    <span style="opacity:.9">netTransforms=${netTransforms.size} closest=${closestStr}</span><br>
     <span style="opacity:.9">lastSnapshot=${snapAge} lastTransform=${xformAge}</span><br>
-    <span style="opacity:.9">closestRemote=${closestStr}</span><br>
     <span style="opacity:.9">snapshotIds=[${snapPreview}]</span><br>
-    <span style="opacity:.9">Tuning keys (Tune ON): Arrows=Move | Shift+Arrows=Fine | 7/8 rotX | 9/0 rotY | -/= rotZ</span><br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
 updateOverlay();
 
 /* ===============================
-   6.2 Key handling
+   6.4 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
+  // Hotbar 1-5
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
@@ -230,8 +261,14 @@ document.addEventListener("keydown", (e) => {
   }
 
   if (e.key === "p" || e.key === "P") {
-    remoteDebugEnabled = !remoteDebugEnabled;
-    updateOverlay(remoteDebugEnabled ? "Remote Debug: ON" : "Remote Debug: OFF");
+    remotePlayersEnabled = !remotePlayersEnabled;
+    updateOverlay(remotePlayersEnabled ? "Remote Players: ON" : "Remote Players: OFF");
+    return;
+  }
+
+  if (e.key === "o" || e.key === "O") {
+    remoteXray = !remoteXray;
+    updateOverlay(remoteXray ? "Remote Xray: ON" : "Remote Xray: OFF");
     return;
   }
 
@@ -254,6 +291,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// Capture-phase handler for tuning keys ONLY (so mouse/NOA stays normal)
 window.addEventListener(
   "keydown",
   (e) => {
@@ -266,12 +304,7 @@ window.addEventListener(
       e.key === "ArrowDown";
 
     const isRotKey =
-      e.key === "7" ||
-      e.key === "8" ||
-      e.key === "9" ||
-      e.key === "0" ||
-      e.key === "-" ||
-      e.key === "=";
+      e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -281,11 +314,13 @@ window.addEventListener(
 
     const fineMove = e.shiftKey ? 0.003 : 0.01;
 
+    // Move anchor
     if (e.key === "ArrowLeft") vmBaseXMul -= fineMove;
     if (e.key === "ArrowRight") vmBaseXMul += fineMove;
     if (e.key === "ArrowUp") vmBaseY += fineMove;
     if (e.key === "ArrowDown") vmBaseY -= fineMove;
 
+    // Rotate base pose
     const rStep = e.shiftKey ? 0.02 : 0.05;
     if (e.key === "7") vmRotX -= rStep;
     if (e.key === "8") vmRotX += rStep;
@@ -295,9 +330,9 @@ window.addEventListener(
     if (e.key === "=") vmRotZ += rStep;
 
     updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(
         2
-      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
+      )},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -409,7 +444,8 @@ function getTargetInfo() {
   };
 }
 
-let punchT = 1;
+/* ---- Viewmodel punch ---- */
+let punchT = 1; // 0..1
 function triggerPunch() {
   punchT = 0;
 }
@@ -482,10 +518,13 @@ function getStableScene(): BABYLON.Scene | null {
 let vmReady = false;
 let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
+
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
+
 let vmEngineHooked = false;
 
+// Debug meshes
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
@@ -495,9 +534,12 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   const engine = noaScene.getEngine();
 
   vmScene = new BABYLON.Scene(engine);
+
+  // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
+  // Ortho camera in screenspace
   vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -10), vmScene);
   vmCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
   vmCam.setTarget(BABYLON.Vector3.Zero());
@@ -533,6 +575,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmRoot.position.set(0, 0, 0);
   vmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
+  // --- Minecraft-ish blocky arm ---
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
@@ -544,12 +587,15 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   fore.parent = vmArmRoot;
   hand.parent = vmArmRoot;
 
+  // Lift arm slightly relative to anchor to reduce clipping
   vmArmRoot.position.set(0.0, 0.10, 0.0);
 
+  // Stack parts
   upper.position.set(0.0, 0.22, 0.0);
   fore.position.set(0.0, -0.14, 0.02);
   hand.position.set(0.0, -0.40, 0.04);
 
+  // Unlit material, always on top
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
   armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
@@ -564,10 +610,12 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   hand.material = armMat;
 
   upper.isPickable = fore.isPickable = hand.isPickable = false;
+
   (upper as any).isInFrustum = () => true;
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
 
+  // Debug visuals
   const ensureVmDebugMeshes = () => {
     if (!vmScene || !vmRoot || !vmCam) return;
 
@@ -609,6 +657,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   ensureVmDebugMeshes();
 
+  // Hook engine end-of-frame once
   if (!vmEngineHooked) {
     vmEngineHooked = true;
 
@@ -620,7 +669,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
         vmScene.render();
       }
 
-      if (remoteDebugEnabled && rpReady && rpScene) {
+      if (remotePlayersEnabled && rpReady && rpScene) {
         rpScene.render();
       }
     });
@@ -630,11 +679,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 }
 
 /* ===============================
-   10.1 Viewmodel animation
+   10.1 Viewmodel animation (screenspace)
 ================================ */
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
-
 let lastYawVM: number | null = null;
 let lastPitchVM: number | null = null;
 
@@ -676,6 +724,7 @@ function updateViewmodel(dtSec: number) {
   vmArmRoot.scaling.y = 1;
   vmArmRoot.scaling.z = 1;
 
+  // Compute walk speed
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   let speed = 0;
   if (pos && lastLocalPosVM) {
@@ -705,6 +754,7 @@ function updateViewmodel(dtSec: number) {
 
   vmRoot.position.set(x, y, 0);
 
+  // View sway uses deltas
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
 
@@ -726,19 +776,17 @@ function updateViewmodel(dtSec: number) {
 }
 
 /* ===============================
-   11. Remote Player Debug Overlay Scene (rpScene)
-   - Renders AFTER NOA (like arm)
-   - Projects remote 3D positions to screen-space markers
+   11. Remote Players Overlay Scene (rpScene)
+   - TRUE 3D scene rendered after NOA
+   - Camera is synced to NOA world camera each tick
+   - Remote meshes live here so they cannot be culled/hidden by NOA pipeline
 ================================ */
-type NetTransform = { x: number; y: number; z: number; yaw?: number };
-const netTransforms = new Map<string, NetTransform>();
-
 let rpReady = false;
 let rpScene: BABYLON.Scene | null = null;
 let rpCam: BABYLON.FreeCamera | null = null;
 
-// marker root per player id
-const rpMarkers = new Map<string, BABYLON.TransformNode>();
+const remoteMeshes = new Map<string, BABYLON.TransformNode>();
+const remoteMats = new Map<string, BABYLON.StandardMaterial>();
 
 function ensureRpScene(noaScene: BABYLON.Scene) {
   if (rpReady && rpScene && rpCam) return;
@@ -746,153 +794,160 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   const engine = noaScene.getEngine();
 
   rpScene = new BABYLON.Scene(engine);
+
+  // DO NOT clear color (keep world).
+  // Depth/stencil behavior:
+  // - If xray ON: we clear depth and force ALWAYS so remotes draw on top.
+  // - If xray OFF: we keep depth so remotes can be occluded by blocks (best-effort).
   rpScene.autoClear = false;
-  rpScene.autoClearDepthAndStencil = true;
+  rpScene.autoClearDepthAndStencil = false;
 
-  rpCam = new BABYLON.FreeCamera("rpCam", new BABYLON.Vector3(0, 0, -10), rpScene);
-  rpCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
-  rpCam.setTarget(BABYLON.Vector3.Zero());
+  rpCam = new BABYLON.FreeCamera("rpCam", new BABYLON.Vector3(0, 0, 0), rpScene);
+  rpCam.minZ = 0.05;
+  rpCam.maxZ = 10000;
+
+  // IMPORTANT: set rotationQuaternion so we can copy from world camera safely
+  rpCam.rotationQuaternion = new BABYLON.Quaternion();
+
   rpScene.activeCamera = rpCam;
-
-  const updateOrtho = () => {
-    if (!rpCam) return;
-    const w = engine.getRenderWidth();
-    const h = engine.getRenderHeight();
-    const r = w / Math.max(1, h);
-
-    rpCam.orthoLeft = -r;
-    rpCam.orthoRight = r;
-    rpCam.orthoTop = 1;
-    rpCam.orthoBottom = -1;
-  };
-  updateOrtho();
-  engine.onResizeObservable.add(() => updateOrtho());
 
   rpReady = true;
 }
 
-function makeMarker(id: string) {
-  if (!rpScene) return null;
-
-  const root = new BABYLON.TransformNode(`rpRoot:${id}`, rpScene);
-
-  const pill = BABYLON.MeshBuilder.CreateBox(
-    `rpBox:${id}`,
-    { width: 0.06, height: 0.16, depth: 0.02 },
-    rpScene
-  );
-  pill.parent = root;
-
-  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, rpScene);
+function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardMaterial {
+  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, scene);
   mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
+  mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
   mat.diffuseColor = mat.emissiveColor.clone();
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
-  mat.disableDepthWrite = true;
-  mat.depthFunction = BABYLON.Constants.ALWAYS;
+  (mat as any).fogEnabled = false;
+  return mat;
+}
 
-  pill.material = mat;
+function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
+  if (!rpScene) return null;
 
-  pill.isPickable = false;
-  (pill as any).isInFrustum = () => true;
+  const existing = remoteMeshes.get(id);
+  if (existing) return existing;
 
+  // Simple “player” made from boxes (body + head)
+  const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
+
+  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, rpScene);
+  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: 0.55, height: 0.55, depth: 0.55 }, rpScene);
+
+  body.parent = root;
+  head.parent = root;
+
+  body.position.set(0, 0.6, 0);
+  head.position.set(0, 1.55, 0);
+
+  const mat = makeRemoteMaterial(id, rpScene);
+  remoteMats.set(id, mat);
+  body.material = mat;
+  head.material = mat;
+
+  body.isPickable = false;
+  head.isPickable = false;
+
+  remoteMeshes.set(id, root);
   return root;
 }
 
-// project world position into screen space marker
-function updateRemoteDebugMarkers() {
-  if (!remoteDebugEnabled) return;
+function removeRemoteMesh(id: string) {
+  const root = remoteMeshes.get(id);
+  if (root) {
+    try {
+      root.dispose();
+    } catch {}
+    remoteMeshes.delete(id);
+  }
+  const mat = remoteMats.get(id);
+  if (mat) {
+    try {
+      mat.dispose();
+    } catch {}
+    remoteMats.delete(id);
+  }
+}
+
+function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (!rpReady || !rpScene || !rpCam) return;
 
-  const worldScene = getStableScene();
-  if (!worldScene) return;
+  const worldCam = worldScene.activeCamera;
+  if (!worldCam) return;
 
-  const cam = worldScene.activeCamera;
-  if (!cam) return;
+  // Copy viewport & camera params
+  rpCam.viewport = worldCam.viewport.clone();
 
-  // Ortho bounds for screen-space marker placement
-  const r = (rpCam.orthoRight ?? 1) as number;
+  // Copy FOV/aspect-ish (FreeCamera will use engine aspect automatically)
+  if (typeof (worldCam as any).fov === "number") (rpCam as any).fov = (worldCam as any).fov;
 
-  // Clean up markers for players that left
-  for (const id of Array.from(rpMarkers.keys())) {
-    if (!netTransforms.has(id)) {
-      const m = rpMarkers.get(id);
-      if (m) {
-        try { m.dispose(); } catch {}
-      }
-      rpMarkers.delete(id);
-    }
+  // Copy clipping
+  if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
+  if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
+
+  // Position: use global position if available
+// Position: use global position if available
+const gp = (worldCam as any).globalPosition as BABYLON.Vector3 | undefined;
+if (gp instanceof BABYLON.Vector3) {
+  rpCam.position.copyFrom(gp);
+} else {
+  const wp = (worldCam as any).position as BABYLON.Vector3 | undefined;
+  if (wp instanceof BABYLON.Vector3) rpCam.position.copyFrom(wp);
+}
+
+
+  // Rotation: prefer quaternion
+  const rq = (worldCam as any).rotationQuaternion as BABYLON.Quaternion | null | undefined;
+  if (rq && rpCam.rotationQuaternion) {
+    rpCam.rotationQuaternion.copyFrom(rq);
+  } else {
+    // fallback: Euler
+    const rot = (worldCam as any).rotation as BABYLON.Vector3 | undefined;
+    if (rot) rpCam.rotation.copyFrom(rot);
   }
 
-  for (const [id, t] of netTransforms.entries()) {
-    if (room && id === room.sessionId) continue;
-
-    let marker = rpMarkers.get(id);
-    if (!marker) {
-      const created = makeMarker(id);
-      if (!created) continue;
-      marker = created;
-      rpMarkers.set(id, marker);
+  // X-ray depth behavior
+  if (remoteXray) {
+    rpScene.autoClearDepthAndStencil = true;
+    // Force always visible
+    for (const mat of remoteMats.values()) {
+      mat.disableDepthWrite = true;
+      mat.depthFunction = BABYLON.Constants.ALWAYS;
     }
-
-    // world position (head-ish)
-    const worldPos = new BABYLON.Vector3(t.x, t.y + 1.6, t.z);
-
-    // Babylon gives screen coords in pixels
-    const engine = worldScene.getEngine();
-    const vp = cam.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
-
-    const sp = BABYLON.Vector3.Project(
-      worldPos,
-      BABYLON.Matrix.Identity(),
-      cam.getTransformationMatrix(),
-
-      vp
-    );
-
-    // If behind camera, hide marker
-    // (z outside [0,1] indicates clipped)
-    const behind = sp.z < 0 || sp.z > 1;
-    marker.setEnabled(!behind);
-
-    if (behind) continue;
-
-    // Convert pixel screen to our ortho space:
-    // x: [0..w] -> [-r..r]
-    // y: [0..h] -> [1..-1]  (flip Y)
-    const w = engine.getRenderWidth();
-    const h = engine.getRenderHeight();
-
-    const nx = (sp.x / Math.max(1, w)) * 2 - 1; // -1..1
-    const ny = 1 - (sp.y / Math.max(1, h)) * 2; //  1..-1
-
-    marker.position.set(nx * r, ny * 1.0, 0);
-
-    // Small yaw indicator via rotation (optional)
-    if (typeof t.yaw === "number") {
-      marker.rotation.z = 0;
-      marker.rotation.y = 0;
-      marker.rotation.x = 0;
+  } else {
+    rpScene.autoClearDepthAndStencil = false;
+    // Try normal depth test (occlusion may work depending on NOA depth buffer)
+    for (const mat of remoteMats.values()) {
+      mat.disableDepthWrite = false;
+      mat.depthFunction = BABYLON.Constants.LESS;
     }
   }
 }
 
-function getClosestRemoteDistance(): number | null {
-  if (!room) return null;
-  const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
-  if (!me) return null;
+function updateRemoteMeshes() {
+  if (!remotePlayersEnabled) return;
+  if (!rpReady || !rpScene) return;
+  if (!room) return;
 
-  let best: number | null = null;
+  // Remove meshes for players no longer present
+  for (const id of Array.from(remoteMeshes.keys())) {
+    if (!netTransforms.has(id)) removeRemoteMesh(id);
+  }
+
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
-    const dx = t.x - me[0];
-    const dy = t.y - me[1];
-    const dz = t.z - me[2];
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (best == null || d < best) best = d;
+
+    const root = ensureRemoteMesh(id);
+    if (!root) continue;
+
+    root.position.set(t.x, t.y, t.z);
+
+    // simple yaw rotation around Y
+    if (typeof t.yaw === "number") root.rotation.y = t.yaw;
   }
-  return best;
 }
 
 /* ===============================
@@ -917,6 +972,7 @@ async function connect() {
 
     updateOverlay();
 
+    // Flush queued chunk requests
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
@@ -943,6 +999,7 @@ async function connect() {
 
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
+
       lastTransformAt = performance.now();
       updateOverlay("existingPlayers received");
     });
@@ -957,16 +1014,20 @@ async function connect() {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+
       lastTransformAt = performance.now();
-      updateOverlay("playerJoined received");
+      updateOverlay(`playerJoined: ${id}`);
     });
 
     room.onMessage("playerLeft", (p: any) => {
       const id = normId(p);
       if (!id) return;
+
       netTransforms.delete(id);
+      removeRemoteMesh(id);
+
       lastTransformAt = performance.now();
-      updateOverlay("playerLeft received");
+      updateOverlay(`playerLeft: ${id}`);
     });
 
     room.onMessage("playerTransformOther", (p: any) => {
@@ -1027,7 +1088,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + remote debug)
+   13. Tick loop (drive vm updates + networking + rp sync)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -1043,17 +1104,23 @@ let lastTickMs = performance.now();
   if (scene) {
     ensureVmScene(scene);
     ensureRpScene(scene);
+
+    // Sync rp camera from NOA camera every tick (critical)
+    syncRpCameraFromWorld(scene);
   }
 
   updateViewmodel(dtSec);
-  updateRemoteDebugMarkers();
 
+  // Update remote meshes every tick (cheap; few boxes)
+  updateRemoteMeshes();
+
+  // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // keep overlay fresh
+  // Keep overlay fresh
   if (tickCount % 10 === 0) updateOverlay();
 });
