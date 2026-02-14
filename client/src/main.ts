@@ -17,16 +17,19 @@
  * Debug controls (viewmodel):
  * - B toggles VM debug visuals (axes + screen frame)
  * - N toggles VM tuning mode (enables hotkey nudging)
- * - Arrow keys: move VM anchor (x/y)
- * - 1/2: rotX down/up
- * - 3/4: rotY down/up
- * - 5/6: rotZ down/up
  *
- * Viewmodel:
- * - Minecraft-ish blocky arm (boxes)
- * - Screen-space HUD (orthographic) anchored bottom-right
- * - Punch animates on mine/place (deterministic)
- * - Pose uses delta yaw/pitch for sway (NOT absolute yaw)
+ * IMPORTANT FIX:
+ * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
+ * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
+ *
+ * Tuning hotkeys (only when VM Tune = ON):
+ * - Arrow keys: move VM anchor (x/y)
+ * - Shift+ArrowLeft/Right: fine move (smaller step)
+ * - 7/8: rotX down/up
+ * - 9/0: rotY down/up
+ * - -/= : rotZ down/up
+ *
+ * (We moved rotation keys away from 1-6 because 1-5 are your hotbar.)
  */
 
 import { Engine } from "noa-engine";
@@ -152,9 +155,10 @@ let viewModelEnabled = true;
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
-let vmDebug = true; // B toggles debug visuals (axes + screen frame)
-let vmTuning = true; // N toggles tuning (enables nudging)
+let vmDebug = true; // B toggles debug visuals (axes + frame)
+let vmTuning = false; // N toggles tuning (default OFF so arrows behave normally)
 
+// Tunable base placement & pose
 let vmBaseXMul = 0.82; // baseX = r * vmBaseXMul
 let vmBaseY = -0.72;
 
@@ -162,7 +166,7 @@ let vmRotX = 0.35;
 let vmRotY = 0.15;
 let vmRotZ = -0.85;
 
-// responsiveness
+// responsiveness multipliers
 let vmPitchMul = 0.45;
 let vmPunchRotMul = 0.75;
 let vmTurnSwayMulY = 0.35;
@@ -174,14 +178,13 @@ function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
 
-  const dbg = vmDebug ? "ON" : "OFF";
-  const tune = vmTuning ? "ON" : "OFF";
-
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
-    <strong>VM Debug:</strong> ${dbg} | <strong>VM Tune:</strong> ${tune}<br>
+    <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} | <strong>VM Tune:</strong> ${
+    vmTuning ? "ON" : "OFF"
+  }<br>
     -------------------------<br>
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Block<br>
@@ -189,14 +192,23 @@ function updateOverlay(extraLine = "") {
     [V] Toggle Viewmodel<br>
     [B] Toggle VM Debug (axes/frame)<br>
     [N] Toggle VM Tuning (hotkeys)<br>
-    [Arrows] Move VM | [1-6] Rotate VM<br>
+    <span style="opacity:.9">Tuning keys (Tune ON):</span><br>
+    <span style="opacity:.9">Arrows=Move | Shift+Arrows=Fine</span><br>
+    <span style="opacity:.9">7/8 rotX | 9/0 rotY | -/= rotZ</span><br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
 updateOverlay();
 
+/* ===============================
+   6.2 Key handling
+   - Normal keydown for hotbar + toggles
+   - Capture-phase keydown to intercept tuning keys BEFORE NOA sees them
+================================ */
+
+// Normal (bubble) handler: hotbar + toggles
 document.addEventListener("keydown", (e) => {
-  // hotbar select (top row keys)
+  // Hotbar 1-5
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
@@ -218,47 +230,64 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "n" || e.key === "N") {
     vmTuning = !vmTuning;
-    updateOverlay(vmTuning ? "VM Tuning: ON" : "VM Tuning: OFF");
+    updateOverlay(vmTuning ? "VM Tuning: ON (arrows captured)" : "VM Tuning: OFF");
     return;
   }
-
-  if (!vmTuning) return;
-
-  // Move anchor
-  if (e.key === "ArrowLeft") vmBaseXMul -= 0.01;
-  if (e.key === "ArrowRight") vmBaseXMul += 0.01;
-  if (e.key === "ArrowUp") vmBaseY += 0.01;
-  if (e.key === "ArrowDown") vmBaseY -= 0.01;
-
-  // Rotate base pose
-  // NOTE: also used for hotbar, but once selectedSlot is set this still works for tuning
-  if (e.key === "1") vmRotX -= 0.05;
-  if (e.key === "2") vmRotX += 0.05;
-  if (e.key === "3") vmRotY -= 0.05;
-  if (e.key === "4") vmRotY += 0.05;
-  if (e.key === "5") vmRotZ -= 0.05;
-  if (e.key === "6") vmRotZ += 0.05;
-
-  if (
-    [
-      "ArrowLeft",
-      "ArrowRight",
-      "ArrowUp",
-      "ArrowDown",
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-    ].includes(e.key)
-  ) {
-    updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(2)} y=${vmBaseY.toFixed(2)} | ` +
-        `rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)})`
-    );
-  }
 });
+
+// Capture-phase handler: if vmTuning, swallow arrow/rotation keys so NOA can't move.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!vmTuning) return;
+
+    const isArrow =
+      e.key === "ArrowLeft" ||
+      e.key === "ArrowRight" ||
+      e.key === "ArrowUp" ||
+      e.key === "ArrowDown";
+
+    const isRotKey =
+      e.key === "7" ||
+      e.key === "8" ||
+      e.key === "9" ||
+      e.key === "0" ||
+      e.key === "-" ||
+      e.key === "=";
+
+    if (!isArrow && !isRotKey) return;
+
+    // CRITICAL: stop NOA / browser from using these keys
+    e.preventDefault();
+    e.stopPropagation();
+    // stopImmediatePropagation is not on Event in TS DOM typings sometimes, so guard:
+    (e as any).stopImmediatePropagation?.();
+
+    const fine = e.shiftKey ? 0.003 : 0.01;
+
+    // Move anchor
+    if (e.key === "ArrowLeft") vmBaseXMul -= fine;
+    if (e.key === "ArrowRight") vmBaseXMul += fine;
+    if (e.key === "ArrowUp") vmBaseY += fine;
+    if (e.key === "ArrowDown") vmBaseY -= fine;
+
+    // Rotate base pose
+    const rStep = e.shiftKey ? 0.02 : 0.05;
+    if (e.key === "7") vmRotX -= rStep;
+    if (e.key === "8") vmRotX += rStep;
+    if (e.key === "9") vmRotY -= rStep;
+    if (e.key === "0") vmRotY += rStep;
+    if (e.key === "-") vmRotZ -= rStep;
+    if (e.key === "=") vmRotZ += rStep;
+
+    updateOverlay(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
+        2
+      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)})`
+    );
+  },
+  { capture: true }
+);
 
 /* ===============================
    7. World Streaming (Path B)
@@ -549,7 +578,8 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       // X=red, Y=green, Z=blue
       makeAxis("vmAxisX", new BABYLON.Vector3(0.35, 0, 0), new BABYLON.Color3(1, 0, 0));
       makeAxis("vmAxisY", new BABYLON.Vector3(0, 0.35, 0), new BABYLON.Color3(0, 1, 0));
-      makeAxis("vmAxisZ", new BABYLON.Vector3(0, 0, 0.35), new BABYLON.Color3(0, 0.5, 1));
+      // Make Z longer so it's visible when you tweak rotations
+      makeAxis("vmAxisZ", new BABYLON.Vector3(0, 0, 0.65), new BABYLON.Color3(0, 0.5, 1));
     }
 
     if (!vmFrame) {
@@ -686,16 +716,6 @@ function updateViewmodel(dtSec: number) {
     vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
-
-  // Optional: show live numbers occasionally while debugging
-  // (keep it light to avoid spam)
-  if (vmDebug && Math.random() < 0.02) {
-    updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(2)} y=${vmBaseY.toFixed(2)} | ` +
-        `rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | ` +
-        `pitch=${pitchNow.toFixed(2)} dyaw=${dyaw.toFixed(3)}`
-    );
-  }
 }
 
 /* ===============================
