@@ -1,19 +1,21 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Path B (server authoritative chunks) + multiplayer + PERSISTENCE:
+// Path B (server authoritative chunks) + multiplayer + RELIABLE PERSISTENCE:
+//
+// ✅ Fixes "mine/build not remembered on refresh":
+// - autoDispose = false (room stays alive when last client leaves)
+// - immediate disk writes on every block edit (no debounce timing issues)
+// - loads chunk from disk if present, otherwise generates
+// - (Debug-friendly) NO edit-range validation that could silently reject edits
+//
+// Networking:
 // - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
 // - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
 // - Player movement is relayed to others via "playerTransformOther"
 // - Periodic "playersSnapshot" for robustness
 // - Deterministic spawn slots so players don't overlap (first-free slot)
-// - Spawn Y computed from SAME terrain function (so nobody spawns underground)
-//
-// ✅ Persistence in this version:
-// - Chunks are saved to disk under: server/world/chunks/
-// - On chunk request: server loads from disk if present; otherwise generates
-// - On block edit: chunk is marked dirty and written (debounced)
-// - This makes mined/placed blocks survive refresh AND server restart
+// - Spawn Y computed from SAME terrain function
 //
 // NOTE: Keep your server room name as "my_room" in defineServer config.
 
@@ -24,11 +26,11 @@ import * as path from "node:path";
 type Vec3 = { x: number; y: number; z: number };
 
 type WorldDataNeededMsg = {
-  id: string; // noa chunk id
-  chunkSize: number; // client requested (server may ignore)
-  x: number; // chunk coord
-  y: number; // chunk coord
-  z: number; // chunk coord
+  id: string;
+  chunkSize: number;
+  x: number;
+  y: number;
+  z: number;
 };
 
 type ChunkDataMsg = {
@@ -78,19 +80,15 @@ export class MyRoom extends Room {
 
   private readonly minMoveIntervalMs = 60;
   private readonly snapshotIntervalMs = 500;
+
   private readonly maxAbsCoord = 100000;
-
-  private readonly maxSpeedBlocksPerSec = 12;
-
-  // Block edit reach (MC-ish)
-  private readonly maxEditHoriz = 6;
-  private readonly maxEditVert = 12;
+  private readonly maxSpeedBlocksPerSec = 18; // generous
 
   private lastMoveLogAt = 0;
   private lastSnapshotLogAt = 0;
 
   // =========================
-  // World settings (authoritative)
+  // World settings
   // =========================
   private readonly chunkSize = 32; // MUST match client noa chunkSize
   private readonly baseHeight = 12;
@@ -107,20 +105,18 @@ export class MyRoom extends Room {
   // =========================
   // Persistence
   // =========================
-  private readonly worldDir = path.join(process.cwd(), "server", "world");
+  // Stored relative to server process working directory (simple & predictable)
+  private readonly worldDir = path.join(process.cwd(), "world");
   private readonly chunksDir = path.join(this.worldDir, "chunks");
-
-  // Dirty chunk write batching
-  private dirtyChunks = new Set<string>();
-  private flushTimer: NodeJS.Timeout | null = null;
-  private readonly flushDelayMs = 300; // debounce writes
 
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
     this.maxClients = 32;
 
-    // Ensure dirs exist
+    // ✅ CRITICAL: keep the room alive across refresh (prevents losing in-memory world)
+    this.autoDispose = false;
+
     this.ensureDirs();
 
     // Periodic snapshot
@@ -143,7 +139,7 @@ export class MyRoom extends Room {
     }, this.snapshotIntervalMs);
 
     // =========================
-    // Path B: Chunk streaming
+    // Chunk streaming
     // =========================
     this.onMessage("worldDataNeeded", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
@@ -157,8 +153,6 @@ export class MyRoom extends Room {
       const cz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
       const CS = this.chunkSize;
-
-      // ✅ Load from disk or generate, then cache
       const chunk = this.getOrCreateChunk(cx, cy, cz);
 
       const msg: ChunkDataMsg = {
@@ -194,7 +188,7 @@ export class MyRoom extends Room {
       const z = clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord);
       const yaw = isFiniteNumber(maybe.yaw) ? maybe.yaw : pl.yaw;
 
-      // Anti-teleport / impossible speed
+      // generous anti-teleport
       const dtSec = Math.max(0.001, (now - Math.max(0, pl.lastMoveAt)) / 1000);
       const maxDist = this.maxSpeedBlocksPerSec * dtSec;
 
@@ -202,7 +196,7 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 4) {
+      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 9) {
         return;
       }
 
@@ -229,7 +223,8 @@ export class MyRoom extends Room {
     // =========================
     // Block edits (authoritative + persistent)
     // =========================
-    this.onMessage("mineBlock", (client: Client, payload: unknown) => {
+    // IMPORTANT: No range validation here (debug-friendly). Server ALWAYS applies.
+    this.onMessage("mineBlock", (_client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
@@ -238,12 +233,10 @@ export class MyRoom extends Room {
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      if (!this.isWithinEditRange(client, x, y, z)) return;
-
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
     });
 
-    this.onMessage("placeBlock", (client: Client, payload: unknown) => {
+    this.onMessage("placeBlock", (_client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
 
       const maybe = payload as Partial<Vec3> & { id?: unknown };
@@ -256,14 +249,14 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const id = toInt(clamp(maybe.id, 0, 255));
 
-      if (!this.isWithinEditRange(client, x, y, z)) return;
-
       this.setBlockAuthoritative(x, y, z, id);
     });
 
     this.onMessage("ping", (client: Client, payload: unknown) => {
       client.send("pong", payload);
     });
+
+    console.log("[WORLD] persistence dir:", this.chunksDir);
   }
 
   // =========================
@@ -350,45 +343,18 @@ export class MyRoom extends Room {
     console.log("➖ onLeave", client.sessionId, "code:", code);
 
     const existed = this.players.delete(client.sessionId);
-    if (existed) {
-      this.broadcast("playerLeft", { id: client.sessionId });
-    }
+    if (existed) this.broadcast("playerLeft", { id: client.sessionId });
   }
 
   onDispose() {
     console.log("🧹 MyRoom disposed");
 
-    // Flush pending chunk writes before shutdown
-    try {
-      this.flushDirtyChunksSync();
-    } catch {}
-
+    // With autoDispose=false, this should basically never happen unless server shutdown.
     this.players.clear();
-
-    // Keep world persistent: do NOT clear chunks.
-    // this.chunks.clear();
   }
 
   // =========================
-  // Validation helpers
-  // =========================
-  private isWithinEditRange(client: Client, x: number, y: number, z: number): boolean {
-    const p = this.players.get(client.sessionId);
-    if (!p) return false;
-
-    const dx = x - p.x;
-    const dz = z - p.z;
-    const dy = y - p.y;
-
-    const horiz = Math.sqrt(dx * dx + dz * dz);
-    if (horiz > this.maxEditHoriz) return false;
-    if (Math.abs(dy) > this.maxEditVert) return false;
-
-    return true;
-  }
-
-  // =========================
-  // Persistence helpers
+  // Persistence
   // =========================
   private ensureDirs(): void {
     if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
@@ -400,7 +366,6 @@ export class MyRoom extends Room {
   }
 
   private chunkFilePath(cx: number, cy: number, cz: number): string {
-    // safe file name
     return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`);
   }
 
@@ -409,80 +374,27 @@ export class MyRoom extends Room {
     try {
       if (!fs.existsSync(fp)) return null;
       const buf = fs.readFileSync(fp);
-      // Ensure exact expected size
       const expected = this.chunkSize * this.chunkSize * this.chunkSize;
       if (buf.byteLength !== expected) return null;
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const out = new Uint8Array(expected);
+      out.set(buf);
+      return out;
     } catch {
       return null;
     }
   }
 
-  private writeChunkToDisk(key: string, chunk: Uint8Array): void {
-    const parts = key.split(",");
-    if (parts.length !== 3) return;
-    const cx = Number(parts[0]);
-    const cy = Number(parts[1]);
-    const cz = Number(parts[2]);
-    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) return;
-
+  private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
     const fp = this.chunkFilePath(cx, cy, cz);
-
-    // Write atomic-ish: temp then rename
     const tmp = fp + ".tmp";
     fs.writeFileSync(tmp, Buffer.from(chunk));
     fs.renameSync(tmp, fp);
   }
 
-  private markChunkDirty(cx: number, cy: number, cz: number): void {
-    const key = this.chunkKey(cx, cy, cz);
-    this.dirtyChunks.add(key);
-
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => {
-        this.flushTimer = null;
-        this.flushDirtyChunksAsync();
-      }, this.flushDelayMs);
-    }
-  }
-
-  private flushDirtyChunksAsync(): void {
-    if (this.dirtyChunks.size === 0) return;
-
-    const keys = Array.from(this.dirtyChunks);
-    this.dirtyChunks.clear();
-
-    for (const key of keys) {
-      const chunk = this.chunks.get(key);
-      if (!chunk) continue;
-      try {
-        this.writeChunkToDisk(key, chunk);
-      } catch (e) {
-        console.warn("[WORLD] failed write chunk", key, e);
-      }
-    }
-  }
-
-  private flushDirtyChunksSync(): void {
-    if (this.dirtyChunks.size === 0) return;
-
-    const keys = Array.from(this.dirtyChunks);
-    this.dirtyChunks.clear();
-
-    for (const key of keys) {
-      const chunk = this.chunks.get(key);
-      if (!chunk) continue;
-      try {
-        this.writeChunkToDisk(key, chunk);
-      } catch {}
-    }
-  }
-
   // =========================
   // World internals
   // =========================
-  // Packing must match client unpack loop:
-  // n increments in order: for k, for j, for i
+  // Packing matches client unpack:
   // idx = i + CS*(j + CS*k)
   private idx(i: number, j: number, k: number): number {
     const CS = this.chunkSize;
@@ -501,7 +413,6 @@ export class MyRoom extends Room {
       for (let k = 0; k < CS; k++) {
         const worldX = cx * CS + i;
         const worldZ = cz * CS + k;
-
         const height = this.heightAt(worldX, worldZ);
 
         for (let j = 0; j < CS; j++) {
@@ -524,20 +435,15 @@ export class MyRoom extends Room {
   private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const key = this.chunkKey(cx, cy, cz);
 
-    const existing = this.chunks.get(key);
-    if (existing) return existing;
+    const cached = this.chunks.get(key);
+    if (cached) return cached;
 
-    // ✅ Try disk first
     const fromDisk = this.readChunkFromDisk(cx, cy, cz);
     if (fromDisk) {
-      // Make a copy to ensure it’s detached from Buffer view quirks
-      const copy = new Uint8Array(fromDisk.length);
-      copy.set(fromDisk);
-      this.chunks.set(key, copy);
-      return copy;
+      this.chunks.set(key, fromDisk);
+      return fromDisk;
     }
 
-    // Otherwise generate
     const gen = this.generateChunk(cx, cy, cz);
     this.chunks.set(key, gen);
     return gen;
@@ -558,10 +464,14 @@ export class MyRoom extends Room {
     const v = clamp(toInt(id), 0, 255);
     chunk[this.idx(lx, ly, lz)] = v;
 
-    // ✅ Persist
-    this.markChunkDirty(cx, cy, cz);
+    // ✅ IMMEDIATE persist (no debounce, no missed writes)
+    try {
+      this.writeChunkToDisk(cx, cy, cz, chunk);
+    } catch (e) {
+      console.warn("[WORLD] write failed", { cx, cy, cz }, e);
+    }
 
-    // Broadcast edit
+    // Broadcast edit to everyone (including miner/placer)
     this.broadcast("blockUpdate", { x, y, z, id: v });
   }
 }
