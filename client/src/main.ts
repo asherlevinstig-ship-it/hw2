@@ -1,20 +1,10 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * PATH B (server-authoritative chunks):
- * - Client does NOT generate terrain locally.
- * - Client requests chunks from server on noa "worldDataNeeded"
- * - Server responds with "chunkData" containing voxels for that chunk id.
- * - Client fills noa chunk buffer and calls noa.world.setChunkData(id, data)
- *
- * Multiplayer:
- * - Sends: "playerMove", "mineBlock", "placeBlock"
- * - Receives: "chunkData", "blockUpdate",
- *            "existingPlayers", "playerJoined", "playerLeft",
- *            "playerTransformOther", "playersSnapshot", "youJoined"
- *
- * Requires your server room name: "my_room"
- * Requires server to implement "worldDataNeeded" -> "chunkData" (as in the Path B room I gave you)
+ * PATH B (server-authoritative chunks) - FIXED:
+ * - Forces chunkSize 32 to match server
+ * - Queues worldDataNeeded requests until connected
+ * - Applies chunkData reliably
  */
 
 import { Engine } from "noa-engine";
@@ -69,15 +59,16 @@ document.body.appendChild(overlay);
 
 /* ===============================
    4. NOA Engine Initialization
-================================ */
+================================
+   IMPORTANT: force chunkSize = 32 to match server
+ */
 const noa = new Engine({
   debug: true,
   container: appEl,
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-  // If you want to force 32, uncomment:
-  // chunkSize: 32,
+  chunkSize: 32, // <<< CRITICAL: must match server authoritative chunkSize
 });
 
 /* ===============================
@@ -163,18 +154,31 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   7. Terrain (PATH B: Server Chunk Streaming)
-================================
-   IMPORTANT:
-   - We do NOT generate blocks here.
-   - We request the chunk from server and wait for "chunkData".
- */
-type PendingChunk = { data: any; chunkSize: number };
+   7. Terrain (PATH B: Server Chunk Streaming) - FIXED
+================================ */
+type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
+// pending chunk buffers keyed by noa chunk id
 const pendingChunks = new Map<string, PendingChunk>();
+
+// requests waiting for the room to connect
+const queuedRequests = new Map<
+  string,
+  { id: string; chunkSize: number; x: number; y: number; z: number }
+>();
+
 const worldAny = noa.world as any;
 
 let firstChunkLogged = false;
+
+function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
+  if (!room) {
+    // queue until connected (prevents "sky only")
+    queuedRequests.set(req.id, req);
+    return;
+  }
+  room.send("worldDataNeeded", req);
+}
 
 worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: number) => {
   const CS = data.shape?.[0] ?? 32;
@@ -184,11 +188,9 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
     console.log("✅ worldDataNeeded firing (requesting from server).", { id, CS, x, y, z });
   }
 
-  // stash the buffer NOA gives us
-  pendingChunks.set(id, { data, chunkSize: CS });
+  pendingChunks.set(id, { data, chunkSize: CS, x, y, z });
 
-  // request chunk from server
-  room?.send("worldDataNeeded", {
+  sendChunkRequest({
     id,
     chunkSize: CS,
     x,
@@ -196,6 +198,42 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
     z,
   });
 });
+
+function applyChunkFromServer(msg: any) {
+  if (!msg || typeof msg.id !== "string") return;
+
+  const pending = pendingChunks.get(msg.id);
+  if (!pending) return;
+
+  // Server is authoritative about chunkSize
+  const CS = typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
+
+  const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
+  const expected = CS * CS * CS;
+
+  if (voxels.length !== expected) {
+    console.warn("⚠️ chunkData wrong size", { got: voxels.length, expected, msg });
+    // keep pending so we can retry if needed
+    return;
+  }
+
+  const data = pending.data;
+
+  // Fill noa data buffer: data.set(i, j, k, id)
+  // Must match server packing: i + CS*(j + CS*k)
+  let n = 0;
+  for (let k = 0; k < CS; k++) {
+    for (let j = 0; j < CS; j++) {
+      for (let i = 0; i < CS; i++) {
+        data.set(i, j, k, voxels[n++] | 0);
+      }
+    }
+  }
+
+  noa.world.setChunkData(msg.id, data);
+  pendingChunks.delete(msg.id);
+  queuedRequests.delete(msg.id);
+}
 
 /* ===============================
    8. Interaction Logic (Mine/Place)
@@ -226,7 +264,7 @@ noa.inputs.down.on("fire", () => {
 
   const { x, y, z } = target.pos;
 
-  // optimistic local update (feels responsive)
+  // optimistic local update
   noa.world.setBlockID(AIR_ID, x, y, z);
 
   // authoritative server update
@@ -450,37 +488,6 @@ function isMe(id: string): boolean {
   return !!room && id === room.sessionId;
 }
 
-function applyChunkFromServer(msg: any) {
-  if (!msg || typeof msg.id !== "string") return;
-
-  const pending = pendingChunks.get(msg.id);
-  if (!pending) return;
-
-  const CS = pending.chunkSize;
-  const voxels: number[] = Array.isArray(msg.voxels) ? msg.voxels : [];
-
-  if (voxels.length !== CS * CS * CS) {
-    console.warn("⚠️ chunkData wrong size", { got: voxels.length, expected: CS * CS * CS, msg });
-    pendingChunks.delete(msg.id);
-    return;
-  }
-
-  const data = pending.data;
-
-  // Must match server packing: i + CS*(j + CS*k)
-  let n = 0;
-  for (let k = 0; k < CS; k++) {
-    for (let j = 0; j < CS; j++) {
-      for (let i = 0; i < CS; i++) {
-        data.set(i, j, k, voxels[n++] | 0);
-      }
-    }
-  }
-
-  noa.world.setChunkData(msg.id, data);
-  pendingChunks.delete(msg.id);
-}
-
 async function connect() {
   try {
     updateOverlay();
@@ -489,19 +496,24 @@ async function connect() {
     console.log("✅ Joined room:", room.sessionId);
     updateOverlay();
 
-    // 0) Server chunk streaming response
+    // flush queued chunk requests now that we're connected
+    for (const req of queuedRequests.values()) {
+      room.send("worldDataNeeded", req);
+    }
+
+    // server chunk streaming response
     room.onMessage("chunkData", (msg: any) => {
       applyChunkFromServer(msg);
     });
 
-    // 1) Block updates
+    // block updates
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // 2) Existing players (initial load)
+    // existing players
     room.onMessage("existingPlayers", (players: any[]) => {
       console.log("👋 Existing players:", players);
       for (const p of players ?? []) {
@@ -518,7 +530,7 @@ async function connect() {
       }
     });
 
-    // 3) New player joined
+    // new player
     room.onMessage("playerJoined", (p: any) => {
       console.log("➕ Player joined:", p);
       const id = normId(p);
@@ -533,7 +545,7 @@ async function connect() {
       );
     });
 
-    // 4) Player left
+    // player left
     room.onMessage("playerLeft", (p: any) => {
       console.log("➖ Player left:", p);
       const id = normId(p);
@@ -541,7 +553,7 @@ async function connect() {
       removeAvatar(id);
     });
 
-    // 5) Other player movement
+    // movement updates
     room.onMessage("playerTransformOther", (p: any) => {
       const id = normId(p);
       if (!id || isMe(id)) return;
@@ -555,7 +567,7 @@ async function connect() {
       updateAvatar(id, x, y, z, typeof p.yaw === "number" ? p.yaw : undefined);
     });
 
-    // 6) Periodic snapshot (robustness)
+    // periodic snapshot
     room.onMessage("playersSnapshot", (players: any[]) => {
       if (!Array.isArray(players)) return;
 
@@ -573,7 +585,7 @@ async function connect() {
       }
     });
 
-    // 7) Optional server ack for own join
+    // optional join ack
     room.onMessage("youJoined", (p: any) => {
       console.log("🟦 youJoined:", p);
     });
@@ -590,12 +602,9 @@ connect();
 ================================ */
 
 function tryGetYaw(): number {
-  // Yaw handling varies by NOA version; keep safe fallback
-  // Many setups expose camera rotation via rendering
   const rot = (noa as any).rendering?.getCameraRotation?.();
   if (rot && typeof rot.y === "number" && Number.isFinite(rot.y)) return rot.y;
 
-  // Fallback: try to read from Babylon active camera
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const cam = scene?.activeCamera;
