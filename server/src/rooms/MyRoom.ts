@@ -1,30 +1,32 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Path B (server authoritative chunks) + multiplayer + BULLETPROOF PERSISTENCE
+// Path B (server authoritative chunks) + multiplayer + persistence
 //
-// ✅ Fixes "world resets on refresh":
-// - autoDispose = false (room stays alive across refresh)
-// - persistence path is anchored to THIS FILE's folder (not process.cwd())
-// - block edits write immediately to disk (atomic tmp->rename)
-// - chunk streaming loads from disk first, else generates
-// - VERY loud logs show writes/loads so you can confirm it's working
+// ✅ FIXES "world resets on refresh":
+// - NOA requests chunks using chunk ORIGIN coords (multiples of chunkSize), e.g. x = -32
+// - Server storage/generation needs CHUNK INDICES, e.g. cx = -1
+// - This file normalizes request coords -> indices for storage, but echoes original coords
+//   back to the client (so pendingChunks match).
 //
-// If it STILL resets after this:
-// - your server is restarting on refresh (dev watch / nodemon / concurrently setup)
-//   and the logs will prove it because "✅ MyRoom created" will print again.
+// Persistence:
+// - Saves chunk files keyed by CHUNK INDEX: c_<cx>_<cy>_<cz>.bin
+// - Loads from disk first, else generates
+//
+// Also:
+// - autoDispose = false so room isn't destroyed when last client disconnects
+// - loud logs for saves/loads/requests
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 type Vec3 = { x: number; y: number; z: number };
 
 type WorldDataNeededMsg = {
   id: string;
   chunkSize: number;
-  x: number;
+  x: number; // NOA chunk coord (often chunk origin in world units)
   y: number;
   z: number;
 };
@@ -32,10 +34,11 @@ type WorldDataNeededMsg = {
 type ChunkDataMsg = {
   id: string;
   chunkSize: number;
+  // IMPORTANT: echo these exactly as requested so client pending check passes
   x: number;
   y: number;
   z: number;
-  voxels: Uint8Array; // binary
+  voxels: Uint8Array;
 };
 
 type PlayerInfo = {
@@ -76,36 +79,33 @@ export class MyRoom extends Room {
 
   private readonly minMoveIntervalMs = 60;
   private readonly snapshotIntervalMs = 500;
-  private readonly maxAbsCoord = 100000;
 
-  private readonly maxSpeedBlocksPerSec = 18; // generous
+  private readonly maxAbsCoord = 100000;
+  private readonly maxSpeedBlocksPerSec = 18;
 
   private lastMoveLogAt = 0;
   private lastSnapshotLogAt = 0;
 
   // =========================
-  // World settings
+  // World
   // =========================
-  private readonly chunkSize = 32; // MUST match client noa chunkSize
+  private readonly chunkSize = 32; // MUST match client
   private readonly baseHeight = 12;
 
-  // Block IDs (must match client)
+  // Block IDs
   private readonly AIR_ID = 0;
   private readonly GRASS_ID = 1;
   private readonly DIRT_ID = 2;
   private readonly STONE_ID = 3;
 
-  // Stored chunks: key = "cx,cy,cz" -> Uint8Array length CS^3
   private chunks = new Map<string, Uint8Array>();
 
   // =========================
-  // Persistence (anchored to this file location)
+  // Persistence
   // =========================
-  private readonly __filename = fileURLToPath(import.meta.url);
-  private readonly __dirname = path.dirname(this.__filename);
-
-  // Writes to: server/src/world/chunks  (relative to THIS file)
-  private readonly worldDir = path.resolve(this.__dirname, "..", "world");
+  // Use build folder dir since your logs show you run from /server/build/*
+  // (This is stable within your PM2 environment.)
+  private readonly worldDir = path.join(process.cwd(), "world");
   private readonly chunksDir = path.join(this.worldDir, "chunks");
 
   onCreate(options: any) {
@@ -113,7 +113,7 @@ export class MyRoom extends Room {
 
     this.maxClients = 32;
 
-    // ✅ CRITICAL: keep room alive when empty (refresh disconnect won't wipe RAM state)
+    // Keep room alive when empty (refresh disconnect won't dispose)
     this.autoDispose = false;
 
     this.ensureDirs();
@@ -148,9 +148,13 @@ export class MyRoom extends Room {
       if (typeof p.id !== "string" || p.id.length < 1) return;
       if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
 
-      const cx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const cy = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const cz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
+      // Clamp incoming NOA coords (could be origins or indices)
+      const rx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const ry = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const rz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
+
+      // ✅ Normalize to CHUNK INDICES for storage/generation
+      const { cx, cy, cz } = this.normalizeChunkRequestToIndex(rx, ry, rz);
 
       const CS = this.chunkSize;
       const chunk = this.getOrCreateChunk(cx, cy, cz);
@@ -158,11 +162,15 @@ export class MyRoom extends Room {
       const msg: ChunkDataMsg = {
         id: p.id,
         chunkSize: CS,
-        x: cx,
-        y: cy,
-        z: cz,
+        // ✅ Echo EXACT request coords so client pending check passes
+        x: rx,
+        y: ry,
+        z: rz,
         voxels: chunk,
       };
+
+      // Useful debug (throttle yourself later if spammy)
+      // console.log("[CHUNK REQ]", { id: p.id, req: { x: rx, y: ry, z: rz }, idx: { cx, cy, cz } });
 
       client.send("chunkData", msg);
     });
@@ -220,7 +228,6 @@ export class MyRoom extends Room {
     // =========================
     // Block edits (authoritative + persistent)
     // =========================
-    // Debug-friendly: always apply edits
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
@@ -236,6 +243,7 @@ export class MyRoom extends Room {
 
     this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
+
       const maybe = payload as Partial<Vec3> & { id?: unknown };
 
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
@@ -261,7 +269,6 @@ export class MyRoom extends Room {
   onJoin(client: Client, options: any) {
     console.log("➕ onJoin", client.sessionId, options);
 
-    // First-free deterministic spawn slot
     const spacing = 6;
 
     let spawnX = 0;
@@ -343,8 +350,25 @@ export class MyRoom extends Room {
 
   onDispose() {
     console.log("🧹 MyRoom disposed");
-    // With autoDispose=false, should only happen on server shutdown.
     this.players.clear();
+  }
+
+  // =========================
+  // Chunk coord normalization (THE FIX)
+  // =========================
+  private normalizeChunkRequestToIndex(rx: number, ry: number, rz: number): { cx: number; cy: number; cz: number } {
+    const CS = this.chunkSize;
+
+    // If NOA provides origins (multiples of CS), convert to index.
+    // If it provides indices, keep them.
+    const toIndex = (v: number) => {
+      // origins are typically exact multiples of CS (…,-64,-32,0,32,64,…)
+      if (v !== 0 && v % CS === 0) return toInt(v / CS);
+      // also handle 0 (ambiguous) by treating as index 0
+      return toInt(v);
+    };
+
+    return { cx: toIndex(rx), cy: toIndex(ry), cz: toIndex(rz) };
   }
 
   // =========================
@@ -465,7 +489,6 @@ export class MyRoom extends Room {
     const v = clamp(toInt(id), 0, 255);
     chunk[this.idx(lx, ly, lz)] = v;
 
-    // ✅ immediate persist
     try {
       this.writeChunkToDisk(cx, cy, cz, chunk);
     } catch (e) {
