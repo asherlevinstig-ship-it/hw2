@@ -369,22 +369,28 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 
   fpArmMesh.alwaysSelectAsActiveMesh = true;
   fpArmMesh.isPickable = false;
+  fpArmMesh.isVisible = true;
+  fpArmMesh.setEnabled(true);
 
-  // Draw on top
-  fpArmMesh.renderingGroupId = 9;
+  // IMPORTANT: draw on top by clearing depth before this rendering group
+  // Use a normal group index (0..3); NOA/Babylon generally expects that.
+  fpArmMesh.renderingGroupId = 2;
+
+  // don't write depth (and after depth clear, it will always pass)
   mat.disableDepthWrite = true;
-  (mat as any).disableDepthTest = true;
 
-  // Match camera layer mask (mesh has it; TransformNode doesn't)
-  const camMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
-  fpArmMesh.layerMask = camMask;
+  // Clear depth at the start of group 2 so this "viewmodel" always renders over the world
+  scene.setRenderingAutoClearDepthStencil(2, true, true, false);
+
+  // Layer mask: simplest is "all layers" to avoid camera mask mismatch
+  fpArmMesh.layerMask = 0xffffffff;
 
   fpArmReady = true;
 
   console.log("[FP] Arm created OK (world-space attach)", {
     cam: cam.name,
     sceneUid: (scene as any).uid,
-    camMask,
+    camMask: (cam as any).layerMask,
     minZ: (cam as any).minZ,
   });
 }
@@ -415,14 +421,10 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // Camera basis in world space
-  const forward =
-    typeof (cam as any).getForwardRay === "function"
-      ? (cam as any).getForwardRay(1).direction.clone()
-      : new BABYLON.Vector3(0, 0, 1);
-
-  const up = BABYLON.Vector3.Up();
-  const right = BABYLON.Vector3.Cross(up, forward).normalize();
+  // Camera basis in world space (robust - respects pitch/roll and handedness)
+  const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
+  const right = cam.getDirection(BABYLON.Axis.X).normalize();
+  const up = cam.getDirection(BABYLON.Axis.Y).normalize();
 
   const camPos = (cam as any).position as BABYLON.Vector3;
 
