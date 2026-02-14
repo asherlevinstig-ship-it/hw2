@@ -6,11 +6,12 @@
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component
  * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
- *   - Parent to camera (true viewmodel)
- *   - Always on top (depthFunction ALWAYS + no depth write)
- *   - Never culled
- *   - Rendered in default last rendering group (3)  ✅ (NOT 9)
- *   - Walk bob/sway + punch on mine/place
+ *   ✅ FIXES INCLUDED:
+ *   1) Scene swaps: NOA/Babylon can replace the scene (uid changes). We detect it,
+ *      dispose the old arm, and rebuild in the active scene.
+ *   2) Viewmodel attachment: arm root is parented to the active camera.
+ *   3) Always visible: renderingGroupId = 3 (default max), disableDepthWrite + depthFunction ALWAYS,
+ *      never culled, always active, infinite distance.
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -339,19 +340,39 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 
 /* ===============================
    10. First-person arm (MAIN SCENE viewmodel)
-   ✅ FIXES:
-   - Parent arm root to camera (true viewmodel)
-   - Use renderingGroupId = 3 (default last group) (NOT 9)
-   - Always-on-top via depthFunction ALWAYS + disableDepthWrite
+   ✅ Scene-swap safe rebuild
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
 let fpArmMesh: BABYLON.Mesh | null = null;
+let fpArmSceneUid: string | number | null = null;
 
 let lastLocalPos: [number, number, number] | null = null;
 let armTime = 0;
 
+function disposeFirstPersonArm() {
+  try {
+    fpArmMesh?.dispose(false, true);
+  } catch {}
+  try {
+    fpArmRoot?.dispose(false, true);
+  } catch {}
+
+  fpArmMesh = null;
+  fpArmRoot = null;
+  fpArmReady = false;
+  fpArmSceneUid = null;
+}
+
 function setupFirstPersonArm(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+
+  // ✅ if NOA swapped scenes, rebuild in active scene
+  if (fpArmReady && fpArmSceneUid !== (uid ?? null)) {
+    console.warn("[FP] Scene changed - rebuilding arm", { from: fpArmSceneUid, to: uid });
+    disposeFirstPersonArm();
+  }
+
   if (fpArmReady) return;
 
   const cam = getNoaCamera(scene);
@@ -363,6 +384,8 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
     return;
   }
 
+  fpArmSceneUid = uid ?? null;
+
   try {
     if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
   } catch {}
@@ -372,8 +395,9 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   // ✅ TRUE VIEWMODEL: parent to camera
   fpArmRoot.parent = cam;
 
-  // local offset (camera space)
-  fpArmRoot.position.set(0.45, -0.35, 0.75);
+  // NOTE: Many Babylon cameras look down -Z. If your arm is behind you,
+  // flip these Z signs (+0.75 -> -0.75) in both here and update below.
+  fpArmRoot.position.set(0.45, -0.35, -0.75);
   fpArmRoot.rotationQuaternion = null;
   fpArmRoot.rotation.set(0, 0, 0);
 
@@ -418,7 +442,7 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
 
-  // ✅ FORCE draw on top reliably
+  // ✅ Always on top (reliable)
   mat.disableDepthWrite = true;
   mat.depthFunction = BABYLON.Constants.ALWAYS;
 
@@ -428,15 +452,15 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // ✅ NEVER cull
+  // ✅ never cull / always active
   (fpArmMesh as any).isInFrustum = () => true;
   (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
   (fpArmMesh as any).infiniteDistance = true;
 
-  // ✅ Render in LAST DEFAULT GROUP (0..3 are default). DO NOT USE 9.
+  // ✅ must be within default groups (0..3)
   fpArmMesh.renderingGroupId = 3;
 
-  // Force mask (debug safe)
+  // Force mask
   fpArmMesh.layerMask = 0xffffffff;
 
   // Outline for readability
@@ -457,7 +481,6 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 function updateFirstPersonArm(dtSec: number) {
   if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
 
-  // walk speed
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   if (!pos) return;
 
@@ -484,10 +507,10 @@ function updateFirstPersonArm(dtSec: number) {
 
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // ✅ Root is parented to camera: just update local offset
+  // ✅ root is parented to camera -> update local offset
   fpArmRoot.position.x = 0.45;
   fpArmRoot.position.y = -0.35 + bob;
-  fpArmRoot.position.z = 0.75 + punch01 * 0.20;
+  fpArmRoot.position.z = -0.75 - punch01 * 0.20;
 
   // local swing
   const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
@@ -841,6 +864,7 @@ let sceneHookedForArm = false;
     const line =
       `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
       `Arm=${fpArmReady ? "YES" : "NO"} | ` +
+      `ArmScene=${fpArmSceneUid ?? "null"} | ` +
       `Scene=${scene ? String((scene as any).uid) : "null"} Meshes=${scene ? scene.meshes.length : 0} Cam=${scene?.activeCamera?.name ?? "none"}`;
 
     updateOverlay(line);
