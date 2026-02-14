@@ -1,17 +1,20 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * PATH B (server-authoritative chunks) + FULL NETWORK DEBUG
+ * Multiplayer NOA v0.33 + Colyseus (Path B)
+ * - Server-authoritative chunk streaming ("worldDataNeeded" -> "chunkData")
+ * - Mine / place blocks ("mineBlock" / "placeBlock" -> "blockUpdate")
+ * - Multiplayer transforms ("existingPlayers", "playerJoined", "playerLeft",
+ *   "playerTransformOther", "playersSnapshot")
  *
- * Fixes / guarantees:
- * - Forces chunkSize = 32 (must match server)
- * - Queues chunk requests until Colyseus room is connected
- * - Applies "chunkData" to noa via noa.world.setChunkData(id, data)
- * - Uses NOA v0.33 camera API: noa.camera.heading / noa.camera.pitch
- * - Imports Babylon explicitly for avatars (no reliance on globalThis.BABYLON)
- * - Adds ALWAYS-ON network logs for:
- *    existingPlayers, playerJoined, playersSnapshot, playerTransformOther, playerLeft
- * - Exposes room as globalThis.room so you can debug from DevTools console
+ * Rendering fix:
+ * - Remote players are rendered as BIG emissive Babylon spheres ("markers")
+ * - We robustly find the Babylon scene from noa.rendering (getScene/_scene/scene)
+ * - Markers are forced active and made hard to cull
+ *
+ * Debug:
+ * - Logs all net events
+ * - Exposes `room` on globalThis.room for DevTools
  */
 
 import { Engine } from "noa-engine";
@@ -72,7 +75,7 @@ const noa = new Engine({
   inverseY: false,
   playerStart: [0, 20, 0],
   tickRate: 30,
-  chunkSize: 32, // CRITICAL: must match server
+  chunkSize: 32, // MUST match server authoritative chunkSize
 });
 
 /* ===============================
@@ -157,7 +160,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ===============================
-   7. Terrain (PATH B: Server Chunk Streaming)
+   7. World Streaming (Path B)
 ================================ */
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
@@ -224,7 +227,7 @@ function applyChunkFromServer(msg: any) {
 }
 
 /* ===============================
-   8. Interaction Logic (Mine/Place)
+   8. Interaction (Mine/Place)
 ================================ */
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
@@ -249,7 +252,6 @@ noa.inputs.down.on("fire", () => {
   if (!target) return;
 
   const { x, y, z } = target.pos;
-
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
@@ -267,183 +269,70 @@ noa.inputs.down.on("alt-fire", () => {
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  if (x === px && z === pz && (y === py || y === py + 1)) {
-    console.log("❌ Cannot place block: Player is standing here.");
-    return;
-  }
+  if (x === px && z === pz && (y === py || y === py + 1)) return;
 
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace });
 });
 
 /* ===============================
-   8.5 Minecraft-style Avatars (deferred creation so it never fails early)
+   9. Remote Player Markers (Rendering Proof)
 ================================ */
-type Avatar = {
-  root: BABYLON.TransformNode;
-  head: BABYLON.Mesh;
-  body: BABYLON.Mesh;
-  armL: BABYLON.Mesh;
-  armR: BABYLON.Mesh;
-  legL: BABYLON.Mesh;
-  legR: BABYLON.Mesh;
-  lastPos: { x: number; y: number; z: number };
-  lastT: number;
-};
-
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
-const avatars = new Map<string, Avatar>();
 const netTransforms = new Map<string, NetTransform>();
+const markers = new Map<string, BABYLON.Mesh>();
 
-function getSceneMaybe(): BABYLON.Scene | null {
-  const scene = (noa as any).rendering?.getScene?.() as BABYLON.Scene | undefined;
+function getNoaSceneMaybe(): BABYLON.Scene | null {
+  const r = (noa as any).rendering as any;
+  if (!r) return null;
+
+  // Try multiple known variants
+  const s1 = (typeof r.getScene === "function" ? r.getScene() : null) as BABYLON.Scene | null;
+  const s2 = (r._scene ?? null) as BABYLON.Scene | null;
+  const s3 = (r.scene ?? null) as BABYLON.Scene | null;
+
+  const scene = s1 ?? s2 ?? s3 ?? null;
   return scene ?? null;
 }
 
-function colorFromId(id: string) {
-  let h = 2166136261;
-  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
-  const r = ((h >>> 0) & 255) / 255;
-  const g = (((h >>> 8) >>> 0) & 255) / 255;
-  const b = (((h >>> 16) >>> 0) & 255) / 255;
-  return { r, g, b };
-}
-
-function createAvatarIfPossible(id: string): Avatar | null {
-  const scene = getSceneMaybe();
-  if (!scene) return null;
-
-  const existing = avatars.get(id);
+function ensureMarker(id: string): BABYLON.Mesh | null {
+  const existing = markers.get(id);
   if (existing) return existing;
 
-  const SCALE = 1 / 16;
+  const scene = getNoaSceneMaybe();
+  if (!scene) return null;
 
-  const headSize = 8 * SCALE;
-  const bodyW = 8 * SCALE;
-  const bodyH = 12 * SCALE;
-  const bodyD = 4 * SCALE;
-  const limbW = 4 * SCALE;
-  const limbH = 12 * SCALE;
-  const limbD = 4 * SCALE;
+  // Big sphere so it's impossible to miss
+  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 2.5 }, scene);
 
-  const root = new BABYLON.TransformNode(`avatar:${id}`, scene);
+  const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
+  mat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
+  mat.disableLighting = true;
+  m.material = mat;
 
-  const col = colorFromId(id);
+  // Force render
+  m.alwaysSelectAsActiveMesh = true;
+  m.isPickable = false;
+  m.checkCollisions = false;
 
-  const matHead = new BABYLON.StandardMaterial(`matHead:${id}`, scene);
-  matHead.diffuseColor = new BABYLON.Color3(col.r * 0.8 + 0.1, col.g * 0.8 + 0.1, col.b * 0.8 + 0.1);
+  // Make culling less likely
+  (m as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
 
-  const matBody = new BABYLON.StandardMaterial(`matBody:${id}`, scene);
-  matBody.diffuseColor = new BABYLON.Color3(col.r * 0.6 + 0.2, col.g * 0.6 + 0.2, col.b * 0.6 + 0.2);
+  markers.set(id, m);
 
-  const matLimb = new BABYLON.StandardMaterial(`matLimb:${id}`, scene);
-  matLimb.diffuseColor = new BABYLON.Color3(col.r * 0.5 + 0.25, col.g * 0.5 + 0.25, col.b * 0.5 + 0.25);
-
-  function makeSwingPart(name: string, w: number, h: number, d: number, mat: BABYLON.Material): BABYLON.Mesh {
-    const mesh = BABYLON.MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
-    mesh.material = mat;
-    mesh.setPivotPoint(new BABYLON.Vector3(0, h / 2, 0));
-    mesh.parent = root;
-    mesh.isPickable = false;
-    mesh.checkCollisions = false;
-    return mesh;
-  }
-
-  const head = BABYLON.MeshBuilder.CreateBox(`head:${id}`, { size: headSize }, scene);
-  head.material = matHead;
-  head.parent = root;
-  head.isPickable = false;
-  head.checkCollisions = false;
-
-  const body = BABYLON.MeshBuilder.CreateBox(`body:${id}`, { width: bodyW, height: bodyH, depth: bodyD }, scene);
-  body.material = matBody;
-  body.parent = root;
-  body.isPickable = false;
-  body.checkCollisions = false;
-
-  const armL = makeSwingPart(`armL:${id}`, limbW, limbH, limbD, matLimb);
-  const armR = makeSwingPart(`armR:${id}`, limbW, limbH, limbD, matLimb);
-  const legL = makeSwingPart(`legL:${id}`, limbW, limbH, limbD, matLimb);
-  const legR = makeSwingPart(`legR:${id}`, limbW, limbH, limbD, matLimb);
-
-  const feetY = 0;
-
-  legL.position.set(-bodyW * 0.25, feetY + limbH, 0);
-  legR.position.set(bodyW * 0.25, feetY + limbH, 0);
-
-  body.position.set(0, feetY + limbH + bodyH * 0.5, 0);
-
-  const shoulderY = feetY + limbH + bodyH;
-  armL.position.set(-bodyW * 0.75, shoulderY, 0);
-  armR.position.set(bodyW * 0.75, shoulderY, 0);
-
-  head.position.set(0, shoulderY + headSize * 0.5, 0);
-
-  const now = performance.now();
-  const avatar: Avatar = {
-    root,
-    head,
-    body,
-    armL,
-    armR,
-    legL,
-    legR,
-    lastPos: { x: 0, y: 0, z: 0 },
-    lastT: now,
-  };
-
-  avatars.set(id, avatar);
-  return avatar;
+  console.log("[RENDER] created remote marker", id, "sceneUid=", scene.uid);
+  return m;
 }
 
-function removeAvatar(id: string) {
+function removeMarker(id: string) {
   netTransforms.delete(id);
 
-  const av = avatars.get(id);
-  if (!av) return;
-
-  [av.head, av.body, av.armL, av.armR, av.legL, av.legR].forEach((m) => m.dispose());
-  av.root.dispose();
-  avatars.delete(id);
-}
-
-function updateAvatarPose(av: Avatar, x: number, y: number, z: number, yawRad?: number) {
-  av.root.position.x = x;
-  av.root.position.y = y;
-  av.root.position.z = z;
-
-  if (typeof yawRad === "number" && Number.isFinite(yawRad)) {
-    av.root.rotation.y = yawRad;
+  const m = markers.get(id);
+  if (m) {
+    m.dispose();
+    markers.delete(id);
   }
-
-  const t = performance.now();
-  const dt = Math.max(0.001, (t - av.lastT) / 1000);
-
-  const dx = x - av.lastPos.x;
-  const dz = z - av.lastPos.z;
-  const speed = Math.sqrt(dx * dx + dz * dz) / dt;
-
-  const isMoving = speed > 0.2;
-  const swing = isMoving ? Math.min(1, speed / 4) : 0;
-
-  const phase = t * 0.012;
-  const swingAmt = 0.9 * swing;
-
-  const targetArm = Math.sin(phase) * swingAmt;
-  const targetLeg = Math.sin(phase + Math.PI) * swingAmt;
-
-  function damp(current: number, target: number, k = 12) {
-    return current + (target - current) * (1 - Math.exp(-k * dt));
-  }
-
-  av.armL.rotation.x = damp(av.armL.rotation.x, targetArm);
-  av.armR.rotation.x = damp(av.armR.rotation.x, -targetArm);
-  av.legL.rotation.x = damp(av.legL.rotation.x, targetLeg);
-  av.legR.rotation.x = damp(av.legR.rotation.x, -targetLeg);
-
-  av.lastPos = { x, y, z };
-  av.lastT = t;
 }
 
 /* Apply cached transforms every tick */
@@ -453,15 +342,17 @@ function updateAvatarPose(av: Avatar, x: number, y: number, z: number, yawRad?: 
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
 
-    const av = createAvatarIfPossible(id);
-    if (!av) continue;
+    const marker = ensureMarker(id);
+    if (!marker) continue;
 
-    updateAvatarPose(av, t.x, t.y, t.z, t.yaw);
+    marker.position.x = t.x;
+    marker.position.y = t.y + 2.0; // float above head so it's visible
+    marker.position.z = t.z;
   }
 });
 
 /* ===============================
-   9. Networking (Connect & Debug)
+   10. Networking (Connect & Debug)
 ================================ */
 function normId(p: any): string | null {
   if (!p) return null;
@@ -491,21 +382,17 @@ async function connect() {
       room.send("worldDataNeeded", req);
     }
 
-    // ---- WORLD ----
-    room.onMessage("chunkData", (msg: any) => {
-      // console.log("[NET] chunkData", msg?.id);
-      applyChunkFromServer(msg);
-    });
+    // world streaming
+    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
-    // ---- BLOCK UPDATES ----
+    // block updates
     room.onMessage("blockUpdate", (msg: any) => {
-      // console.log("[NET] blockUpdate", msg);
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
     });
 
-    // ---- PLAYER DEBUG HANDLERS ----
+    // existing players
     room.onMessage("existingPlayers", (players: any) => {
       const len = Array.isArray(players) ? players.length : 0;
       console.log("[NET] existingPlayers:", len, players);
@@ -517,13 +404,13 @@ async function connect() {
         const x = Number(p.x ?? 0);
         const y = Number(p.y ?? 0);
         const z = Number(p.z ?? 0);
-
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
     });
 
+    // player joined
     room.onMessage("playerJoined", (p: any) => {
       console.log("[NET] playerJoined:", p);
 
@@ -533,19 +420,20 @@ async function connect() {
       const x = Number(p.x ?? 0);
       const y = Number(p.y ?? 0);
       const z = Number(p.z ?? 0);
-
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
+    // player left
     room.onMessage("playerLeft", (p: any) => {
       console.log("[NET] playerLeft:", p);
       const id = normId(p);
       if (!id) return;
-      removeAvatar(id);
+      removeMarker(id);
     });
 
+    // other player transform
     room.onMessage("playerTransformOther", (p: any) => {
       console.log("[NET] playerTransformOther:", p);
 
@@ -555,12 +443,12 @@ async function connect() {
       const x = Number(p.x);
       const y = Number(p.y);
       const z = Number(p.z);
-
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
     });
 
+    // periodic snapshot
     room.onMessage("playersSnapshot", (players: any) => {
       const len = Array.isArray(players) ? players.length : 0;
       console.log("[NET] playersSnapshot:", len, players);
@@ -574,13 +462,13 @@ async function connect() {
         const x = Number(p.x);
         const y = Number(p.y);
         const z = Number(p.z);
-
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
     });
 
+    // you joined
     room.onMessage("youJoined", (p: any) => {
       console.log("🟦 youJoined:", p);
     });
@@ -593,7 +481,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   10. Sync Position (NOA v0.33 API)
+   11. Sync local position
 ================================ */
 let tickCount = 0;
 (noa as any).on("tick", () => {
