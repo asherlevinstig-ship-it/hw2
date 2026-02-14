@@ -1,11 +1,21 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Fixes:
- * 1) Apply authoritative spawn from server ("youJoined") to the local NOA player.
- * 2) Do NOT send playerMove until after "youJoined" arrives (prevents spawn overwrite / stacking).
- * 3) Remote markers created in the actual rendered Babylon scene, with a stable cached scene ref.
- * 4) Slightly improved scene/attachment safety + helpful render debug logs.
+ * Adds HARD DEBUG VISIBILITY for remote markers + comprehensive diagnostics,
+ * while keeping ALL original gameplay/world/network logic.
+ *
+ * What this version adds:
+ * - Authoritative spawn applied ("youJoined") + movement gated until spawn received
+ * - Stable Babylon scene caching with uid tracking
+ * - Remote marker "force visible" settings (scale, render group, optional depth overrides)
+ * - Toggleable "PIN marker in front of camera" mode (press P)
+ * - Toggleable "overlay extra debug lines" (press O)
+ * - Periodic logs for: local pos, first remote pos, marker existence, scene/camera
+ *
+ * Controls:
+ * - Click to pointer lock
+ * - Press P to toggle "pin remote marker in front of camera" (unmissable debug)
+ * - Press O to toggle "overlay extra debug lines"
  */
 
 import { Engine } from "noa-engine";
@@ -64,7 +74,7 @@ const noa = new Engine({
   debug: true,
   container: appEl,
   inverseY: false,
-  playerStart: [0, 20, 0], // will be overridden by server spawn via "youJoined"
+  playerStart: [0, 20, 0], // overridden by server spawn via "youJoined"
   tickRate: 30,
   chunkSize: 32,
 });
@@ -126,6 +136,8 @@ const hotbar = [
 ];
 let selectedSlot = 0;
 
+let showExtraDebugOverlay = true;
+
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
@@ -137,6 +149,8 @@ function updateOverlay(extraLine = "") {
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Block<br>
     [WASD] Move  |  [Space] Jump<br>
+    [P] Pin Remote Marker (debug)<br>
+    [O] Toggle Debug Overlay<br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
@@ -147,6 +161,12 @@ document.addEventListener("keydown", (e) => {
   if (Number.isFinite(key) && key >= 1 && key <= hotbar.length) {
     selectedSlot = key - 1;
     updateOverlay();
+    return;
+  }
+  if (e.key === "o" || e.key === "O") {
+    showExtraDebugOverlay = !showExtraDebugOverlay;
+    updateOverlay(showExtraDebugOverlay ? "Debug overlay: ON" : "Debug overlay: OFF");
+    return;
   }
 });
 
@@ -264,7 +284,7 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Remote Player Rendering (NOA-attached markers)
+   9. Remote Player Rendering + HARD DEBUG
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -273,6 +293,16 @@ const markers = new Map<string, BABYLON.Mesh>();
 
 let cachedScene: BABYLON.Scene | null = null;
 let cachedSceneUid: string | number | null = null;
+
+let pinRemoteMarkerInFront = false;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "p" || e.key === "P") {
+    pinRemoteMarkerInFront = !pinRemoteMarkerInFront;
+    console.log("[DEBUG] pinRemoteMarkerInFront =", pinRemoteMarkerInFront);
+    updateOverlay(pinRemoteMarkerInFront ? "Pin Remote Marker: ON" : "Pin Remote Marker: OFF");
+  }
+});
 
 function getRenderedScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
@@ -290,14 +320,66 @@ function getStableRenderedScene(): BABYLON.Scene | null {
   if (!s) return cachedScene;
 
   const uid = (s as any).uid as string | number | undefined;
-
   if (!cachedScene || cachedSceneUid !== uid) {
     cachedScene = s;
     cachedSceneUid = uid ?? null;
-    console.log("[RENDER] cachedScene set -> uid=", uid, "meshes=", s.meshes.length);
+    console.log("[RENDER] cachedScene set -> uid=", uid, "meshes=", s.meshes.length, "cam=", s.activeCamera?.name);
   }
-
   return cachedScene;
+}
+
+function makeMarkerMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
+  const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
+  mat.emissiveColor = new BABYLON.Color3(1, 0, 0);
+  mat.diffuseColor = new BABYLON.Color3(1, 0, 0);
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.disableLighting = true;
+  mat.alpha = 1;
+  mat.backFaceCulling = false;
+  (mat as any).fogEnabled = false;
+  return mat;
+}
+
+function forceMarkerAlwaysVisible(marker: BABYLON.Mesh) {
+  marker.setEnabled(true);
+  marker.isVisible = true;
+  marker.visibility = 1;
+
+  marker.scaling.set(4, 4, 4);
+
+  marker.alwaysSelectAsActiveMesh = true;
+  marker.isPickable = false;
+  marker.checkCollisions = false;
+  (marker as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+
+  marker.renderingGroupId = 2;
+
+  const mat = marker.material as BABYLON.StandardMaterial | null;
+  if (mat) {
+    mat.disableDepthWrite = true;
+    (mat as any).disableDepthTest = true; // no @ts-expect-error (fixes TS2578)
+    mat.alpha = 1;
+  }
+}
+
+function forceMarkerInFrontOfCamera(marker: BABYLON.Mesh) {
+  const scene = marker.getScene();
+  const cam = scene.activeCamera as any;
+  if (!cam) return;
+
+  const camPos: BABYLON.Vector3 =
+    cam.position instanceof BABYLON.Vector3
+      ? cam.position
+      : new BABYLON.Vector3(cam._position?.x ?? 0, cam._position?.y ?? 0, cam._position?.z ?? 0);
+
+  const fwd: BABYLON.Vector3 =
+    typeof cam.getForwardRay === "function"
+      ? cam.getForwardRay(1).direction
+      : new BABYLON.Vector3(0, 0, 1);
+
+  marker.position.x = camPos.x + fwd.x * 8;
+  marker.position.y = camPos.y + fwd.y * 8;
+  marker.position.z = camPos.z + fwd.z * 8;
 }
 
 function attachMeshToNoa(mesh: BABYLON.AbstractMesh): boolean {
@@ -323,17 +405,8 @@ function ensureMarker(id: string): BABYLON.Mesh | null {
   const scene = getStableRenderedScene();
   if (!scene) return null;
 
-  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0 }, scene);
-
-  const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
-  mat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
-  mat.disableLighting = true;
-  m.material = mat;
-
-  m.alwaysSelectAsActiveMesh = true;
-  m.isPickable = false;
-  m.checkCollisions = false;
-  (m as any).cullingStrategy = BABYLON.AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+  const m = BABYLON.MeshBuilder.CreateSphere(`remote:${id}`, { diameter: 3.0, segments: 16 }, scene);
+  m.material = makeMarkerMaterial(scene, id);
 
   const cam = scene.activeCamera;
   if (cam && typeof cam.layerMask === "number") {
@@ -344,12 +417,15 @@ function ensureMarker(id: string): BABYLON.Mesh | null {
 
   const ok = attachMeshToNoa(m);
 
+  forceMarkerAlwaysVisible(m);
+
   console.log("[RENDER] created remote marker", {
     id,
     sceneUid: (scene as any).uid,
     sceneMeshes: scene.meshes.length,
     attachedViaNoa: ok,
-    activeCamera: scene.activeCamera?.name ?? "(none)",
+    cam: scene.activeCamera?.name ?? "(none)",
+    layerMask: m.layerMask,
   });
 
   markers.set(id, m);
@@ -375,19 +451,14 @@ function removeMarker(id: string) {
     const marker = ensureMarker(id);
     if (!marker) continue;
 
-    marker.position.x = t.x;
-    marker.position.y = t.y + 6.0;
-    marker.position.z = t.z;
+    if (pinRemoteMarkerInFront) {
+      forceMarkerInFrontOfCamera(marker);
+    } else {
+      marker.position.x = t.x;
+      marker.position.y = t.y + 6.0;
+      marker.position.z = t.z;
+    }
   }
-});
-
-let sceneLogTick = 0;
-(noa as any).on("tick", () => {
-  sceneLogTick++;
-  if (sceneLogTick % 180 !== 0) return;
-  const s = getStableRenderedScene();
-  if (!s) return;
-  console.log("[RENDER] scene tick", { uid: (s as any).uid, meshes: s.meshes.length, cam: s.activeCamera?.name ?? "(none)" });
 });
 
 /* ===============================
@@ -527,18 +598,75 @@ async function connect() {
 connect();
 
 /* ===============================
-   11. Sync local position
+   11. Sync local position + periodic debug
 ================================ */
 let tickCount = 0;
+let debugTick = 0;
+
 (noa as any).on("tick", () => {
   tickCount++;
+  debugTick++;
 
-  if (!room || !canSendMoves) return;
-
-  if (tickCount % 3 === 0) {
+  // Send movement (gated)
+  if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
-
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
+  }
+
+  // Periodic debug (~1/sec)
+  if (debugTick % 30 === 0) {
+    const s = getStableRenderedScene();
+    const pos = noa.ents.getPosition(noa.playerEntity);
+
+    let firstRemote: { id: string; t: NetTransform } | null = null;
+    if (room) {
+      for (const [id, t] of netTransforms.entries()) {
+        if (id === room.sessionId) continue;
+        firstRemote = { id, t };
+        break;
+      }
+    }
+
+    const markerCount = markers.size;
+    const netCount = netTransforms.size;
+
+    const line =
+      showExtraDebugOverlay
+        ? `Local: (${pos[0].toFixed(2)},${pos[1].toFixed(2)},${pos[2].toFixed(2)}) | ` +
+          `Remote: ${firstRemote ? `${firstRemote.id} (${firstRemote.t.x.toFixed(2)},${firstRemote.t.y.toFixed(2)},${firstRemote.t.z.toFixed(2)})` : "none"} | ` +
+          `Net=${netCount} Markers=${markerCount} | ` +
+          `Scene=${s ? String((s as any).uid) : "null"} Meshes=${s ? s.meshes.length : 0} Cam=${s?.activeCamera?.name ?? "none"} | ` +
+          `Pin=${pinRemoteMarkerInFront ? "ON" : "OFF"}`
+        : "";
+
+    if (showExtraDebugOverlay) updateOverlay(line);
+
+    console.log("[DBG]", {
+      local: { x: pos[0], y: pos[1], z: pos[2] },
+      remote: firstRemote ? { id: firstRemote.id, ...firstRemote.t } : null,
+      netCount,
+      markerCount,
+      scene: s ? { uid: (s as any).uid, meshes: s.meshes.length, cam: s.activeCamera?.name } : null,
+      pinRemoteMarkerInFront,
+    });
+
+    if (firstRemote) {
+      const m = markers.get(firstRemote.id);
+      if (m) {
+        console.log("[DBG marker]", {
+          id: firstRemote.id,
+          enabled: m.isEnabled(),
+          isVisible: m.isVisible,
+          visibility: m.visibility,
+          pos: { x: m.position.x, y: m.position.y, z: m.position.z },
+          scaling: { x: m.scaling.x, y: m.scaling.y, z: m.scaling.z },
+          layerMask: m.layerMask,
+          renderingGroupId: (m as any).renderingGroupId,
+        });
+      } else {
+        console.log("[DBG marker] none for firstRemote yet");
+      }
+    }
   }
 });
