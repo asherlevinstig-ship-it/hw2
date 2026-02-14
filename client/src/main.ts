@@ -6,9 +6,9 @@
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component
  * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
- *   - Always on top (no depth)
+ *   - Always on top (no depth test/write)
  *   - Never culled
- *   - Camera-world-matrix anchored (no drifting / floating)
+ *   - Camera WORLD MATRIX anchored (stable)
  *   - Better model (forearm + hand + thumb merged)
  *   - Walk bob/sway + punch on mine/place
  *
@@ -253,7 +253,6 @@ function getTargetInfo() {
   };
 }
 
-// punch anim
 let armPunch = 0;
 let armPunchVel = 0;
 
@@ -366,7 +365,6 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
 
-  // Build better arm parts in MAIN scene
   const forearm = BABYLON.MeshBuilder.CreateCylinder(
     "fpForearm",
     { height: 1.35, diameter: 0.32, tessellation: 16 },
@@ -391,7 +389,6 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   thumb.rotation.x = Math.PI / 2;
   thumb.rotation.z = -0.55;
 
-  // Merge
   const merged = BABYLON.Mesh.MergeMeshes([forearm, hand, thumb], true, true, undefined, false, true);
   if (!merged) {
     console.warn("[FP] Failed to merge arm meshes");
@@ -402,7 +399,6 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.name = "fpArm";
   fpArmMesh.parent = fpArmRoot;
 
-  // Material: always visible
   const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
   mat.disableLighting = true;
   mat.emissiveColor = new BABYLON.Color3(0.15, 0.65, 1.0);
@@ -410,31 +406,31 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
 
-  // draw on top
+  // FORCE draw on top
   mat.disableDepthWrite = true;
   (mat as any).disableDepthTest = true;
 
   fpArmMesh.material = mat;
 
   fpArmMesh.isPickable = false;
-  fpArmMesh.alwaysSelectAsActiveMesh = true;
+  fpArmMesh.isVisible = true;
+  fpArmMesh.setEnabled(true);
 
-  // never culled
+  // NEVER cull
   (fpArmMesh as any).isInFrustum = () => true;
 
-  // render late (on top)
+  // Render late
   fpArmMesh.renderingGroupId = 9;
 
-  // match camera mask
-  fpArmMesh.layerMask = typeof (cam as any).layerMask === "number" ? (cam as any).layerMask : 0xffffffff;
+  // FORCE mask (debug safe)
+  fpArmMesh.layerMask = 0xffffffff;
 
-  // outline
+  // Outline for readability
   fpArmMesh.renderOutline = true;
   fpArmMesh.outlineWidth = 0.06;
   fpArmMesh.outlineColor = new BABYLON.Color3(0.02, 0.05, 0.08);
 
   fpArmReady = true;
-console.log("[FP] arm mesh id", fpArmMesh?.id, "enabled", fpArmMesh?.isEnabled(), "visible", fpArmMesh?.isVisible, "pos", fpArmRoot?.position);
 
   console.log("[FP] Arm created OK (main-scene viewmodel)", {
     cam: cam.name,
@@ -470,7 +466,7 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // punch
+  // punch decay
   armPunch += armPunchVel * dtSec;
   armPunchVel *= Math.pow(0.02, dtSec);
   armPunch *= Math.pow(0.10, dtSec);
@@ -478,7 +474,7 @@ function updateFirstPersonArm(dtSec: number) {
 
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // camera world matrix basis (stable)
+  // camera WORLD matrix basis (stable)
   cam.computeWorldMatrix();
   const wm = cam.getWorldMatrix();
 
@@ -491,22 +487,23 @@ function updateFirstPersonArm(dtSec: number) {
   camRot.toRotationMatrix(rotM);
 
   const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 0, 1), rotM).normalize();
-  const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
+  let right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
   const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 1, 0), rotM).normalize();
 
-  // viewmodel offsets (more visible)
-  const distFwd = 0.95 + punch01 * 0.30;
-  const distRight = 0.95;
-  const distDown = 0.85 - bob;
+  // If right is reversed for your camera, flip it:
+  // right = right.scale(-1);
+
+  // FIXED offsets (small, sane; prevents y=-5)
+  const distFwd = 0.75 + punch01 * 0.20;
+  const distRight = 0.45;
+  const distUp = -0.35 + bob; // negative is down
 
   const armPos = camPos
     .add(forward.scale(distFwd))
     .add(right.scale(distRight))
-    .add(up.scale(-distDown));
+    .add(up.scale(distUp));
 
   fpArmRoot.position.copyFrom(armPos);
-
-  // face same as camera
   fpArmRoot.rotationQuaternion = camRot.clone();
 
   // local swing
@@ -520,7 +517,7 @@ function updateFirstPersonArm(dtSec: number) {
 }
 
 /* ===============================
-   11. Remote Player Rendering
+   11. Remote Player Rendering (NOA Entities + Mesh Component)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 
@@ -827,7 +824,6 @@ connect();
 let tickCount = 0;
 let debugTick = 0;
 let lastTickMs = performance.now();
-
 let sceneHookedForArm = false;
 
 (noa as any).on("tick", () => {
