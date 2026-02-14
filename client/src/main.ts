@@ -1,16 +1,24 @@
 /* client/src/main.ts
  * FULL FILE - paste exactly as-is
  *
- * Robust multiplayer avatars:
- * - Remote players are rendered as Babylon meshes in the NOA scene
- * - We DO NOT rely on NOA mesh component for remote avatars (avoids layer/group/cull surprises)
- * - We still keep NOA entity IDs around (logic preserved), but rendering is Babylon-driven
- *
- * Also includes:
+ * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
- * - Viewmodel overlay scene (vmScene) rendered after NOA
- * - VM tuning hotkeys captured in capture phase
+ * - Remote players debug rendering via SECOND Babylon scene (rpScene) rendered AFTER NOA
+ * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
+ *
+ * Why rpScene?
+ * NOA/Babylon scene used by noa-engine can swap cameras, layerMasks, and rendering groups.
+ * rpScene renders AFTER NOA, just like the arm, so it is guaranteed visible.
+ *
+ * Controls:
+ * - V toggles viewmodel overlay ON/OFF
+ * - P toggles Remote Player Debug overlay ON/OFF (screen-space markers)
+ *
+ * Debug controls (viewmodel):
+ * - B toggles VM debug visuals (axes + screen frame)
+ * - N toggles VM tuning mode (enables hotkey nudging)
+ * - M toggles VM mirror (fixes "wrong direction"/handedness)
  */
 
 import { Engine } from "noa-engine";
@@ -132,6 +140,9 @@ const hotbar = [
 let selectedSlot = 0;
 let viewModelEnabled = true;
 
+// Remote player debug overlay toggle
+let remoteDebugEnabled = true;
+
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
@@ -139,6 +150,7 @@ let vmDebug = true;
 let vmTuning = false;
 let vmMirrorX = true;
 
+// Tunable base placement & pose
 let vmBaseXMul = 0.74;
 let vmBaseY = -0.68;
 
@@ -146,6 +158,7 @@ let vmRotX = 0.22;
 let vmRotY = 0.10;
 let vmRotZ = -0.58;
 
+// responsiveness multipliers
 let vmPitchMul = 0.45;
 let vmPunchRotMul = 0.75;
 let vmTurnSwayMulY = 0.35;
@@ -153,14 +166,29 @@ let vmTurnSwayMulZ = 0.25;
 let vmPunchMoveX = 0.12;
 let vmPunchMoveY = 0.08;
 
+// Debug state for networking (overlay)
+let lastSnapshotIds: string[] = [];
+let lastSnapshotAt = 0;
+let lastTransformAt = 0;
+
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
+
+  const netCount = netTransforms.size;
+  const meshCount = rpMarkers.size;
+  const snapAge = lastSnapshotAt ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s` : "n/a";
+  const xformAge = lastTransformAt ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s` : "n/a";
+  const snapPreview = lastSnapshotIds.slice(0, 5).join(", ");
+
+  const closest = getClosestRemoteDistance();
+  const closestStr = closest == null ? "n/a" : `${closest.toFixed(2)}m`;
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedSlot + 1}] ${currentBlock.name}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
+    <strong>Remote Debug:</strong> ${remoteDebugEnabled ? "ON" : "OFF"}<br>
     <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} |
     <strong>VM Tune:</strong> ${vmTuning ? "ON" : "OFF"} |
     <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
@@ -169,12 +197,16 @@ function updateOverlay(extraLine = "") {
     [1-5] Select Block<br>
     [WASD] Move  |  [Space] Jump<br>
     [V] Toggle Viewmodel<br>
+    [P] Toggle Remote Debug overlay<br>
     [B] Toggle VM Debug (axes/frame)<br>
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
-    <span style="opacity:.9">Tuning keys (Tune ON):</span><br>
-    <span style="opacity:.9">Arrows=Move | Shift+Arrows=Fine</span><br>
-    <span style="opacity:.9">7/8 rotX | 9/0 rotY | -/= rotZ</span><br>
+    <span style="opacity:.9">Remote debug:</span><br>
+    <span style="opacity:.9">netTransforms=${netCount} markers=${meshCount}</span><br>
+    <span style="opacity:.9">lastSnapshot=${snapAge} lastTransform=${xformAge}</span><br>
+    <span style="opacity:.9">closestRemote=${closestStr}</span><br>
+    <span style="opacity:.9">snapshotIds=[${snapPreview}]</span><br>
+    <span style="opacity:.9">Tuning keys (Tune ON): Arrows=Move | Shift+Arrows=Fine | 7/8 rotX | 9/0 rotY | -/= rotZ</span><br>
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
@@ -194,6 +226,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "v" || e.key === "V") {
     viewModelEnabled = !viewModelEnabled;
     updateOverlay(viewModelEnabled ? "Viewmodel: ON" : "Viewmodel: OFF");
+    return;
+  }
+
+  if (e.key === "p" || e.key === "P") {
+    remoteDebugEnabled = !remoteDebugEnabled;
+    updateOverlay(remoteDebugEnabled ? "Remote Debug: ON" : "Remote Debug: OFF");
     return;
   }
 
@@ -288,12 +326,7 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-type TypedArrayLike = {
-  buffer: ArrayBufferLike;
-  byteOffset: number;
-  byteLength: number;
-};
-
+type TypedArrayLike = { buffer: ArrayBufferLike; byteOffset: number; byteLength: number };
 function isTypedArrayLike(v: unknown): v is TypedArrayLike {
   return (
     typeof v === "object" &&
@@ -304,30 +337,25 @@ function isTypedArrayLike(v: unknown): v is TypedArrayLike {
     (v as any).buffer instanceof ArrayBuffer
   );
 }
-
 function toNumberArrayVoxels(v: unknown): number[] | null {
   if (v == null) return null;
-
   if (Array.isArray(v)) {
     const out = new Array<number>(v.length);
     for (let i = 0; i < v.length; i++) out[i] = (v[i] as number) | 0;
     return out;
   }
-
   if (isTypedArrayLike(v)) {
     const u8 = new Uint8Array(v.buffer as ArrayBuffer, v.byteOffset, v.byteLength);
     const out = new Array<number>(u8.length);
     for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
     return out;
   }
-
   if (v instanceof ArrayBuffer) {
     const u8 = new Uint8Array(v);
     const out = new Array<number>(u8.length);
     for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
     return out;
   }
-
   return null;
 }
 
@@ -454,10 +482,8 @@ function getStableScene(): BABYLON.Scene | null {
 let vmReady = false;
 let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
-
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
-
 let vmEngineHooked = false;
 
 let vmAxes: BABYLON.TransformNode | null = null;
@@ -587,13 +613,16 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     vmEngineHooked = true;
 
     engine.onEndFrameObservable.add(() => {
-      if (!viewModelEnabled) return;
-      if (!vmScene) return;
+      // Render order: NOA (already rendered) -> vmScene -> rpScene
+      if (viewModelEnabled && vmScene) {
+        if (vmAxes) vmAxes.setEnabled(vmDebug);
+        if (vmFrame) vmFrame.setEnabled(vmDebug);
+        vmScene.render();
+      }
 
-      if (vmAxes) vmAxes.setEnabled(vmDebug);
-      if (vmFrame) vmFrame.setEnabled(vmDebug);
-
-      vmScene.render();
+      if (remoteDebugEnabled && rpReady && rpScene) {
+        rpScene.render();
+      }
     });
   }
 
@@ -697,158 +726,174 @@ function updateViewmodel(dtSec: number) {
 }
 
 /* ===============================
-   11. Remote Player Rendering (100% visible)
+   11. Remote Player Debug Overlay Scene (rpScene)
+   - Renders AFTER NOA (like arm)
+   - Projects remote 3D positions to screen-space markers
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
-
 const netTransforms = new Map<string, NetTransform>();
-const remoteEids = new Map<string, number>();
-const remoteRoots = new Map<string, BABYLON.TransformNode>();
-const remoteParts = new Map<string, BABYLON.AbstractMesh[]>();
 
-function makeRemoteMaterial(scene: BABYLON.Scene, id: string): BABYLON.StandardMaterial {
-  const mat = new BABYLON.StandardMaterial(`remoteMat:${id}`, scene);
+let rpReady = false;
+let rpScene: BABYLON.Scene | null = null;
+let rpCam: BABYLON.FreeCamera | null = null;
+
+// marker root per player id
+const rpMarkers = new Map<string, BABYLON.TransformNode>();
+
+function ensureRpScene(noaScene: BABYLON.Scene) {
+  if (rpReady && rpScene && rpCam) return;
+
+  const engine = noaScene.getEngine();
+
+  rpScene = new BABYLON.Scene(engine);
+  rpScene.autoClear = false;
+  rpScene.autoClearDepthAndStencil = true;
+
+  rpCam = new BABYLON.FreeCamera("rpCam", new BABYLON.Vector3(0, 0, -10), rpScene);
+  rpCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+  rpCam.setTarget(BABYLON.Vector3.Zero());
+  rpScene.activeCamera = rpCam;
+
+  const updateOrtho = () => {
+    if (!rpCam) return;
+    const w = engine.getRenderWidth();
+    const h = engine.getRenderHeight();
+    const r = w / Math.max(1, h);
+
+    rpCam.orthoLeft = -r;
+    rpCam.orthoRight = r;
+    rpCam.orthoTop = 1;
+    rpCam.orthoBottom = -1;
+  };
+  updateOrtho();
+  engine.onResizeObservable.add(() => updateOrtho());
+
+  rpReady = true;
+}
+
+function makeMarker(id: string) {
+  if (!rpScene) return null;
+
+  const root = new BABYLON.TransformNode(`rpRoot:${id}`, rpScene);
+
+  const pill = BABYLON.MeshBuilder.CreateBox(
+    `rpBox:${id}`,
+    { width: 0.06, height: 0.16, depth: 0.02 },
+    rpScene
+  );
+  pill.parent = root;
+
+  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, rpScene);
   mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
+  mat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
   mat.diffuseColor = mat.emissiveColor.clone();
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
-  mat.alpha = 1;
   mat.backFaceCulling = false;
-  (mat as any).fogEnabled = false;
-  return mat;
+  mat.disableDepthWrite = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
+
+  pill.material = mat;
+
+  pill.isPickable = false;
+  (pill as any).isInFrustum = () => true;
+
+  return root;
 }
 
-function applyCameraMaskAndGroups(scene: BABYLON.Scene, meshes: BABYLON.AbstractMesh[]) {
-  const cam = scene.activeCamera as any;
-  const mask = cam && typeof cam.layerMask === "number" ? cam.layerMask : 0xffffffff;
+// project world position into screen space marker
+function updateRemoteDebugMarkers() {
+  if (!remoteDebugEnabled) return;
+  if (!rpReady || !rpScene || !rpCam) return;
 
-  for (const m of meshes) {
-    m.layerMask = mask;
-    m.renderingGroupId = 1; // match NOA world group
-    (m as any).isInFrustum = () => true;
-  }
-}
+  const worldScene = getStableScene();
+  if (!worldScene) return;
 
-function ensureRemote(id: string): { eid: number; root: BABYLON.TransformNode } | null {
-  const existingRoot = remoteRoots.get(id);
-  const existingEid = remoteEids.get(id);
-  if (existingRoot && existingEid != null) return { eid: existingEid, root: existingRoot };
+  const cam = worldScene.activeCamera;
+  if (!cam) return;
 
-  const scene = getStableScene();
-  if (!scene) return null;
+  // Ortho bounds for screen-space marker placement
+  const r = (rpCam.orthoRight ?? 1) as number;
 
-  // Create a root TransformNode in the NOA Babylon scene
-  const root = new BABYLON.TransformNode(`remoteRoot:${id}`, scene);
-
-  const mat = makeRemoteMaterial(scene, id);
-
-  // Visible avatar meshes
-  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, scene);
-  body.parent = root;
-  body.position.y = 0.6;
-  body.material = mat;
-
-  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: 0.55, height: 0.55, depth: 0.55 }, scene);
-  head.parent = root;
-  head.position.y = 1.45;
-  head.material = mat;
-
-  const nose = BABYLON.MeshBuilder.CreateBox(`remoteNose:${id}`, { width: 0.12, height: 0.12, depth: 0.25 }, scene);
-  nose.parent = head;
-  nose.position.z = 0.4;
-  nose.material = mat;
-
-  const meshes: BABYLON.AbstractMesh[] = [body, head, nose];
-  for (const m of meshes) {
-    m.isPickable = false;
-    m.checkCollisions = false;
-    m.setEnabled(true);
-  }
-
-  applyCameraMaskAndGroups(scene, meshes);
-
-  // Keep a NOA entity id (logic preserved)
-  let eid: number | null = null;
-  try {
-    const maybe = (noa as any).ents.add?.([0, 0, 0], 1, 2);
-    if (typeof maybe === "number") eid = maybe;
-  } catch {}
-
-  if (eid == null) {
-    try {
-      const maybe2 = (noa as any).ents.createEntity?.();
-      if (typeof maybe2 === "number") eid = maybe2;
-    } catch {}
-  }
-
-  if (eid == null) {
-    root.dispose();
-    return null;
-  }
-
-  remoteEids.set(id, eid);
-  remoteRoots.set(id, root);
-  remoteParts.set(id, meshes);
-
-  return { eid, root };
-}
-
-function removeRemote(id: string) {
-  netTransforms.delete(id);
-
-  const eid = remoteEids.get(id);
-  if (eid != null) {
-    try {
-      (noa as any).ents.removeEntity?.(eid);
-    } catch {}
-    remoteEids.delete(id);
-  }
-
-  const parts = remoteParts.get(id);
-  if (parts) {
-    for (const m of parts) {
-      try {
-        m.dispose();
-      } catch {}
+  // Clean up markers for players that left
+  for (const id of Array.from(rpMarkers.keys())) {
+    if (!netTransforms.has(id)) {
+      const m = rpMarkers.get(id);
+      if (m) {
+        try { m.dispose(); } catch {}
+      }
+      rpMarkers.delete(id);
     }
-    remoteParts.delete(id);
-  }
-
-  const root = remoteRoots.get(id);
-  if (root) {
-    try {
-      root.dispose();
-    } catch {}
-    remoteRoots.delete(id);
-  }
-}
-
-/* Apply remote transforms each tick */
-(noa as any).on("tick", () => {
-  if (!room) return;
-
-  const scene = getStableScene();
-  if (scene) {
-    // camera can swap / reset internally; re-apply masks if needed
-   for (const [, meshes] of remoteParts.entries()) {
-  applyCameraMaskAndGroups(scene, meshes);
-}
   }
 
   for (const [id, t] of netTransforms.entries()) {
-    if (id === room.sessionId) continue;
+    if (room && id === room.sessionId) continue;
 
-    const created = ensureRemote(id);
-    if (!created) continue;
+    let marker = rpMarkers.get(id);
+    if (!marker) {
+      const created = makeMarker(id);
+      if (!created) continue;
+      marker = created;
+      rpMarkers.set(id, marker);
+    }
 
-    // Put them slightly above the ground to avoid clipping into blocks
-    created.root.position.set(t.x, t.y + 0.15, t.z);
+    // world position (head-ish)
+    const worldPos = new BABYLON.Vector3(t.x, t.y + 1.6, t.z);
 
+    // Babylon gives screen coords in pixels
+    const engine = worldScene.getEngine();
+    const vp = cam.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+
+    const sp = BABYLON.Vector3.Project(
+      worldPos,
+      BABYLON.Matrix.Identity(),
+      cam.getTransformationMatrix(),
+
+      vp
+    );
+
+    // If behind camera, hide marker
+    // (z outside [0,1] indicates clipped)
+    const behind = sp.z < 0 || sp.z > 1;
+    marker.setEnabled(!behind);
+
+    if (behind) continue;
+
+    // Convert pixel screen to our ortho space:
+    // x: [0..w] -> [-r..r]
+    // y: [0..h] -> [1..-1]  (flip Y)
+    const w = engine.getRenderWidth();
+    const h = engine.getRenderHeight();
+
+    const nx = (sp.x / Math.max(1, w)) * 2 - 1; // -1..1
+    const ny = 1 - (sp.y / Math.max(1, h)) * 2; //  1..-1
+
+    marker.position.set(nx * r, ny * 1.0, 0);
+
+    // Small yaw indicator via rotation (optional)
     if (typeof t.yaw === "number") {
-      created.root.rotation.y = t.yaw;
+      marker.rotation.z = 0;
+      marker.rotation.y = 0;
+      marker.rotation.x = 0;
     }
   }
-});
+}
+
+function getClosestRemoteDistance(): number | null {
+  if (!room) return null;
+  const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
+  if (!me) return null;
+
+  let best: number | null = null;
+  for (const [id, t] of netTransforms.entries()) {
+    if (id === room.sessionId) continue;
+    const dx = t.x - me[0];
+    const dy = t.y - me[1];
+    const dz = t.z - me[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (best == null || d < best) best = d;
+  }
+  return best;
+}
 
 /* ===============================
    12. Networking
@@ -889,7 +934,7 @@ async function connect() {
 
       for (const p of players ?? []) {
         const id = normId(p);
-        if (!id || id === room!.sessionId) continue;
+        if (!id || (room && id === room.sessionId)) continue;
 
         const x = Number(p.x ?? 0);
         const y = Number(p.y ?? 0);
@@ -898,11 +943,13 @@ async function connect() {
 
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
+      lastTransformAt = performance.now();
+      updateOverlay("existingPlayers received");
     });
 
     room.onMessage("playerJoined", (p: any) => {
       const id = normId(p);
-      if (!id || id === room!.sessionId) return;
+      if (!id || (room && id === room.sessionId)) return;
 
       const x = Number(p.x ?? 0);
       const y = Number(p.y ?? 0);
@@ -910,17 +957,21 @@ async function connect() {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+      lastTransformAt = performance.now();
+      updateOverlay("playerJoined received");
     });
 
     room.onMessage("playerLeft", (p: any) => {
       const id = normId(p);
       if (!id) return;
-      removeRemote(id);
+      netTransforms.delete(id);
+      lastTransformAt = performance.now();
+      updateOverlay("playerLeft received");
     });
 
     room.onMessage("playerTransformOther", (p: any) => {
       const id = normId(p);
-      if (!id || id === room!.sessionId) return;
+      if (!id || (room && id === room.sessionId)) return;
 
       const x = Number(p.x);
       const y = Number(p.y);
@@ -928,22 +979,30 @@ async function connect() {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+      lastTransformAt = performance.now();
     });
 
     room.onMessage("playersSnapshot", (players: any) => {
       if (!Array.isArray(players)) return;
 
+      const ids: string[] = [];
+
       for (const p of players) {
         const id = normId(p);
-        if (!id || id === room!.sessionId) continue;
+        if (!id || (room && id === room.sessionId)) continue;
 
         const x = Number(p.x);
         const y = Number(p.y);
         const z = Number(p.z);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
+        ids.push(id);
         netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
       }
+
+      lastSnapshotIds = ids;
+      lastSnapshotAt = performance.now();
+      updateOverlay("playersSnapshot received");
     });
 
     room.onMessage("youJoined", (p: any) => {
@@ -968,7 +1027,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking)
+   13. Tick loop (drive vm updates + networking + remote debug)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -981,13 +1040,20 @@ let lastTickMs = performance.now();
   lastTickMs = now;
 
   const scene = getStableScene();
-  if (scene) ensureVmScene(scene);
+  if (scene) {
+    ensureVmScene(scene);
+    ensureRpScene(scene);
+  }
 
   updateViewmodel(dtSec);
+  updateRemoteDebugMarkers();
 
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
+
+  // keep overlay fresh
+  if (tickCount % 10 === 0) updateOverlay();
 });
