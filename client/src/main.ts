@@ -6,10 +6,10 @@
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component
  * - First-person arm: MAIN SCENE viewmodel (NO UtilityLayer)
- *   - Always on top (no depth test/write)
+ *   - Parent to camera (true viewmodel)
+ *   - Always on top (depthFunction ALWAYS + no depth write)
  *   - Never culled
- *   - Camera WORLD MATRIX anchored (stable)
- *   - Better model (forearm + hand + thumb merged)
+ *   - Rendered in default last rendering group (3)  ✅ (NOT 9)
  *   - Walk bob/sway + punch on mine/place
  *
  * Debug:
@@ -339,6 +339,10 @@ function getNoaCamera(scene: BABYLON.Scene): BABYLON.Camera | null {
 
 /* ===============================
    10. First-person arm (MAIN SCENE viewmodel)
+   ✅ FIXES:
+   - Parent arm root to camera (true viewmodel)
+   - Use renderingGroupId = 3 (default last group) (NOT 9)
+   - Always-on-top via depthFunction ALWAYS + disableDepthWrite
 ================================ */
 let fpArmReady = false;
 let fpArmRoot: BABYLON.TransformNode | null = null;
@@ -364,6 +368,14 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   } catch {}
 
   fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
+
+  // ✅ TRUE VIEWMODEL: parent to camera
+  fpArmRoot.parent = cam;
+
+  // local offset (camera space)
+  fpArmRoot.position.set(0.45, -0.35, 0.75);
+  fpArmRoot.rotationQuaternion = null;
+  fpArmRoot.rotation.set(0, 0, 0);
 
   const forearm = BABYLON.MeshBuilder.CreateCylinder(
     "fpForearm",
@@ -406,9 +418,9 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
 
-  // FORCE draw on top
+  // ✅ FORCE draw on top reliably
   mat.disableDepthWrite = true;
-  (mat as any).disableDepthTest = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
 
   fpArmMesh.material = mat;
 
@@ -416,13 +428,15 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // NEVER cull
+  // ✅ NEVER cull
   (fpArmMesh as any).isInFrustum = () => true;
+  (fpArmMesh as any).alwaysSelectAsActiveMesh = true;
+  (fpArmMesh as any).infiniteDistance = true;
 
-  // Render late
-  fpArmMesh.renderingGroupId = 9;
+  // ✅ Render in LAST DEFAULT GROUP (0..3 are default). DO NOT USE 9.
+  fpArmMesh.renderingGroupId = 3;
 
-  // FORCE mask (debug safe)
+  // Force mask (debug safe)
   fpArmMesh.layerMask = 0xffffffff;
 
   // Outline for readability
@@ -442,10 +456,6 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 
 function updateFirstPersonArm(dtSec: number) {
   if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
-
-  const scene = fpArmMesh.getScene();
-  const cam = getNoaCamera(scene);
-  if (!cam) return;
 
   // walk speed
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
@@ -474,37 +484,10 @@ function updateFirstPersonArm(dtSec: number) {
 
   const punch01 = Math.sin(armPunch * Math.PI);
 
-  // camera WORLD matrix basis (stable)
-  cam.computeWorldMatrix();
-  const wm = cam.getWorldMatrix();
-
-  const camPos = new BABYLON.Vector3(wm.m[12], wm.m[13], wm.m[14]);
-
-  const camRot = new BABYLON.Quaternion();
-  wm.decompose(undefined, camRot, undefined);
-
-  const rotM = new BABYLON.Matrix();
-  camRot.toRotationMatrix(rotM);
-
-  const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 0, 1), rotM).normalize();
-  let right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1, 0, 0), rotM).normalize();
-  const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 1, 0), rotM).normalize();
-
-  // If right is reversed for your camera, flip it:
-  // right = right.scale(-1);
-
-  // FIXED offsets (small, sane; prevents y=-5)
-  const distFwd = 0.75 + punch01 * 0.20;
-  const distRight = 0.45;
-  const distUp = -0.35 + bob; // negative is down
-
-  const armPos = camPos
-    .add(forward.scale(distFwd))
-    .add(right.scale(distRight))
-    .add(up.scale(distUp));
-
-  fpArmRoot.position.copyFrom(armPos);
-  fpArmRoot.rotationQuaternion = camRot.clone();
+  // ✅ Root is parented to camera: just update local offset
+  fpArmRoot.position.x = 0.45;
+  fpArmRoot.position.y = -0.35 + bob;
+  fpArmRoot.position.z = 0.75 + punch01 * 0.20;
 
   // local swing
   const swingX = 0.15 + Math.sin(armTime) * 0.18 * walk - punch01 * 0.25;
