@@ -5,7 +5,7 @@
  * - Server authoritative chunk streaming (Path B)
  * - Mine/place block sync
  * - Remote players rendered via NOA entities + mesh component (fixes NOA origin/transform issues)
- * - First-person arm (WORLD-SPACE, always in front) + simple walk bob animation
+ * - First-person arm rendered in a BABYLON UtilityLayer (bulletproof "always on top")
  *
  * Debug:
  * - P toggles pinning remote marker in front of camera (local-only debug)
@@ -308,9 +308,13 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   10. First-person arm (WORLD-SPACE, always in front)
+   10. First-person arm (UTILITY LAYER, always on top)
 ================================ */
 let fpArmReady = false;
+
+let fpArmUILayer: BABYLON.UtilityLayerRenderer | null = null;
+let fpArmUIScene: BABYLON.Scene | null = null;
+
 let fpArmRoot: BABYLON.TransformNode | null = null;
 let fpArmMesh: BABYLON.Mesh | null = null;
 
@@ -352,19 +356,33 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
     if (typeof (cam as any).minZ === "number") (cam as any).minZ = Math.min((cam as any).minZ, 0.01);
   } catch {}
 
-  fpArmRoot = new BABYLON.TransformNode("fpArmRoot", scene);
+  // Create a UtilityLayer (renders AFTER the main scene; great for viewmodels)
+  fpArmUILayer = new BABYLON.UtilityLayerRenderer(scene);
+  fpArmUILayer.utilityLayerScene.autoClear = false;
 
-  fpArmMesh = BABYLON.MeshBuilder.CreateBox("fpArm", { width: 0.6, height: 1.6, depth: 0.6 }, scene);
+  fpArmUIScene = fpArmUILayer.utilityLayerScene;
+
+  // Ensure the utility scene uses the same active camera reference
+  fpArmUIScene.activeCamera = cam;
+
+  fpArmRoot = new BABYLON.TransformNode("fpArmRoot", fpArmUIScene);
+
+  fpArmMesh = BABYLON.MeshBuilder.CreateBox("fpArm", { width: 0.6, height: 1.6, depth: 0.6 }, fpArmUIScene);
   fpArmMesh.parent = fpArmRoot;
 
   // shoulder-ish pivot
   fpArmMesh.position.set(0, -0.8, 0);
 
-  const mat = new BABYLON.StandardMaterial("fpArmMat", scene);
+  const mat = new BABYLON.StandardMaterial("fpArmMat", fpArmUIScene);
   mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0); // bright cyan
+  mat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0);
   mat.diffuseColor = new BABYLON.Color3(0.2, 0.8, 1.0);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.backFaceCulling = false;
+
+  // Utility layer should already be on top, but also don't write depth
+  mat.disableDepthWrite = true;
+
   fpArmMesh.material = mat;
 
   fpArmMesh.alwaysSelectAsActiveMesh = true;
@@ -372,22 +390,12 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
   fpArmMesh.isVisible = true;
   fpArmMesh.setEnabled(true);
 
-  // IMPORTANT: draw on top by clearing depth before this rendering group
-  // Use a normal group index (0..3); NOA/Babylon generally expects that.
-  fpArmMesh.renderingGroupId = 2;
-
-  // don't write depth (and after depth clear, it will always pass)
-  mat.disableDepthWrite = true;
-
-  // Clear depth at the start of group 2 so this "viewmodel" always renders over the world
-  scene.setRenderingAutoClearDepthStencil(2, true, true, false);
-
-  // Layer mask: simplest is "all layers" to avoid camera mask mismatch
+  // Avoid any layer-mask mismatch issues
   fpArmMesh.layerMask = 0xffffffff;
 
   fpArmReady = true;
 
-  console.log("[FP] Arm created OK (world-space attach)", {
+  console.log("[FP] Arm created OK (utility-layer)", {
     cam: cam.name,
     sceneUid: (scene as any).uid,
     camMask: (cam as any).layerMask,
@@ -396,11 +404,16 @@ function setupFirstPersonArm(scene: BABYLON.Scene) {
 }
 
 function updateFirstPersonArm(dtSec: number) {
-  if (!fpArmReady || !fpArmRoot || !fpArmMesh) return;
+  if (!fpArmReady || !fpArmRoot || !fpArmMesh || !fpArmUIScene) return;
 
-  const scene = fpArmMesh.getScene();
-  const cam = getNoaCamera(scene);
+  const baseScene = getStableScene();
+  if (!baseScene) return;
+
+  const cam = getNoaCamera(baseScene);
   if (!cam) return;
+
+  // Keep utility layer scene camera in sync
+  fpArmUIScene.activeCamera = cam;
 
   // Movement speed for bob (from NOA player entity)
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
@@ -421,7 +434,7 @@ function updateFirstPersonArm(dtSec: number) {
   const bob = Math.sin(armTime * 2.0) * 0.05 * walk;
   const sway = Math.sin(armTime) * 0.25 * walk;
 
-  // Camera basis in world space (robust - respects pitch/roll and handedness)
+  // Camera basis in world space (robust)
   const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
   const right = cam.getDirection(BABYLON.Axis.X).normalize();
   const up = cam.getDirection(BABYLON.Axis.Y).normalize();
