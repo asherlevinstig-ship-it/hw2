@@ -1,25 +1,25 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Path B (server authoritative chunks) + multiplayer:
+// Path B (server authoritative chunks) + multiplayer + PERSISTENCE:
 // - Server generates & stores chunks (Uint8Array) and streams them to clients on demand
-// - Chunk streaming is BINARY (Uint8Array) (Colyseus msgpack-encodes efficiently)
 // - Block edits mutate stored chunks and broadcast "blockUpdate" to everyone
 // - Player movement is relayed to others via "playerTransformOther"
 // - Periodic "playersSnapshot" for robustness
-// - Spawn uses first-free deterministic grid slot (no overlap even after leaves)
+// - Deterministic spawn slots so players don't overlap (first-free slot)
 // - Spawn Y computed from SAME terrain function (so nobody spawns underground)
 //
-// Hardening/debug in this version:
-// - On join: send immediate playersSnapshot to joiner (authoritative convergence)
-// - Throttled debug logs for moves and snapshots
-// - Movement anti-teleport: rejects impossible speed jumps
-// - Block edit reach validation: Minecraft-ish (horizontal reach + generous vertical slack)
-// - Chunk request hardening: validates payload + clamps coords
+// ✅ Persistence in this version:
+// - Chunks are saved to disk under: server/world/chunks/
+// - On chunk request: server loads from disk if present; otherwise generates
+// - On block edit: chunk is marked dirty and written (debounced)
+// - This makes mined/placed blocks survive refresh AND server restart
 //
 // NOTE: Keep your server room name as "my_room" in defineServer config.
 
 import { Room, Client } from "colyseus";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -37,7 +37,7 @@ type ChunkDataMsg = {
   x: number;
   y: number;
   z: number;
-  voxels: Uint8Array; // ✅ binary
+  voxels: Uint8Array; // binary
 };
 
 type PlayerInfo = {
@@ -76,25 +76,16 @@ export class MyRoom extends Room {
   // =========================
   private players = new Map<string, PlayerInfo>();
 
-  // Movement packet rate limiting
   private readonly minMoveIntervalMs = 60;
-
-  // Periodic full snapshot
   private readonly snapshotIntervalMs = 500;
-
-  // Sanity bounds
   private readonly maxAbsCoord = 100000;
 
-  // Anti-teleport / speed cap
   private readonly maxSpeedBlocksPerSec = 12;
 
-  // Block edit reach (best-practice):
-  // - Horizontal reach is tight (stops "dig from orbit")
-  // - Vertical slack is generous (prevents "mining not working" when spawnY is above ground)
+  // Block edit reach (MC-ish)
   private readonly maxEditHoriz = 6;
   private readonly maxEditVert = 12;
 
-  // Debug throttles
   private lastMoveLogAt = 0;
   private lastSnapshotLogAt = 0;
 
@@ -113,12 +104,26 @@ export class MyRoom extends Room {
   // Stored chunks: key = "cx,cy,cz" -> Uint8Array length CS^3
   private chunks = new Map<string, Uint8Array>();
 
+  // =========================
+  // Persistence
+  // =========================
+  private readonly worldDir = path.join(process.cwd(), "server", "world");
+  private readonly chunksDir = path.join(this.worldDir, "chunks");
+
+  // Dirty chunk write batching
+  private dirtyChunks = new Set<string>();
+  private flushTimer: NodeJS.Timeout | null = null;
+  private readonly flushDelayMs = 300; // debounce writes
+
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
     this.maxClients = 32;
 
-    // Robust periodic snapshot
+    // Ensure dirs exist
+    this.ensureDirs();
+
+    // Periodic snapshot
     this.clock.setInterval(() => {
       const all = Array.from(this.players.values()).map((p) => ({
         id: p.id,
@@ -152,6 +157,8 @@ export class MyRoom extends Room {
       const cz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
       const CS = this.chunkSize;
+
+      // ✅ Load from disk or generate, then cache
       const chunk = this.getOrCreateChunk(cx, cy, cz);
 
       const msg: ChunkDataMsg = {
@@ -175,7 +182,6 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
-      // Rate limit
       if (now - pl.lastMoveAt < this.minMoveIntervalMs) return;
 
       if (typeof payload !== "object" || payload === null) return;
@@ -196,7 +202,6 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      // Allow slack for jitter (factor 2 => squared factor 4)
       if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 4) {
         return;
       }
@@ -207,10 +212,8 @@ export class MyRoom extends Room {
       pl.yaw = yaw;
       pl.lastMoveAt = now;
 
-      // others only
       this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
 
-      // Throttled debug
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
         console.log("[MOVE]", {
@@ -224,7 +227,7 @@ export class MyRoom extends Room {
     });
 
     // =========================
-    // Block edits (authoritative)
+    // Block edits (authoritative + persistent)
     // =========================
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
@@ -258,7 +261,6 @@ export class MyRoom extends Room {
       this.setBlockAuthoritative(x, y, z, id);
     });
 
-    // Optional ping/pong
     this.onMessage("ping", (client: Client, payload: unknown) => {
       client.send("pong", payload);
     });
@@ -270,7 +272,7 @@ export class MyRoom extends Room {
   onJoin(client: Client, options: any) {
     console.log("➕ onJoin", client.sessionId, options);
 
-    // First-free deterministic spawn slot (no overlap even after leaves)
+    // First-free deterministic spawn slot
     const spacing = 6;
 
     let spawnX = 0;
@@ -296,13 +298,10 @@ export class MyRoom extends Room {
       }
 
       slot++;
-      if (slot > 4096) break; // safety
+      if (slot > 4096) break;
     }
 
-    // compute ground height using the SAME terrain function (surface Y)
     const surfaceY = this.heightAt(spawnX, spawnZ);
-
-    // spawn above surface (player will fall onto ground)
     const spawnY = surfaceY + 8;
 
     const spawn: PlayerInfo = {
@@ -317,24 +316,20 @@ export class MyRoom extends Room {
 
     this.players.set(client.sessionId, spawn);
 
-    // Send existing players to new client
     const existingPlayers = Array.from(this.players.values())
       .filter((pl) => pl.id !== client.sessionId)
       .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z, yaw: pl.yaw }));
 
     client.send("existingPlayers", existingPlayers);
 
-    // Notify others about this join
     this.broadcast(
       "playerJoined",
       { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw },
       { except: client }
     );
 
-    // Tell joiner their own spawn
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
 
-    // ✅ Hardening: immediately send a full snapshot to the joiner
     const allNow = Array.from(this.players.values()).map((p) => ({
       id: p.id,
       x: p.x,
@@ -362,10 +357,15 @@ export class MyRoom extends Room {
 
   onDispose() {
     console.log("🧹 MyRoom disposed");
+
+    // Flush pending chunk writes before shutdown
+    try {
+      this.flushDirtyChunksSync();
+    } catch {}
+
     this.players.clear();
 
-    // If you want world to persist across room lifecycle, DO NOT clear.
-    // If you want it reset each time, uncomment:
+    // Keep world persistent: do NOT clear chunks.
     // this.chunks.clear();
   }
 
@@ -388,12 +388,99 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // World internals
+  // Persistence helpers
   // =========================
+  private ensureDirs(): void {
+    if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
+    if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
+  }
+
   private chunkKey(cx: number, cy: number, cz: number): string {
     return `${cx},${cy},${cz}`;
   }
 
+  private chunkFilePath(cx: number, cy: number, cz: number): string {
+    // safe file name
+    return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`);
+  }
+
+  private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
+    const fp = this.chunkFilePath(cx, cy, cz);
+    try {
+      if (!fs.existsSync(fp)) return null;
+      const buf = fs.readFileSync(fp);
+      // Ensure exact expected size
+      const expected = this.chunkSize * this.chunkSize * this.chunkSize;
+      if (buf.byteLength !== expected) return null;
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    } catch {
+      return null;
+    }
+  }
+
+  private writeChunkToDisk(key: string, chunk: Uint8Array): void {
+    const parts = key.split(",");
+    if (parts.length !== 3) return;
+    const cx = Number(parts[0]);
+    const cy = Number(parts[1]);
+    const cz = Number(parts[2]);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) return;
+
+    const fp = this.chunkFilePath(cx, cy, cz);
+
+    // Write atomic-ish: temp then rename
+    const tmp = fp + ".tmp";
+    fs.writeFileSync(tmp, Buffer.from(chunk));
+    fs.renameSync(tmp, fp);
+  }
+
+  private markChunkDirty(cx: number, cy: number, cz: number): void {
+    const key = this.chunkKey(cx, cy, cz);
+    this.dirtyChunks.add(key);
+
+    if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        this.flushDirtyChunksAsync();
+      }, this.flushDelayMs);
+    }
+  }
+
+  private flushDirtyChunksAsync(): void {
+    if (this.dirtyChunks.size === 0) return;
+
+    const keys = Array.from(this.dirtyChunks);
+    this.dirtyChunks.clear();
+
+    for (const key of keys) {
+      const chunk = this.chunks.get(key);
+      if (!chunk) continue;
+      try {
+        this.writeChunkToDisk(key, chunk);
+      } catch (e) {
+        console.warn("[WORLD] failed write chunk", key, e);
+      }
+    }
+  }
+
+  private flushDirtyChunksSync(): void {
+    if (this.dirtyChunks.size === 0) return;
+
+    const keys = Array.from(this.dirtyChunks);
+    this.dirtyChunks.clear();
+
+    for (const key of keys) {
+      const chunk = this.chunks.get(key);
+      if (!chunk) continue;
+      try {
+        this.writeChunkToDisk(key, chunk);
+      } catch {}
+    }
+  }
+
+  // =========================
+  // World internals
+  // =========================
   // Packing must match client unpack loop:
   // n increments in order: for k, for j, for i
   // idx = i + CS*(j + CS*k)
@@ -406,11 +493,7 @@ export class MyRoom extends Room {
     return this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
   }
 
-  private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
-    const key = this.chunkKey(cx, cy, cz);
-    const existing = this.chunks.get(key);
-    if (existing) return existing;
-
+  private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
     const vox = new Uint8Array(CS * CS * CS);
 
@@ -435,8 +518,29 @@ export class MyRoom extends Room {
       }
     }
 
-    this.chunks.set(key, vox);
     return vox;
+  }
+
+  private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
+    const key = this.chunkKey(cx, cy, cz);
+
+    const existing = this.chunks.get(key);
+    if (existing) return existing;
+
+    // ✅ Try disk first
+    const fromDisk = this.readChunkFromDisk(cx, cy, cz);
+    if (fromDisk) {
+      // Make a copy to ensure it’s detached from Buffer view quirks
+      const copy = new Uint8Array(fromDisk.length);
+      copy.set(fromDisk);
+      this.chunks.set(key, copy);
+      return copy;
+    }
+
+    // Otherwise generate
+    const gen = this.generateChunk(cx, cy, cz);
+    this.chunks.set(key, gen);
+    return gen;
   }
 
   private setBlockAuthoritative(x: number, y: number, z: number, id: number): void {
@@ -454,6 +558,10 @@ export class MyRoom extends Room {
     const v = clamp(toInt(id), 0, 255);
     chunk[this.idx(lx, ly, lz)] = v;
 
+    // ✅ Persist
+    this.markChunkDirty(cx, cy, cz);
+
+    // Broadcast edit
     this.broadcast("blockUpdate", { x, y, z, id: v });
   }
 }
