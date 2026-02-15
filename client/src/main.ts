@@ -679,7 +679,7 @@ function setupInventorySlots() {
     backpackGrid.appendChild(el);
   }
 }
-setupInventorySlots();
+// setupInventorySlots(); // (called in initUI)
 
 // Craft buttons
 function addCraftButton(title: string, recipeId: string) {
@@ -699,9 +699,32 @@ function addCraftButton(title: string, recipeId: string) {
   };
   craftList.appendChild(b);
 }
-addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_log");
-addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
-addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
+// addCraftButton(...) calls moved to initUI
+
+function initUI() {
+  try {
+    setupInventorySlots();
+  } catch (e) {
+    console.warn("[UI] setupInventorySlots failed", e);
+  }
+
+  try {
+    addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_log");
+    addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
+    addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
+  } catch (e) {
+    console.warn("[UI] craft buttons failed", e);
+  }
+
+  try {
+    renderInventoryUI();
+  } catch {}
+
+  try {
+    updateOverlay();
+  } catch {}
+}
+
 
 /* ===============================
    6.5 Overlay
@@ -783,7 +806,7 @@ function updateOverlay(extraLine = "") {
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
-updateOverlay();
+// updateOverlay(); // (called in initUI)
 
 /* ===============================
    6.6 Key handling
@@ -2431,6 +2454,9 @@ async function connect() {
     overlay.innerHTML += "<br><span style='color:red'>Connection Failed!</span>";
   }
 }
+
+
+initUI();
 
 connect();
 
