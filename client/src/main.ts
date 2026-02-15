@@ -37,11 +37,11 @@
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
  *
- * IMPORTANT FIX (TDZ):
- * ✅ Declare mining state BEFORE updateOverlay() is first called.
- *
- * IMPORTANT FIX (Pointer Lock):
- * ✅ Use document.pointerLockElement instead of noa.container.hasPointerLock.
+ * Mining QoL Fixes (2026-02-15):
+ * ✅ Mining no longer resets when you stop clicking (server heartbeat kept alive)
+ * ✅ Click-to-mine continues mining until done/cancelled
+ * ✅ Holding LMB increases viewmodel mining swing intensity
+ * ✅ Retargeting while holding LMB still works
  */
 
 import { Engine } from "noa-engine";
@@ -293,9 +293,8 @@ appEl.addEventListener("click", () => {
   if (!invOpen) requestPointerLock();
 });
 
-// ✅ FIX: reliable pointer lock check
 function hasPointerLock(): boolean {
-  return document.pointerLockElement != null;
+  return !!(noa.container as any)?.hasPointerLock;
 }
 
 /* ===============================
@@ -548,30 +547,7 @@ let lastPickupSentAt = 0;
 const pickupSentRecently = new Map<string, number>();
 
 /* ===============================
-   6.4 Mining progress (Option A)  ✅ MOVED UP to avoid TDZ
-================================ */
-type MineProgressMsg = {
-  x: number;
-  y: number;
-  z: number;
-  progress: number; // 0..1
-  stage: number; // 0..9
-  done?: boolean;
-  reason?: string;
-};
-
-let miningHeld = false;
-let miningTarget: { x: number; y: number; z: number } | null = null;
-let miningProgress: MineProgressMsg | null = null;
-let lastMineSentKey = "";
-let lastMineSendAt = 0;
-
-let crackMesh: BABYLON.Mesh | null = null;
-let crackMat: BABYLON.StandardMaterial | null = null;
-let crackSceneUid: string | number | null = null;
-
-/* ===============================
-   6.5 Inventory UI rendering + events
+   6.4 Inventory UI rendering + events
 ================================ */
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
@@ -721,11 +697,38 @@ addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_
 addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
 addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
 
+/* ===============================
+   8.1 Mining progress (Option A)
+================================ */
+type MineProgressMsg = {
+  x: number;
+  y: number;
+  z: number;
+  progress: number; // 0..1
+  stage: number; // 0..9
+  done?: boolean;
+  reason?: string;
+};
+
+// Mining QoL state
+let miningActive = false; // mining continues until done/cancelled
+let miningMouseDown = false; // whether LMB is held (affects retarget + swing intensity)
+let miningTarget: { x: number; y: number; z: number } | null = null;
+let miningProgress: MineProgressMsg | null = null;
+
+// Server heartbeat timing (prevents progress reset / timeout)
+let lastMineSendAt = 0;
+const MINE_HEARTBEAT_MS = 120;
+
+// Viewmodel mining swing
+let mineSwingT = 0;
+
 function cancelMiningLocal(reason = "") {
-  miningHeld = false;
+  miningActive = false;
+  miningMouseDown = false;
   miningTarget = null;
   miningProgress = null;
-  lastMineSentKey = "";
+  mineSwingT = 0;
   if (room) room.send("cancelMine", { reason });
 }
 
@@ -740,7 +743,7 @@ function setInvOpen(open: boolean) {
 }
 
 /* ===============================
-   6.6 Overlay
+   6.5 Overlay
 ================================ */
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
@@ -785,7 +788,9 @@ function updateOverlay(extraLine = "") {
   const mineLine =
     miningProgress && miningProgress.progress > 0
       ? `Mining: ${(miningProgress.progress * 100).toFixed(0)}% (stage ${miningProgress.stage})`
-      : "Mining: -";
+      : miningActive
+        ? `Mining: active (waiting progress...)`
+        : "Mining: -";
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
@@ -820,7 +825,7 @@ function updateOverlay(extraLine = "") {
 updateOverlay();
 
 /* ===============================
-   6.7 Key handling
+   6.6 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
   // Hotbar 1-5
@@ -1042,20 +1047,16 @@ function triggerPunch() {
   punchT = 0;
 }
 
-function sendStartMine(x: number, y: number, z: number) {
+// Server heartbeat sender (prevents mine timeout / resets)
+function sendStartMineHeartbeat(x: number, y: number, z: number) {
   if (!room) return;
   const now = performance.now();
-  if (now - lastMineSendAt < 40) return; // tiny throttle
+  if (now - lastMineSendAt < MINE_HEARTBEAT_MS) return;
   lastMineSendAt = now;
-
-  const key = `${x},${y},${z}`;
-  if (key === lastMineSentKey) return;
-  lastMineSentKey = key;
-
   room.send("startMine", { x, y, z });
 }
 
-/* Hold-to-mine start */
+/* Click/hold-to-mine start */
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
@@ -1066,19 +1067,23 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
-  miningHeld = true;
+
+  miningActive = true;
+  miningMouseDown = true;
+
+  // starting/retargeting locally
   miningTarget = { x, y, z };
   miningProgress = { x, y, z, progress: 0, stage: 0 };
 
-  lastMineSentKey = "";
-  sendStartMine(x, y, z);
+  // send immediate heartbeat
+  lastMineSendAt = 0;
+  sendStartMineHeartbeat(x, y, z);
 });
 
-/* Release to cancel */
+/* Release: do NOT cancel mining; only reduce intensity + stop retarget */
 window.addEventListener("mouseup", (e) => {
-  if (e.button !== 0) return; // left button only
-  if (!miningHeld) return;
-  cancelMiningLocal("mouseup");
+  if (e.button !== 0) return;
+  miningMouseDown = false;
 });
 
 /* Place block (Option A: do NOT setBlockID locally) */
@@ -1141,6 +1146,10 @@ function getStableScene(): BABYLON.Scene | null {
 /* ===============================
    9.1 Mining crack visuals (wireframe overlay)
 ================================ */
+let crackMesh: BABYLON.Mesh | null = null;
+let crackMat: BABYLON.StandardMaterial | null = null;
+let crackSceneUid: string | number | null = null;
+
 function ensureCrackVisual(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
   if (crackSceneUid == null) crackSceneUid = uid ?? null;
@@ -1565,6 +1574,14 @@ function updateViewmodel(dtSec: number) {
   punchT = Math.min(1, punchT + dtSec * 10.0);
   const punch01 = Math.sin(punchT * Math.PI);
 
+  // Mining swing: continuous while miningActive, stronger while holding LMB
+  const miningSwingStrength = miningActive ? (miningMouseDown ? 1.0 : 0.35) : 0.0;
+  if (miningActive) mineSwingT += dtSec * (miningMouseDown ? 14.0 : 7.0);
+  else mineSwingT = 0;
+
+  const mineSwing = Math.sin(mineSwingT) * 0.55 * miningSwingStrength;
+  const mineSwing2 = Math.sin(mineSwingT * 2.0) * 0.18 * miningSwingStrength;
+
   const r = (vmCam.orthoRight ?? 1) as number;
 
   const baseX = r * vmBaseXMul;
@@ -1591,9 +1608,9 @@ function updateViewmodel(dtSec: number) {
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
   vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
-  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
-  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
+    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35 + mineSwing * 0.35;
+  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY + mineSwing2 * 0.12;
+  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ - mineSwing * 0.25;
 }
 
 /* ===============================
@@ -1985,7 +2002,7 @@ async function connect() {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
 
-        // if the block we were mining changed, clear cracks
+        // if the block we were mining changed, clear cracks + stop mining
         if (
           miningProgress &&
           msg.x === miningProgress.x &&
@@ -2020,17 +2037,19 @@ async function connect() {
       };
 
       if ((m as any).done) {
-        miningHeld = false;
+        miningActive = false;
+        miningMouseDown = false;
         miningTarget = null;
-        lastMineSentKey = "";
+        mineSwingT = 0;
       }
     });
 
     room.onMessage("mineCancelled", (_m: any) => {
       miningProgress = null;
-      miningHeld = false;
+      miningActive = false;
+      miningMouseDown = false;
       miningTarget = null;
-      lastMineSentKey = "";
+      mineSwingT = 0;
     });
 
     // Inventory state from server
@@ -2271,20 +2290,26 @@ let lastTickMs = performance.now();
   updateDropVisuals(dtSec);
   tryAutoPickup();
 
-  // Hold-to-mine tracking: if you drag to a new block, start mining that instead
-  if (miningHeld && hasPointerLock() && !invOpen) {
-    const t = getTargetInfo();
-    if (t?.pos) {
-      const { x, y, z } = t.pos;
-      if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
-        miningTarget = { x, y, z };
-        miningProgress = { x, y, z, progress: 0, stage: 0 };
-        lastMineSentKey = "";
-        sendStartMine(x, y, z);
-      } else {
-        // keep-alive / resync occasionally
-        if (tickCount % 20 === 0) sendStartMine(x, y, z);
+  // Mining QoL:
+  // - mining continues even if you release LMB (click-to-mine)
+  // - while holding LMB, you may retarget by moving crosshair
+  // - server heartbeat is sent continuously to prevent timeout resets
+  if (miningActive && hasPointerLock() && !invOpen) {
+    // retarget only while holding (feels natural)
+    if (miningMouseDown) {
+      const t = getTargetInfo();
+      if (t?.pos) {
+        const { x, y, z } = t.pos;
+        if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
+          miningTarget = { x, y, z };
+          miningProgress = { x, y, z, progress: 0, stage: 0 };
+          lastMineSendAt = 0; // immediate heartbeat for new target
+        }
       }
+    }
+
+    if (miningTarget) {
+      sendStartMineHeartbeat(miningTarget.x, miningTarget.y, miningTarget.z);
     }
   }
 
