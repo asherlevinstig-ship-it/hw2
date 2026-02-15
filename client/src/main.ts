@@ -11,11 +11,11 @@
  * ✅ Inventory (hotbar + backpack) with cursor + clicks (left/right/shift)
  * ✅ Server-authoritative drops + pickup (auto pickup when close)
  * ✅ Basic crafting via simple recipe list (buttons in inventory UI)
- * ✅ Minecraft-ish minerals + bedrock (materials + block registration)
+ * ✅ 16x16 TEXTURE ATLAS (vertical strip) for blocks (grass top/side/bottom etc)
  *
- * Why rpScene?
- * NOA’s world scene/camera/layerMask/renderGroups can be swapped/managed internally.
- * Rendering remotes in our own scene *after* NOA guarantees they appear (like the arm).
+ * Atlas requirement (NOA):
+ * - Atlas is a VERTICAL STRIP: width=16, height=16*N tiles stacked top->bottom.
+ * - We select a tile via `atlasIndex`.
  *
  * Controls:
  * - V toggles viewmodel overlay ON/OFF
@@ -104,6 +104,9 @@ invRoot.style.display = "none";
 invRoot.style.userSelect = "none";
 invRoot.style.boxShadow = "0 10px 30px rgba(0,0,0,0.4)";
 document.body.appendChild(invRoot);
+
+// Prevent RMB menu inside inv (we already do global, but keep it explicit)
+invRoot.addEventListener("contextmenu", (e) => e.preventDefault());
 
 const invHeader = document.createElement("div");
 invHeader.style.display = "flex";
@@ -275,14 +278,16 @@ function requestPointerLock() {
   }
 }
 
-appEl.addEventListener("click", () => requestPointerLock());
+appEl.addEventListener("click", () => {
+  if (!invOpen) requestPointerLock();
+});
 
 function hasPointerLock(): boolean {
   return !!(noa.container as any)?.hasPointerLock;
 }
 
 /* ===============================
-   5. Register Blocks & Materials
+   5. Register Blocks & Materials (16x16 VERTICAL STRIP ATLAS)
 ================================ */
 // Block IDs (MUST match server)
 const AIR_ID = 0;
@@ -292,36 +297,113 @@ const STONE_ID = 3;
 const WOOD_ID = 4;
 const LEAVES_ID = 5;
 
-// Minerals + bedrock
+// Minerals + bedrock (MUST match server)
 const BEDROCK_ID = 6;
 const COAL_ORE_ID = 7;
 const IRON_ORE_ID = 8;
 const GOLD_ORE_ID = 9;
 const DIAMOND_ORE_ID = 10;
 
-noa.registry.registerMaterial("grass", { color: [0.2, 0.8, 0.2] });
-noa.registry.registerMaterial("dirt", { color: [0.5, 0.35, 0.15] });
-noa.registry.registerMaterial("stone", { color: [0.5, 0.5, 0.5] });
-noa.registry.registerMaterial("wood", { color: [0.4, 0.25, 0.1] });
-noa.registry.registerMaterial("leaves", { color: [0.1, 0.6, 0.1] });
+// Vite-safe asset URL: create client/src/assets/terrain_atlas.png
+// The atlas must be width=16, height=16*N tiles stacked top->bottom.
+const TERRAIN_ATLAS_URL = new URL("./assets/terrain_atlas.png", import.meta.url).href;
 
-noa.registry.registerMaterial("bedrock", { color: [0.05, 0.05, 0.05] });
-noa.registry.registerMaterial("coalOre", { color: [0.2, 0.2, 0.2] });
-noa.registry.registerMaterial("ironOre", { color: [0.75, 0.55, 0.35] });
-noa.registry.registerMaterial("goldOre", { color: [0.85, 0.75, 0.2] });
-noa.registry.registerMaterial("diamondOre", { color: [0.2, 0.85, 0.85] });
+// Atlas indices (tile order top->bottom in your PNG)
+const ATLAS = {
+  GRASS_TOP: 0,
+  GRASS_SIDE: 1,
+  DIRT: 2,
+  STONE: 3,
+  WOOD: 4,
+  LEAVES: 5,
+  BEDROCK: 6,
+  COAL_ORE: 7,
+  IRON_ORE: 8,
+  GOLD_ORE: 9,
+  DIAMOND_ORE: 10,
+} as const;
 
-noa.registry.registerBlock(GRASS_ID, { material: "grass" });
+// noa-engine typings may not include atlas fields; runtime supports them.
+// This wrapper avoids TS errors while keeping runtime correct.
+function registerAtlasMaterial(
+  name: string,
+  opts: { texture: string; atlasIndex: number; texHasAlpha?: boolean }
+) {
+  noa.registry.registerMaterial(name, opts as any);
+}
+
+registerAtlasMaterial("grass_top", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GRASS_TOP,
+});
+
+registerAtlasMaterial("grass_side", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GRASS_SIDE,
+});
+
+registerAtlasMaterial("dirt", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.DIRT,
+});
+
+registerAtlasMaterial("stone", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.STONE,
+});
+
+registerAtlasMaterial("wood", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.WOOD,
+});
+
+registerAtlasMaterial("leaves", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.LEAVES,
+  texHasAlpha: true,
+});
+
+registerAtlasMaterial("bedrock", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.BEDROCK,
+});
+
+registerAtlasMaterial("coal_ore", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.COAL_ORE,
+});
+
+registerAtlasMaterial("iron_ore", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.IRON_ORE,
+});
+
+registerAtlasMaterial("gold_ore", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GOLD_ORE,
+});
+
+registerAtlasMaterial("diamond_ore", {
+  texture: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.DIAMOND_ORE,
+});
+
+// Blocks
+noa.registry.registerBlock(GRASS_ID, {
+  // [top, bottom, sides]
+  material: ["grass_top", "dirt", "grass_side"],
+});
+
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
-noa.registry.registerBlock(LEAVES_ID, { material: "leaves" });
+noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
 
 noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
-noa.registry.registerBlock(COAL_ORE_ID, { material: "coalOre" });
-noa.registry.registerBlock(IRON_ORE_ID, { material: "ironOre" });
-noa.registry.registerBlock(GOLD_ORE_ID, { material: "goldOre" });
-noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamondOre" });
+noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
+noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
+noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
+noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
 
 /* ===============================
    6. Item/Inventory State
@@ -343,9 +425,6 @@ const Items = {
   RAW_GOLD: 32,
   DIAMOND: 33,
 } as const;
-
-
-
 
 type ItemDef = {
   id: number;
@@ -427,7 +506,15 @@ let lastTransformAt = 0;
 /* ===============================
    6.3 Drops state (server authoritative)
 ================================ */
-type Drop = { dropId: string; itemId: number; count: number; x: number; y: number; z: number; createdAt: number };
+type Drop = {
+  dropId: string;
+  itemId: number;
+  count: number;
+  x: number;
+  y: number;
+  z: number;
+  createdAt: number;
+};
 const drops = new Map<string, Drop>();
 
 // Visual meshes for drops
@@ -505,9 +592,8 @@ function renderInventoryUI() {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
   }
 
-  // Craft buttons enable/disable purely cosmetic (server is authoritative anyway)
+  // Craft buttons enable/disable (client hint only)
   const canCraft = (recipeId: string) => {
-    // naive client-side: count inputs in inv slots (not cursor), good enough for UI hints
     const countItem = (id: number) => {
       let n = 0;
       for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
@@ -580,7 +666,6 @@ function addCraftButton(title: string, recipeId: string) {
     e.preventDefault();
     e.stopPropagation();
     if (!room) return;
-    // right click craft max
     room.send("craft", { recipeId, max: true });
   };
   craftList.appendChild(b);
@@ -918,7 +1003,6 @@ noa.inputs.down.on("alt-fire", () => {
 
   const { x, y, z } = target.adj;
 
-  // Determine placeable from selected hotbar slot
   const stack = invState.slots[selectedHotbar];
   if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
@@ -934,7 +1018,6 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  // client-side optimistic place (server authoritative will confirm/correct)
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
@@ -982,12 +1065,10 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   if (dropSceneUid == null) dropSceneUid = uid ?? null;
 
   if (dropSceneUid !== (uid ?? null)) {
-    // scene swapped: rebuild visuals
     disposeAllDropMeshes();
     dropSceneUid = uid ?? null;
   }
 
-  // Ensure every known drop has a mesh
   for (const d of drops.values()) {
     if (dropMeshes.has(d.dropId)) continue;
 
@@ -997,7 +1078,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
 
     const mat = new BABYLON.StandardMaterial(`dropMat:${d.dropId}`, scene);
     mat.disableLighting = true;
-    // Color by item category (simple)
+
     const c = (() => {
       if (d.itemId === Items.DIAMOND) return new BABYLON.Color3(0.2, 0.9, 0.9);
       if (d.itemId === Items.RAW_GOLD) return new BABYLON.Color3(0.9, 0.8, 0.2);
@@ -1007,6 +1088,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
       if (d.itemId === Items.STONE) return new BABYLON.Color3(0.6, 0.6, 0.6);
       return new BABYLON.Color3(0.85, 0.85, 0.85);
     })();
+
     mat.emissiveColor = c;
     mat.diffuseColor = c.clone();
     mat.specularColor = new BABYLON.Color3(0, 0, 0);
@@ -1019,7 +1101,6 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
     dropMeshes.set(d.dropId, box);
   }
 
-  // Remove meshes for despawned drops
   for (const id of Array.from(dropMeshes.keys())) {
     if (!drops.has(id)) {
       const m = dropMeshes.get(id);
@@ -1032,7 +1113,6 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
 }
 
 function updateDropVisuals(dtSec: number) {
-  // float + spin
   const t = performance.now() / 1000;
   for (const d of drops.values()) {
     const m = dropMeshes.get(d.dropId);
@@ -1047,14 +1127,14 @@ function updateDropVisuals(dtSec: number) {
 
 function tryAutoPickup() {
   if (!room) return;
-  if (!hasPointerLock()) return; // keep pickup aligned with gameplay mode
+  if (!hasPointerLock()) return;
+  if (invOpen) return;
   if (drops.size <= 0) return;
 
   const now = performance.now();
   if (now - lastPickupScanAt < 120) return;
   lastPickupScanAt = now;
 
-  // throttle sending to server
   if (now - lastPickupSentAt < 90) return;
 
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
@@ -1072,7 +1152,6 @@ function tryAutoPickup() {
     const dz = d.z - p[2];
     const d2 = dx * dx + dy * dy + dz * dz;
 
-    // pickup radius
     if (d2 <= 2.3 * 2.3 && d2 < bestD2) {
       bestD2 = d2;
       bestId = d.dropId;
@@ -1112,11 +1191,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   console.log("[VM] ensureVmScene", { useRightHandedSystem: vmScene.useRightHandedSystem });
 
-  // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
-  // Ortho camera in screenspace
   vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -10), vmScene);
   vmCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
   vmCam.setTarget(BABYLON.Vector3.Zero());
@@ -1152,7 +1229,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmRoot.position.set(0, 0, 0);
   vmRoot.rotationQuaternion = new BABYLON.Quaternion();
 
-  // --- Minecraft-ish blocky arm ---
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
@@ -1176,15 +1252,12 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   fore.parent = vmArmRoot;
   hand.parent = vmArmRoot;
 
-  // Lift arm slightly relative to anchor to reduce clipping
   vmArmRoot.position.set(0.0, 0.10, 0.0);
 
-  // Stack parts
   upper.position.set(0.0, 0.22, 0.0);
   fore.position.set(0.0, -0.14, 0.02);
   hand.position.set(0.0, -0.40, 0.04);
 
-  // Unlit material, always on top
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
   armMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
@@ -1204,7 +1277,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   (fore as any).isInFrustum = () => true;
   (hand as any).isInFrustum = () => true;
 
-  // Debug visuals
   const ensureVmDebugMeshes = () => {
     if (!vmScene || !vmRoot || !vmCam) return;
 
@@ -1250,12 +1322,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   ensureVmDebugMeshes();
 
-  // Hook engine end-of-frame once
   if (!vmEngineHooked) {
     vmEngineHooked = true;
 
     engine.onEndFrameObservable.add(() => {
-      // Render order: NOA (already rendered) -> vmScene -> rpScene
       if (viewModelEnabled && vmScene) {
         if (vmAxes) vmAxes.setEnabled(vmDebug);
         if (vmFrame) vmFrame.setEnabled(vmDebug);
@@ -1317,7 +1387,6 @@ function updateViewmodel(dtSec: number) {
   vmArmRoot.scaling.y = 1;
   vmArmRoot.scaling.z = 1;
 
-  // Compute walk speed
   const pos = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
   let speed = 0;
   if (pos && lastLocalPosVM) {
@@ -1347,7 +1416,6 @@ function updateViewmodel(dtSec: number) {
 
   vmRoot.position.set(x, y, 0);
 
-  // View sway uses deltas
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
 
@@ -1363,16 +1431,14 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x =
+    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
 
 /* ===============================
    11. Remote Players Overlay Scene (rpScene)
-   - TRUE 3D scene rendered after NOA
-   - Camera is synced to NOA world camera each tick
-   - Remote meshes live here so they cannot be culled/hidden by NOA pipeline
 ================================ */
 let rpReady = false;
 let rpScene: BABYLON.Scene | null = null;
@@ -1381,14 +1447,11 @@ let rpCam: BABYLON.FreeCamera | null = null;
 const remoteMeshes = new Map<string, BABYLON.TransformNode>();
 const remoteMats = new Map<string, BABYLON.StandardMaterial>();
 
-// ✅ Floating-origin render offset (NOA keeps Babylon cam near origin)
 let rpRenderOffset = new BABYLON.Vector3(0, 0, 0);
 let lastRpOffsetLogAt = 0;
 
-// ✅ Visual adjustment so remote "feet" sit on ground even if server y is camera/capsule based
 const REMOTE_Y_VISUAL_OFFSET = -1.65;
 
-// ✅ Per-remote movement tracking (for smoothing + walk animation)
 const remotePrevPos = new Map<string, BABYLON.Vector3>();
 const remotePrevAt = new Map<string, number>();
 const remoteTargetPos = new Map<string, BABYLON.Vector3>();
@@ -1403,10 +1466,6 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   console.log("[RP] ensureRpScene", { useRightHandedSystem: rpScene.useRightHandedSystem });
 
-  // DO NOT clear color (keep world).
-  // Depth/stencil behavior:
-  // - If xray ON: we clear depth and force ALWAYS so remotes draw on top.
-  // - If xray OFF: we keep depth so remotes can be occluded by blocks (best-effort).
   rpScene.autoClear = false;
   rpScene.autoClearDepthAndStencil = false;
 
@@ -1414,7 +1473,6 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpCam.minZ = 0.05;
   rpCam.maxZ = 10000;
 
-  // IMPORTANT: set rotationQuaternion so we can copy from world camera safely
   rpCam.rotationQuaternion = new BABYLON.Quaternion();
 
   rpScene.activeCamera = rpCam;
@@ -1439,10 +1497,8 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
-  // Root pivot at FEET (so y=0 means standing on ground)
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
 
-  // Minecraft-ish proportions
   const BODY_W = 0.65;
   const BODY_H = 0.95;
   const BODY_D = 0.32;
@@ -1457,17 +1513,14 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const LEG_H = 0.90;
   const LEG_D = 0.22;
 
-  // Vertical layout: feet at 0
   const legTopY = LEG_H;
   const bodyBottomY = legTopY;
   const bodyCenterY = bodyBottomY + BODY_H * 0.5;
   const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
 
-  // Materials
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
-  // Body
   const body = BABYLON.MeshBuilder.CreateBox(
     `remoteBody:${id}`,
     { width: BODY_W, height: BODY_H, depth: BODY_D },
@@ -1478,7 +1531,6 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   body.material = mat;
   body.isPickable = false;
 
-  // Head
   const head = BABYLON.MeshBuilder.CreateBox(
     `remoteHead:${id}`,
     { width: HEAD, height: HEAD, depth: HEAD },
@@ -1489,7 +1541,6 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   head.material = mat;
   head.isPickable = false;
 
-  // Arms (left/right)
   const armL = BABYLON.MeshBuilder.CreateBox(
     `remoteArmL:${id}`,
     { width: ARM_W, height: ARM_H, depth: ARM_D },
@@ -1510,7 +1561,6 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   armR.material = mat;
   armR.isPickable = false;
 
-  // Legs (left/right)
   const legL = BABYLON.MeshBuilder.CreateBox(
     `remoteLegL:${id}`,
     { width: LEG_W, height: LEG_H, depth: LEG_D },
@@ -1531,7 +1581,6 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   legR.material = mat;
   legR.isPickable = false;
 
-  // Always renderable
   (body as any).isInFrustum = () => true;
   (head as any).isInFrustum = () => true;
   (armL as any).isInFrustum = () => true;
@@ -1539,13 +1588,11 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   (legL as any).isInFrustum = () => true;
   (legR as any).isInFrustum = () => true;
 
-  // Store references for animation
   (root as any).__parts = { armL, armR, legL, legR };
   (root as any).__walkPhase = 0;
 
   remoteMeshes.set(id, root);
 
-  // Initialize tracking maps
   remotePrevPos.set(id, new BABYLON.Vector3(0, 0, 0));
   remotePrevAt.set(id, performance.now());
   remoteTargetPos.set(id, new BABYLON.Vector3(0, 0, 0));
@@ -1580,18 +1627,14 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   const worldCam = worldScene.activeCamera as any;
   if (!worldCam) return;
 
-  // Copy viewport & camera params
   rpCam.viewport = worldCam.viewport?.clone?.() ?? rpCam.viewport;
 
-  // Copy FOV + mode if present
   if (typeof worldCam.fov === "number") (rpCam as any).fov = worldCam.fov;
   if (typeof worldCam.fovMode === "number") (rpCam as any).fovMode = worldCam.fovMode;
 
-  // Copy clipping
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
-  // ABSOLUTE camera sync
   const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
   if (wm) {
     const absPos = new BABYLON.Vector3();
@@ -1618,13 +1661,11 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
-  // Compute render offset: NOA shifts render space relative to voxel/world coords
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
   if (p) {
     rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
   }
 
-  // X-ray depth behavior
   if (remoteXray) {
     rpScene.autoClearDepthAndStencil = true;
     for (const mat of remoteMats.values()) {
@@ -1639,7 +1680,6 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
-  // Console debug log (throttled)
   const now = performance.now();
   if (now - lastRpOffsetLogAt > 1500) {
     lastRpOffsetLogAt = now;
@@ -1670,7 +1710,6 @@ function updateRemoteMeshes() {
   if (!rpReady || !rpScene) return;
   if (!room) return;
 
-  // Remove meshes for players no longer present
   for (const id of Array.from(remoteMeshes.keys())) {
     if (!netTransforms.has(id)) removeRemoteMesh(id);
   }
@@ -1683,7 +1722,6 @@ function updateRemoteMeshes() {
     const root = ensureRemoteMesh(id);
     if (!root) continue;
 
-    // Target render-space position (floating-origin corrected) + visual feet adjustment
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
     target.set(
       t.x + rpRenderOffset.x,
@@ -1692,23 +1730,22 @@ function updateRemoteMeshes() {
     );
     remoteTargetPos.set(id, target);
 
-    // Smooth toward target to reduce jitter
     const lerp = 0.35;
     root.position.x += (target.x - root.position.x) * lerp;
     root.position.y += (target.y - root.position.y) * lerp;
     root.position.z += (target.z - root.position.z) * lerp;
 
-    // yaw rotation around Y (if you later need handedness fix, we can negate here)
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
-    // Movement-based walk animation
-    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prev =
+      remotePrevPos.get(id) ??
+      new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
     const dx = root.position.x - prev.x;
     const dz = root.position.z - prev.z;
-    const speed = Math.sqrt(dx * dx + dz * dz) / dt; // units per sec
+    const speed = Math.sqrt(dx * dx + dz * dz) / dt;
 
     prev.copyFrom(root.position);
     remotePrevPos.set(id, prev);
@@ -1725,7 +1762,7 @@ function updateRemoteMeshes() {
       let phase = (root as any).__walkPhase as number;
       if (!Number.isFinite(phase)) phase = 0;
 
-      phase += moving ? phaseSpeed : 0.02; // tiny idle sway
+      phase += moving ? phaseSpeed : 0.02;
       (root as any).__walkPhase = phase;
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
@@ -1779,7 +1816,6 @@ async function connect() {
 
     updateOverlay();
 
-    // Flush queued chunk requests
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
@@ -1795,22 +1831,27 @@ async function connect() {
     // Inventory state from server
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
-      const slots = Array.isArray(msg.slots) ? msg.slots : null;
-      const cursor = msg.cursor ?? null;
+      const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
+      const cursor = (msg as any).cursor ?? null;
       if (!slots) return;
 
       const outSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
       for (let i = 0; i < Math.min(INV_SLOTS, slots.length); i++) {
         const s = slots[i];
-        const id = Number(s?.id ?? 0);
-        const count = Number(s?.count ?? 0);
-        outSlots[i] = Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
+        const id = Number((s as any)?.id ?? 0);
+        const count = Number((s as any)?.count ?? 0);
+        outSlots[i] =
+          Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0
+            ? { id, count }
+            : { id: 0, count: 0 };
       }
 
       const cId = Number((cursor as any)?.id ?? 0);
       const cCount = Number((cursor as any)?.count ?? 0);
       const outCursor: ItemStack =
-        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0 ? { id: cId, count: cCount } : { id: 0, count: 0 };
+        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0
+          ? { id: cId, count: cCount }
+          : { id: 0, count: 0 };
 
       invState = { slots: outSlots, cursor: outCursor };
       renderInventoryUI();
@@ -1835,7 +1876,7 @@ async function connect() {
     });
 
     room.onMessage("dropDespawn", (m: any) => {
-      const id = typeof m?.dropId === "string" ? m.dropId : "";
+      const id = typeof (m as any)?.dropId === "string" ? (m as any).dropId : "";
       if (!id) return;
       drops.delete(id);
       const mesh = dropMeshes.get(id);
@@ -1850,10 +1891,10 @@ async function connect() {
 
     // Craft result
     room.onMessage("craftResult", (m: any) => {
-      const ok = !!m?.ok;
-      const recipeId = typeof m?.recipeId === "string" ? m.recipeId : "";
-      const crafted = Number(m?.crafted ?? 0);
-      const reason = typeof m?.reason === "string" ? m.reason : "";
+      const ok = !!(m as any)?.ok;
+      const recipeId = typeof (m as any)?.recipeId === "string" ? (m as any).recipeId : "";
+      const crafted = Number((m as any)?.crafted ?? 0);
+      const reason = typeof (m as any)?.reason === "string" ? (m as any).reason : "";
       craftStatus.textContent = ok
         ? `Crafted ${crafted} × (${recipeId})`
         : `Craft failed (${recipeId}) ${reason ? `- ${reason}` : ""}`;
@@ -1871,12 +1912,17 @@ async function connect() {
         const id = normId(p);
         if (!id || (room && id === room.sessionId)) continue;
 
-        const x = Number(p.x ?? 0);
-        const y = Number(p.y ?? 0);
-        const z = Number(p.z ?? 0);
+        const x = Number((p as any).x ?? 0);
+        const y = Number((p as any).y ?? 0);
+        const z = Number((p as any).z ?? 0);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
-        netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+        netTransforms.set(id, {
+          x,
+          y,
+          z,
+          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+        });
       }
 
       lastTransformAt = performance.now();
@@ -1888,12 +1934,17 @@ async function connect() {
       const id = normId(p);
       if (!id || (room && id === room.sessionId)) return;
 
-      const x = Number(p.x ?? 0);
-      const y = Number(p.y ?? 0);
-      const z = Number(p.z ?? 0);
+      const x = Number((p as any).x ?? 0);
+      const y = Number((p as any).y ?? 0);
+      const z = Number((p as any).z ?? 0);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+      netTransforms.set(id, {
+        x,
+        y,
+        z,
+        yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+      });
 
       lastTransformAt = performance.now();
       console.log("[NET] playerJoined", { id, x, y, z });
@@ -1916,12 +1967,17 @@ async function connect() {
       const id = normId(p);
       if (!id || (room && id === room.sessionId)) return;
 
-      const x = Number(p.x);
-      const y = Number(p.y);
-      const z = Number(p.z);
+      const x = Number((p as any).x);
+      const y = Number((p as any).y);
+      const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+      netTransforms.set(id, {
+        x,
+        y,
+        z,
+        yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+      });
       lastTransformAt = performance.now();
     });
 
@@ -1934,13 +1990,18 @@ async function connect() {
         const id = normId(p);
         if (!id || (room && id === room.sessionId)) continue;
 
-        const x = Number(p.x);
-        const y = Number(p.y);
-        const z = Number(p.z);
+        const x = Number((p as any).x);
+        const y = Number((p as any).y);
+        const z = Number((p as any).z);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         ids.push(id);
-        netTransforms.set(id, { x, y, z, yaw: typeof p.yaw === "number" ? p.yaw : undefined });
+        netTransforms.set(id, {
+          x,
+          y,
+          z,
+          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+        });
       }
 
       lastSnapshotIds = ids;
@@ -1949,9 +2010,9 @@ async function connect() {
     });
 
     room.onMessage("youJoined", (p: any) => {
-      const x = Number(p.x);
-      const y = Number(p.y);
-      const z = Number(p.z);
+      const x = Number((p as any).x);
+      const y = Number((p as any).y);
+      const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       try {
@@ -1987,8 +2048,6 @@ let lastTickMs = performance.now();
   if (scene) {
     ensureVmScene(scene);
     ensureRpScene(scene);
-
-    // Drop visuals live in world scene
     ensureDropVisuals(scene);
 
     // Sync rp camera from NOA camera every tick (critical)
@@ -1997,19 +2056,18 @@ let lastTickMs = performance.now();
 
   updateViewmodel(dtSec);
 
-  // Update remote meshes every tick (cheap; few boxes)
+  // Remote meshes every tick
   updateRemoteMeshes();
 
-  // Drop bob/spin
+  // Drop visuals + pickup
   updateDropVisuals(dtSec);
-
-  // Auto pickup
   tryAutoPickup();
 
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
+    const yaw =
+      typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
