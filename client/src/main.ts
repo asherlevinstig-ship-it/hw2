@@ -14,9 +14,18 @@
  * ✅ 16x16 TEXTURE ATLAS (vertical strip) for blocks (grass top/side/bottom etc)
  *
  * Option A (new):
- * ✅ Server-authoritative mining (hold-to-mine): client does NOT remove blocks locally
+ * ✅ Server-authoritative mining (hold/click-to-mine): client does NOT remove blocks locally
  * ✅ Mining progress "cracks" (visual overlay wireframe cube, driven by server progress)
  * ✅ Tool-based mining speeds (server computes; client just displays progress)
+ *
+ * Improvements requested:
+ * ✅ Mining feels better:
+ *    - Holding down actions the arm continuously
+ *    - Click-to-mine continues (no reset) and keeps heartbeating server until done/cancel
+ * ✅ Minecraft-ish drops:
+ *    - Dropped items render as small atlas-textured voxel cubes (not flat color)
+ * ✅ Mining particles:
+ *    - Small chip particles emit from the mined block while mining (ramps up with progress)
  *
  * Atlas requirement (NOA):
  * - Atlas is a VERTICAL STRIP: width=16, height=16*N tiles stacked top->bottom.
@@ -36,12 +45,6 @@
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
- *
- * Mining QoL Fixes (2026-02-15):
- * ✅ Mining no longer resets when you stop clicking (server heartbeat kept alive)
- * ✅ Click-to-mine continues mining until done/cancelled
- * ✅ Holding LMB increases viewmodel mining swing intensity
- * ✅ Retargeting while holding LMB still works
  */
 
 import { Engine } from "noa-engine";
@@ -332,6 +335,9 @@ const ATLAS = {
   GOLD_ORE: 9,
   DIAMOND_ORE: 10,
 } as const;
+
+// Number of tiles in the vertical strip
+const ATLAS_TILE_COUNT = 11;
 
 /**
  * ✅ noa-engine v0.33+ API:
@@ -698,51 +704,6 @@ addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_
 addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
 
 /* ===============================
-   8.1 Mining progress (Option A)
-================================ */
-type MineProgressMsg = {
-  x: number;
-  y: number;
-  z: number;
-  progress: number; // 0..1
-  stage: number; // 0..9
-  done?: boolean;
-  reason?: string;
-};
-
-// Mining QoL state
-let miningActive = false; // mining continues until done/cancelled
-let miningMouseDown = false; // whether LMB is held (affects retarget + swing intensity)
-let miningTarget: { x: number; y: number; z: number } | null = null;
-let miningProgress: MineProgressMsg | null = null;
-
-// Server heartbeat timing (prevents progress reset / timeout)
-let lastMineSendAt = 0;
-const MINE_HEARTBEAT_MS = 120;
-
-// Viewmodel mining swing
-let mineSwingT = 0;
-
-function cancelMiningLocal(reason = "") {
-  miningActive = false;
-  miningMouseDown = false;
-  miningTarget = null;
-  miningProgress = null;
-  mineSwingT = 0;
-  if (room) room.send("cancelMine", { reason });
-}
-
-function setInvOpen(open: boolean) {
-  invOpen = open;
-  invRoot.style.display = invOpen ? "block" : "none";
-  craftStatus.textContent = invOpen ? "RMB a recipe to craft MAX." : "";
-  renderInventoryUI();
-
-  // cancel mining when opening UI
-  if (invOpen) cancelMiningLocal("inventory_open");
-}
-
-/* ===============================
    6.5 Overlay
 ================================ */
 function getClosestRemoteDistance(): number | null {
@@ -789,7 +750,7 @@ function updateOverlay(extraLine = "") {
     miningProgress && miningProgress.progress > 0
       ? `Mining: ${(miningProgress.progress * 100).toFixed(0)}% (stage ${miningProgress.stage})`
       : miningActive
-        ? `Mining: active (waiting progress...)`
+        ? `Mining: active (awaiting progress...)`
         : "Mining: -";
 
   overlay.innerHTML = `
@@ -804,7 +765,7 @@ function updateOverlay(extraLine = "") {
     <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
     <strong>${mineLine}</strong><br>
     -------------------------<br>
-    [Hold LMB] Mine  |  [R-Click] Place<br>
+    [Click/Hold LMB] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
     [WASD] Move  |  [Space] Jump<br>
     [I] Inventory<br>
@@ -1047,16 +1008,70 @@ function triggerPunch() {
   punchT = 0;
 }
 
-// Server heartbeat sender (prevents mine timeout / resets)
-function sendStartMineHeartbeat(x: number, y: number, z: number) {
+/* ===============================
+   8.1 Mining progress (Option A)
+================================ */
+type MineProgressMsg = {
+  x: number;
+  y: number;
+  z: number;
+  progress: number; // 0..1
+  stage: number; // 0..9
+  done?: boolean;
+  reason?: string;
+};
+
+// IMPORTANT: single declarations (avoid TS redeclare)
+let miningHeld = false; // physical hold state
+let miningTarget: { x: number; y: number; z: number } | null = null;
+let miningProgress: MineProgressMsg | null = null;
+
+// Click-to-continue mining (sticky)
+let miningActive = false;
+let miningStickyUntil = 0;
+const MINING_STICKY_MS = 1200; // after click release, keep mining active briefly (then auto-extends if progress arriving)
+
+let lastMineSentKey = "";
+let lastMineSendAt = 0;
+
+// Continuous arm action while mining
+let lastMinePunchAt = 0;
+const MINE_PUNCH_INTERVAL_MS = 180;
+
+function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
   const now = performance.now();
-  if (now - lastMineSendAt < MINE_HEARTBEAT_MS) return;
+  if (now - lastMineSendAt < 40) return; // tiny throttle
   lastMineSendAt = now;
+
+  const key = `${x},${y},${z}`;
+  if (key === lastMineSentKey) return;
+  lastMineSentKey = key;
+
   room.send("startMine", { x, y, z });
 }
 
-/* Click/hold-to-mine start */
+function cancelMiningLocal(reason = "") {
+  miningHeld = false;
+  miningActive = false;
+  miningStickyUntil = 0;
+  miningTarget = null;
+  miningProgress = null;
+  lastMineSentKey = "";
+  if (room) room.send("cancelMine", { reason });
+}
+
+function setInvOpen(open: boolean) {
+  invOpen = open;
+  invRoot.style.display = invOpen ? "block" : "none";
+  craftStatus.textContent = invOpen ? "RMB a recipe to craft MAX." : "";
+  renderInventoryUI();
+
+  // cancel mining when opening UI
+  if (invOpen) cancelMiningLocal("inventory_open");
+}
+
+/* Hold-to-mine start (press) */
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
@@ -1068,25 +1083,30 @@ noa.inputs.down.on("fire", () => {
 
   const { x, y, z } = target.pos;
 
+  miningHeld = true;
   miningActive = true;
-  miningMouseDown = true;
+  miningStickyUntil = performance.now() + MINING_STICKY_MS;
 
-  // starting/retargeting locally
   miningTarget = { x, y, z };
-  miningProgress = { x, y, z, progress: 0, stage: 0 };
+  // keep client visual state (server is authoritative for actual progress)
+  miningProgress = { x, y, z, progress: miningProgress?.progress ?? 0, stage: miningProgress?.stage ?? 0 };
 
-  // send immediate heartbeat
-  lastMineSendAt = 0;
-  sendStartMineHeartbeat(x, y, z);
+  lastMineSentKey = "";
+  sendStartMine(x, y, z);
 });
 
-/* Release: do NOT cancel mining; only reduce intensity + stop retarget */
+/* Release LMB: keep mining ACTIVE (click-to-continue) */
 window.addEventListener("mouseup", (e) => {
-  if (e.button !== 0) return;
-  miningMouseDown = false;
+  if (e.button !== 0) return; // left button only
+  if (!miningHeld) return;
+  miningHeld = false;
+
+  // do NOT cancel immediately — allow click-to-continue.
+  miningActive = true;
+  miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
 
-/* Place block (Option A: do NOT setBlockID locally) */
+/* Right-click places block (Option A: do NOT setBlockID locally) */
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
@@ -1217,8 +1237,75 @@ function updateCrackVisual(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   9.2 Drop visuals in NOA world scene
+   9.2 Drop visuals in NOA world scene (Minecraft-ish mini blocks)
 ================================ */
+
+// Cache per-tile materials per scene
+const dropAtlasMats = new Map<number, BABYLON.StandardMaterial>();
+let dropAtlasMatsSceneUid: string | number | null = null;
+
+function resetDropAtlasMatsIfSceneChanged(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  const suid = uid ?? null;
+  if (dropAtlasMatsSceneUid !== suid) {
+    for (const m of dropAtlasMats.values()) {
+      try { m.dispose(); } catch {}
+    }
+    dropAtlasMats.clear();
+    dropAtlasMatsSceneUid = suid;
+  }
+}
+
+function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
+  resetDropAtlasMatsIfSceneChanged(scene);
+
+  const key = (atlasIndex | 0) + (alpha ? 10000 : 0);
+  const existing = dropAtlasMats.get(key);
+  if (existing) return existing;
+
+  const mat = new BABYLON.StandardMaterial(`dropAtlasMat:${key}`, scene);
+  mat.disableLighting = true;
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.backFaceCulling = true;
+  (mat as any).fogEnabled = false;
+
+  const tex = new BABYLON.Texture(TERRAIN_ATLAS_URL, scene, false, false);
+  tex.hasAlpha = !!alpha;
+  tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+
+  // Pixel-art nearest sampling
+  tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+
+  // Vertical strip selection
+  tex.uScale = 1;
+  tex.vScale = 1 / ATLAS_TILE_COUNT;
+  tex.uOffset = 0;
+  tex.vOffset = (atlasIndex | 0) / ATLAS_TILE_COUNT;
+
+  mat.diffuseTexture = tex;
+  mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+
+  dropAtlasMats.set(key, mat);
+  return mat;
+}
+
+function itemIdToAtlasIndex(itemId: number): number {
+  if (itemId === Items.GRASS) return ATLAS.GRASS_SIDE;
+  if (itemId === Items.DIRT) return ATLAS.DIRT;
+  if (itemId === Items.STONE) return ATLAS.STONE;
+  if (itemId === Items.WOOD_LOG) return ATLAS.WOOD;
+  if (itemId === Items.LEAVES) return ATLAS.LEAVES;
+
+  if (itemId === Items.COAL) return ATLAS.COAL_ORE;
+  if (itemId === Items.RAW_IRON) return ATLAS.IRON_ORE;
+  if (itemId === Items.RAW_GOLD) return ATLAS.GOLD_ORE;
+  if (itemId === Items.DIAMOND) return ATLAS.DIAMOND_ORE;
+
+  return ATLAS.STONE;
+}
+
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
     try {
@@ -1240,30 +1327,17 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const d of drops.values()) {
     if (dropMeshes.has(d.dropId)) continue;
 
-    const box = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.28 }, scene);
+    const box = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.32 }, scene);
     box.isPickable = false;
     (box as any).isInFrustum = () => true;
 
-    const mat = new BABYLON.StandardMaterial(`dropMat:${d.dropId}`, scene);
-    mat.disableLighting = true;
+    const tile = itemIdToAtlasIndex(d.itemId);
+    const alpha = d.itemId === Items.LEAVES;
+    box.material = getDropAtlasMaterial(scene, tile, alpha);
 
-    const c = (() => {
-      if (d.itemId === Items.DIAMOND) return new BABYLON.Color3(0.2, 0.9, 0.9);
-      if (d.itemId === Items.RAW_GOLD) return new BABYLON.Color3(0.9, 0.8, 0.2);
-      if (d.itemId === Items.RAW_IRON) return new BABYLON.Color3(0.75, 0.55, 0.35);
-      if (d.itemId === Items.COAL) return new BABYLON.Color3(0.2, 0.2, 0.2);
-      if (d.itemId === Items.WOOD_LOG) return new BABYLON.Color3(0.45, 0.28, 0.12);
-      if (d.itemId === Items.STONE) return new BABYLON.Color3(0.6, 0.6, 0.6);
-      return new BABYLON.Color3(0.85, 0.85, 0.85);
-    })();
-
-    mat.emissiveColor = c;
-    mat.diffuseColor = c.clone();
-    mat.specularColor = new BABYLON.Color3(0, 0, 0);
-    mat.backFaceCulling = false;
-    (mat as any).fogEnabled = false;
-
-    box.material = mat;
+    // make it feel like Minecraft item entity (bob + spin later)
+    box.rotation.x = 0.25;
+    box.rotation.y = Math.random() * Math.PI * 2;
 
     box.position.set(d.x, d.y, d.z);
     dropMeshes.set(d.dropId, box);
@@ -1289,7 +1363,7 @@ function updateDropVisuals(dtSec: number) {
     m.position.x = d.x;
     m.position.y = d.y + 0.15 + bob;
     m.position.z = d.z;
-    m.rotation.y += dtSec * 1.4;
+    m.rotation.y += dtSec * 1.1;
   }
 }
 
@@ -1331,6 +1405,105 @@ function tryAutoPickup() {
     pickupSentRecently.set(bestId, now);
     room.send("pickupDrop", { dropId: bestId });
   }
+}
+
+/* ===============================
+   9.3 Mining particles (client visual)
+================================ */
+let minePS: BABYLON.ParticleSystem | null = null;
+let minePSTex: BABYLON.Texture | null = null;
+let minePSSceneUid: string | number | null = null;
+
+function ensureMiningParticles(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  const suid = uid ?? null;
+
+  // rebuild if scene changed
+  if (minePSSceneUid !== suid) {
+    try { minePS?.dispose(); } catch {}
+    try { minePSTex?.dispose(); } catch {}
+    minePS = null;
+    minePSTex = null;
+    minePSSceneUid = suid;
+  }
+
+  if (minePS) return;
+
+  // DynamicTexture dot (no external asset)
+  const dt = new BABYLON.DynamicTexture("mineParticleTex", { width: 32, height: 32 }, scene, false);
+  const ctx = dt.getContext();
+  ctx.clearRect(0, 0, 32, 32);
+  ctx.fillStyle = "rgba(255,255,255,1)";
+  ctx.beginPath();
+  ctx.arc(16, 16, 6, 0, Math.PI * 2);
+  ctx.fill();
+  dt.update();
+
+  minePSTex = dt;
+
+  const ps = new BABYLON.ParticleSystem("minePS", 250, scene);
+  ps.particleTexture = minePSTex;
+
+  ps.minSize = 0.02;
+  ps.maxSize = 0.06;
+
+  ps.minLifeTime = 0.10;
+  ps.maxLifeTime = 0.22;
+
+  ps.emitRate = 0;
+
+  ps.minEmitPower = 0.6;
+  ps.maxEmitPower = 1.2;
+  ps.updateSpeed = 0.015;
+
+  ps.gravity = new BABYLON.Vector3(0, -2.2, 0);
+  ps.direction1 = new BABYLON.Vector3(-1, 0.5, -1);
+  ps.direction2 = new BABYLON.Vector3(1, 1.2, 1);
+
+  ps.createBoxEmitter(
+    new BABYLON.Vector3(-0.35, -0.35, -0.35),
+    new BABYLON.Vector3(0.35, 0.35, 0.35),
+    new BABYLON.Vector3(-0.2, 0.2, -0.2),
+    new BABYLON.Vector3(0.2, 0.6, 0.2)
+  );
+
+  ps.color1 = new BABYLON.Color4(1, 1, 1, 1);
+  ps.color2 = new BABYLON.Color4(1, 1, 1, 1);
+  ps.colorDead = new BABYLON.Color4(1, 1, 1, 0);
+
+  ps.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+
+  minePS = ps;
+  minePS.start();
+}
+
+function stopMiningParticles() {
+  if (!minePS) return;
+  minePS.emitRate = 0;
+}
+
+function updateMiningParticles(scene: BABYLON.Scene) {
+  ensureMiningParticles(scene);
+
+  if (!minePS) return;
+
+  if (!miningProgress || !miningActive) {
+    stopMiningParticles();
+    return;
+  }
+
+  const active = miningHeld || (miningProgress.progress >= 0 && miningProgress.progress < 1);
+  if (!active) {
+    stopMiningParticles();
+    return;
+  }
+
+  const { x, y, z, progress } = miningProgress;
+  minePS.emitter = new BABYLON.Vector3(x + 0.5, y + 0.5, z + 0.5);
+
+  const base = miningHeld ? 110 : 70;
+  const ramp = progress * 170;
+  minePS.emitRate = Math.max(0, Math.floor(base + ramp + Math.sin(performance.now() / 55) * 10));
 }
 
 /* ===============================
@@ -1571,16 +1744,18 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
+  // Arm action: punch anim.
+  // - If actively mining, we "re-trigger" punches periodically to look like continuous swing.
+  const now = performance.now();
+  if (miningActive && hasPointerLock() && !invOpen) {
+    if (now - lastMinePunchAt > MINE_PUNCH_INTERVAL_MS) {
+      lastMinePunchAt = now;
+      triggerPunch();
+    }
+  }
+
   punchT = Math.min(1, punchT + dtSec * 10.0);
   const punch01 = Math.sin(punchT * Math.PI);
-
-  // Mining swing: continuous while miningActive, stronger while holding LMB
-  const miningSwingStrength = miningActive ? (miningMouseDown ? 1.0 : 0.35) : 0.0;
-  if (miningActive) mineSwingT += dtSec * (miningMouseDown ? 14.0 : 7.0);
-  else mineSwingT = 0;
-
-  const mineSwing = Math.sin(mineSwingT) * 0.55 * miningSwingStrength;
-  const mineSwing2 = Math.sin(mineSwingT * 2.0) * 0.18 * miningSwingStrength;
 
   const r = (vmCam.orthoRight ?? 1) as number;
 
@@ -1608,9 +1783,9 @@ function updateViewmodel(dtSec: number) {
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
   vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35 + mineSwing * 0.35;
-  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY + mineSwing2 * 0.12;
-  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ - mineSwing * 0.25;
+    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
+  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
 
 /* ===============================
@@ -2002,7 +2177,7 @@ async function connect() {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
 
-        // if the block we were mining changed, clear cracks + stop mining
+        // if the block we were mining changed, clear cracks
         if (
           miningProgress &&
           msg.x === miningProgress.x &&
@@ -2036,20 +2211,24 @@ async function connect() {
         reason: typeof (m as any).reason === "string" ? (m as any).reason : undefined,
       };
 
+      // Extend sticky mining if progress is arriving (so it never "resets" unless you cancel/retarget/out-of-range)
+      miningActive = true;
+      miningStickyUntil = performance.now() + MINING_STICKY_MS;
+
       if ((m as any).done) {
+        miningHeld = false;
         miningActive = false;
-        miningMouseDown = false;
         miningTarget = null;
-        mineSwingT = 0;
+        lastMineSentKey = "";
       }
     });
 
     room.onMessage("mineCancelled", (_m: any) => {
       miningProgress = null;
+      miningHeld = false;
       miningActive = false;
-      miningMouseDown = false;
       miningTarget = null;
-      mineSwingT = 0;
+      lastMineSentKey = "";
     });
 
     // Inventory state from server
@@ -2279,6 +2458,9 @@ let lastTickMs = performance.now();
 
     // crack overlay updates
     updateCrackVisual(scene);
+
+    // mining particles
+    updateMiningParticles(scene);
   }
 
   updateViewmodel(dtSec);
@@ -2290,27 +2472,55 @@ let lastTickMs = performance.now();
   updateDropVisuals(dtSec);
   tryAutoPickup();
 
-  // Mining QoL:
-  // - mining continues even if you release LMB (click-to-mine)
-  // - while holding LMB, you may retarget by moving crosshair
-  // - server heartbeat is sent continuously to prevent timeout resets
+  // Mining: sticky mining + hold retarget
   if (miningActive && hasPointerLock() && !invOpen) {
-    // retarget only while holding (feels natural)
-    if (miningMouseDown) {
-      const t = getTargetInfo();
-      if (t?.pos) {
-        const { x, y, z } = t.pos;
+    const t = getTargetInfo();
+
+    // If no target, stop after sticky time
+    if (!t?.pos) {
+      if (!miningHeld && performance.now() > miningStickyUntil) {
+        cancelMiningLocal("no_target");
+      }
+    } else {
+      const { x, y, z } = t.pos;
+
+      // If holding: allow retarget by looking at new block
+      if (miningHeld) {
         if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
           miningTarget = { x, y, z };
           miningProgress = { x, y, z, progress: 0, stage: 0 };
-          lastMineSendAt = 0; // immediate heartbeat for new target
+          lastMineSentKey = "";
+          sendStartMine(x, y, z);
+        } else {
+          // keep-alive / resync occasionally
+          if (tickCount % 20 === 0) sendStartMine(x, y, z);
+        }
+      } else {
+        // Not holding: click-to-continue mining keeps heartbeating same target until done/cancel/timeout
+        if (!miningTarget) {
+          miningTarget = { x, y, z };
+          miningProgress = { x, y, z, progress: 0, stage: 0 };
+          lastMineSentKey = "";
+          sendStartMine(x, y, z);
+        } else {
+          // Keep mining the existing target (don't retarget unless player clicks/holds again)
+          if (tickCount % 6 === 0) sendStartMine(miningTarget.x, miningTarget.y, miningTarget.z);
+
+          // stop if sticky window expires and we aren't receiving progress (e.g., server cancelled/out-of-range)
+          if (performance.now() > miningStickyUntil && !miningHeld) {
+            // If progress exists and not done, extend a little longer; else cancel.
+            if (miningProgress && miningProgress.progress < 1) {
+              miningStickyUntil = performance.now() + MINING_STICKY_MS;
+            } else {
+              cancelMiningLocal("sticky_expired");
+            }
+          }
         }
       }
     }
-
-    if (miningTarget) {
-      sendStartMineHeartbeat(miningTarget.x, miningTarget.y, miningTarget.z);
-    }
+  } else {
+    // if pointer lock lost or inventory opened, cancel mining cleanly
+    if (miningActive) cancelMiningLocal(invOpen ? "inventory_open" : "no_pointer_lock");
   }
 
   // Send movement (throttled)
