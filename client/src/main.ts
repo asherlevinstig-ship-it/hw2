@@ -534,8 +534,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   const engine = noaScene.getEngine();
 
   vmScene = new BABYLON.Scene(engine);
-
-  // ✅ Match NOA handedness (even if it ends up LH, keep consistent)
   vmScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
   console.log("[VM] ensureVmScene", { useRightHandedSystem: vmScene.useRightHandedSystem });
@@ -793,14 +791,16 @@ let rpCam: BABYLON.FreeCamera | null = null;
 const remoteMeshes = new Map<string, BABYLON.TransformNode>();
 const remoteMats = new Map<string, BABYLON.StandardMaterial>();
 
+// ✅ Floating-origin render offset (NOA keeps Babylon cam near origin)
+let rpRenderOffset = new BABYLON.Vector3(0, 0, 0);
+let lastRpOffsetLogAt = 0;
+
 function ensureRpScene(noaScene: BABYLON.Scene) {
   if (rpReady && rpScene && rpCam) return;
 
   const engine = noaScene.getEngine();
 
   rpScene = new BABYLON.Scene(engine);
-
-  // ✅ Match NOA handedness (even if it ends up LH, keep consistent)
   rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
   console.log("[RP] ensureRpScene", { useRightHandedSystem: rpScene.useRightHandedSystem });
@@ -882,8 +882,6 @@ function removeRemoteMesh(id: string) {
   }
 }
 
-let lastRpCamLogAt = 0;
-
 function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (!rpReady || !rpScene || !rpCam) return;
 
@@ -901,21 +899,18 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
-  // ✅ ABSOLUTE camera sync using world matrix (fixes y=-5 etc.)
+  // ✅ ABSOLUTE camera sync (but NOA may be floating-origin)
   const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
   if (wm) {
-    // Position from world matrix
     const absPos = new BABYLON.Vector3();
     wm.decompose(undefined, undefined, absPos);
     rpCam.position.copyFrom(absPos);
 
-    // Rotation from world matrix
     const rotMat = wm.getRotationMatrix();
     const absRotQ = BABYLON.Quaternion.FromRotationMatrix(rotMat);
     if (!rpCam.rotationQuaternion) rpCam.rotationQuaternion = new BABYLON.Quaternion();
     rpCam.rotationQuaternion.copyFrom(absRotQ);
   } else {
-    // fallback: absolute position APIs
     if (typeof worldCam.getAbsolutePosition === "function") {
       rpCam.position.copyFrom(worldCam.getAbsolutePosition());
     } else if (worldCam.globalPosition instanceof BABYLON.Vector3) {
@@ -924,12 +919,17 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
       rpCam.position.copyFrom(worldCam.position);
     }
 
-    // fallback rotation
     if (worldCam.rotationQuaternion && rpCam.rotationQuaternion) {
       rpCam.rotationQuaternion.copyFrom(worldCam.rotationQuaternion);
     } else if (worldCam.rotation instanceof BABYLON.Vector3) {
       rpCam.rotation.copyFrom(worldCam.rotation);
     }
+  }
+
+  // ✅ Compute render offset: how NOA shifts render space relative to voxel/world coords
+  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  if (p) {
+    rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
   }
 
   // X-ray depth behavior
@@ -951,8 +951,8 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
 
   // ✅ Console debug log (throttled)
   const now = performance.now();
-  if (now - lastRpCamLogAt > 1500) {
-    lastRpCamLogAt = now;
+  if (now - lastRpOffsetLogAt > 1500) {
+    lastRpOffsetLogAt = now;
 
     const lp = worldCam.position instanceof BABYLON.Vector3 ? worldCam.position : null;
     const ap =
@@ -962,14 +962,14 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
           ? worldCam.globalPosition
           : null;
 
-    const rp = rpCam.position;
-
-    console.log("[RP] cam sync (ABS)", {
+    console.log("[RP] cam+offset", {
       handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
       xray: remoteXray,
       worldLocalPos: lp ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) } : null,
       worldAbsPos: ap ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) } : null,
-      rpCamPos: { x: +rp.x.toFixed(2), y: +rp.y.toFixed(2), z: +rp.z.toFixed(2) },
+      rpCamPos: { x: +rpCam.position.x.toFixed(2), y: +rpCam.position.y.toFixed(2), z: +rpCam.position.z.toFixed(2) },
+      playerPos: p ? { x: +p[0].toFixed(2), y: +p[1].toFixed(2), z: +p[2].toFixed(2) } : null,
+      rpRenderOffset: { x: +rpRenderOffset.x.toFixed(2), y: +rpRenderOffset.y.toFixed(2), z: +rpRenderOffset.z.toFixed(2) },
       hasWorldMatrix: typeof worldCam.getWorldMatrix === "function",
     });
   }
@@ -991,7 +991,8 @@ function updateRemoteMeshes() {
     const root = ensureRemoteMesh(id);
     if (!root) continue;
 
-    root.position.set(t.x, t.y, t.z);
+    // ✅ Convert voxel/world coords -> NOA render coords using offset
+    root.position.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y, t.z + rpRenderOffset.z);
 
     // simple yaw rotation around Y
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
