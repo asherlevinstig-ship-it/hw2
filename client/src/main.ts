@@ -535,12 +535,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   vmScene = new BABYLON.Scene(engine);
 
-  // ✅ CRITICAL: match NOA scene handedness (fixes "remotes not visible" in split scenes)
+  // ✅ Match NOA handedness (even if it ends up LH, keep consistent)
   vmScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
-  console.log("[VM] ensureVmScene", {
-    useRightHandedSystem: vmScene.useRightHandedSystem,
-  });
+  console.log("[VM] ensureVmScene", { useRightHandedSystem: vmScene.useRightHandedSystem });
 
   // Do NOT clear color (keep world). Clear depth so viewmodel draws on top.
   vmScene.autoClear = false;
@@ -802,12 +800,10 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   rpScene = new BABYLON.Scene(engine);
 
-  // ✅ CRITICAL: match NOA scene handedness (fixes "remotes not visible" in split scenes)
+  // ✅ Match NOA handedness (even if it ends up LH, keep consistent)
   rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
-  console.log("[RP] ensureRpScene", {
-    useRightHandedSystem: rpScene.useRightHandedSystem,
-  });
+  console.log("[RP] ensureRpScene", { useRightHandedSystem: rpScene.useRightHandedSystem });
 
   // DO NOT clear color (keep world).
   // Depth/stencil behavior:
@@ -891,39 +887,49 @@ let lastRpCamLogAt = 0;
 function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (!rpReady || !rpScene || !rpCam) return;
 
-  const worldCam = worldScene.activeCamera;
+  const worldCam = worldScene.activeCamera as any;
   if (!worldCam) return;
 
   // Copy viewport & camera params
-  rpCam.viewport = worldCam.viewport.clone();
+  rpCam.viewport = worldCam.viewport?.clone?.() ?? rpCam.viewport;
 
-  // Copy FOV/aspect-ish (FreeCamera will use engine aspect automatically)
-  if (typeof (worldCam as any).fov === "number") (rpCam as any).fov = (worldCam as any).fov;
-
-  // Copy fovMode too (some cams use vertical/horizontal fov mode)
-  if (typeof (worldCam as any).fovMode === "number") (rpCam as any).fovMode = (worldCam as any).fovMode;
+  // Copy FOV + mode if present
+  if (typeof worldCam.fov === "number") (rpCam as any).fov = worldCam.fov;
+  if (typeof worldCam.fovMode === "number") (rpCam as any).fovMode = worldCam.fovMode;
 
   // Copy clipping
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
-  // Position: use global position if available
-  const gp = (worldCam as any).globalPosition as BABYLON.Vector3 | undefined;
-  if (gp instanceof BABYLON.Vector3) {
-    rpCam.position.copyFrom(gp);
-  } else {
-    const wp = (worldCam as any).position as BABYLON.Vector3 | undefined;
-    if (wp instanceof BABYLON.Vector3) rpCam.position.copyFrom(wp);
-  }
+  // ✅ ABSOLUTE camera sync using world matrix (fixes y=-5 etc.)
+  const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
+  if (wm) {
+    // Position from world matrix
+    const absPos = new BABYLON.Vector3();
+    wm.decompose(undefined, undefined, absPos);
+    rpCam.position.copyFrom(absPos);
 
-  // Rotation: prefer quaternion
-  const rq = (worldCam as any).rotationQuaternion as BABYLON.Quaternion | null | undefined;
-  if (rq && rpCam.rotationQuaternion) {
-    rpCam.rotationQuaternion.copyFrom(rq);
+    // Rotation from world matrix
+    const rotMat = wm.getRotationMatrix();
+    const absRotQ = BABYLON.Quaternion.FromRotationMatrix(rotMat);
+    if (!rpCam.rotationQuaternion) rpCam.rotationQuaternion = new BABYLON.Quaternion();
+    rpCam.rotationQuaternion.copyFrom(absRotQ);
   } else {
-    // fallback: Euler
-    const rot = (worldCam as any).rotation as BABYLON.Vector3 | undefined;
-    if (rot) rpCam.rotation.copyFrom(rot);
+    // fallback: absolute position APIs
+    if (typeof worldCam.getAbsolutePosition === "function") {
+      rpCam.position.copyFrom(worldCam.getAbsolutePosition());
+    } else if (worldCam.globalPosition instanceof BABYLON.Vector3) {
+      rpCam.position.copyFrom(worldCam.globalPosition);
+    } else if (worldCam.position instanceof BABYLON.Vector3) {
+      rpCam.position.copyFrom(worldCam.position);
+    }
+
+    // fallback rotation
+    if (worldCam.rotationQuaternion && rpCam.rotationQuaternion) {
+      rpCam.rotationQuaternion.copyFrom(worldCam.rotationQuaternion);
+    } else if (worldCam.rotation instanceof BABYLON.Vector3) {
+      rpCam.rotation.copyFrom(worldCam.rotation);
+    }
   }
 
   // X-ray depth behavior
@@ -948,12 +954,23 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (now - lastRpCamLogAt > 1500) {
     lastRpCamLogAt = now;
 
-    const p = rpCam.position;
-    console.log("[RP] cam sync", {
+    const lp = worldCam.position instanceof BABYLON.Vector3 ? worldCam.position : null;
+    const ap =
+      typeof worldCam.getAbsolutePosition === "function"
+        ? worldCam.getAbsolutePosition()
+        : worldCam.globalPosition instanceof BABYLON.Vector3
+          ? worldCam.globalPosition
+          : null;
+
+    const rp = rpCam.position;
+
+    console.log("[RP] cam sync (ABS)", {
       handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
       xray: remoteXray,
-      camPos: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
-      hasWorldQuat: !!rq,
+      worldLocalPos: lp ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) } : null,
+      worldAbsPos: ap ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) } : null,
+      rpCamPos: { x: +rp.x.toFixed(2), y: +rp.y.toFixed(2), z: +rp.z.toFixed(2) },
+      hasWorldMatrix: typeof worldCam.getWorldMatrix === "function",
     });
   }
 }
