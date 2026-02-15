@@ -94,9 +94,7 @@ function requestPointerLock() {
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
-      scene?.getEngine?.()?.getRenderingCanvas?.() ??
-      (noa as any).container ??
-      appEl;
+      scene?.getEngine?.()?.getRenderingCanvas?.() ?? (noa as any).container ?? appEl;
 
     if (canvas?.requestPointerLock) canvas.requestPointerLock();
   } catch {
@@ -207,8 +205,12 @@ function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
   const currentBlock = hotbar[selectedSlot];
 
-  const snapAge = lastSnapshotAt ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s` : "n/a";
-  const xformAge = lastTransformAt ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s` : "n/a";
+  const snapAge = lastSnapshotAt
+    ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s`
+    : "n/a";
+  const xformAge = lastTransformAt
+    ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s`
+    : "n/a";
   const snapPreview = lastSnapshotIds.slice(0, 6).join(", ");
 
   const closest = getClosestRemoteDistance();
@@ -304,7 +306,12 @@ window.addEventListener(
       e.key === "ArrowDown";
 
     const isRotKey =
-      e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
+      e.key === "7" ||
+      e.key === "8" ||
+      e.key === "9" ||
+      e.key === "0" ||
+      e.key === "-" ||
+      e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -330,9 +337,9 @@ window.addEventListener(
     if (e.key === "=") vmRotZ += rStep;
 
     updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
         2
-      )},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
+      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -344,7 +351,10 @@ window.addEventListener(
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
+const queuedRequests = new Map<
+  string,
+  { id: string; chunkSize: number; x: number; y: number; z: number }
+>();
 const worldAny = noa.world as any;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -490,10 +500,7 @@ function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
   if (!r) return null;
   const s =
-    (typeof r.getScene === "function" ? r.getScene() : null) ??
-    r._scene ??
-    r.scene ??
-    null;
+    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
   return (s as BABYLON.Scene) ?? null;
 }
 
@@ -582,9 +589,21 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
-  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
-  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
+  const upper = BABYLON.MeshBuilder.CreateBox(
+    "vmUpperArm",
+    { width: 0.16, height: 0.44, depth: 0.16 },
+    vmScene
+  );
+  const fore = BABYLON.MeshBuilder.CreateBox(
+    "vmForeArm",
+    { width: 0.16, height: 0.38, depth: 0.16 },
+    vmScene
+  );
+  const hand = BABYLON.MeshBuilder.CreateBox(
+    "vmHand",
+    { width: 0.17, height: 0.18, depth: 0.17 },
+    vmScene
+  );
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
@@ -627,7 +646,11 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes.parent = vmRoot;
 
       const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
+        const l = BABYLON.MeshBuilder.CreateLines(
+          name,
+          { points: [BABYLON.Vector3.Zero(), to] },
+          vmScene!
+        );
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -701,7 +724,7 @@ function readNoaPitch(): number {
   const p3 = camAny?.rotX;
   const p4 = camAny?.rotation?.[0];
   const v =
-    (typeof p1 === "number" && Number.isFinite(p1)
+    typeof p1 === "number" && Number.isFinite(p1)
       ? p1
       : typeof p2 === "number" && Number.isFinite(p2)
         ? p2
@@ -709,7 +732,7 @@ function readNoaPitch(): number {
           ? p3
           : typeof p4 === "number" && Number.isFinite(p4)
             ? p4
-            : 0);
+            : 0;
   return v;
 }
 
@@ -795,6 +818,14 @@ const remoteMats = new Map<string, BABYLON.StandardMaterial>();
 let rpRenderOffset = new BABYLON.Vector3(0, 0, 0);
 let lastRpOffsetLogAt = 0;
 
+// ✅ Visual adjustment so remote "feet" sit on ground even if server y is camera/capsule based
+const REMOTE_Y_VISUAL_OFFSET = -1.65;
+
+// ✅ Per-remote movement tracking (for smoothing + walk animation)
+const remotePrevPos = new Map<string, BABYLON.Vector3>();
+const remotePrevAt = new Map<string, number>();
+const remoteTargetPos = new Map<string, BABYLON.Vector3>();
+
 function ensureRpScene(noaScene: BABYLON.Scene) {
   if (rpReady && rpScene && rpCam) return;
 
@@ -841,27 +872,117 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
-  // Simple “player” made from boxes (body + head)
+  // Root pivot at FEET (so y=0 means standing on ground)
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
 
-  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: 0.7, height: 1.2, depth: 0.35 }, rpScene);
-  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: 0.55, height: 0.55, depth: 0.55 }, rpScene);
+  // Minecraft-ish proportions
+  const BODY_W = 0.65;
+  const BODY_H = 0.95;
+  const BODY_D = 0.32;
 
-  body.parent = root;
-  head.parent = root;
+  const HEAD = 0.55;
 
-  body.position.set(0, 0.6, 0);
-  head.position.set(0, 1.55, 0);
+  const ARM_W = 0.20;
+  const ARM_H = 0.85;
+  const ARM_D = 0.20;
 
+  const LEG_W = 0.22;
+  const LEG_H = 0.90;
+  const LEG_D = 0.22;
+
+  // Vertical layout: feet at 0
+  const legTopY = LEG_H;
+  const bodyBottomY = legTopY;
+  const bodyCenterY = bodyBottomY + BODY_H * 0.5;
+  const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
+
+  // Materials
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
-  body.material = mat;
-  head.material = mat;
 
+  // Body
+  const body = BABYLON.MeshBuilder.CreateBox(
+    `remoteBody:${id}`,
+    { width: BODY_W, height: BODY_H, depth: BODY_D },
+    rpScene
+  );
+  body.parent = root;
+  body.position.set(0, bodyCenterY, 0);
+  body.material = mat;
   body.isPickable = false;
+
+  // Head
+  const head = BABYLON.MeshBuilder.CreateBox(
+    `remoteHead:${id}`,
+    { width: HEAD, height: HEAD, depth: HEAD },
+    rpScene
+  );
+  head.parent = root;
+  head.position.set(0, headCenterY, 0);
+  head.material = mat;
   head.isPickable = false;
 
+  // Arms (left/right)
+  const armL = BABYLON.MeshBuilder.CreateBox(
+    `remoteArmL:${id}`,
+    { width: ARM_W, height: ARM_H, depth: ARM_D },
+    rpScene
+  );
+  armL.parent = root;
+  armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
+  armL.material = mat;
+  armL.isPickable = false;
+
+  const armR = BABYLON.MeshBuilder.CreateBox(
+    `remoteArmR:${id}`,
+    { width: ARM_W, height: ARM_H, depth: ARM_D },
+    rpScene
+  );
+  armR.parent = root;
+  armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
+  armR.material = mat;
+  armR.isPickable = false;
+
+  // Legs (left/right)
+  const legL = BABYLON.MeshBuilder.CreateBox(
+    `remoteLegL:${id}`,
+    { width: LEG_W, height: LEG_H, depth: LEG_D },
+    rpScene
+  );
+  legL.parent = root;
+  legL.position.set(-0.16, LEG_H * 0.5, 0);
+  legL.material = mat;
+  legL.isPickable = false;
+
+  const legR = BABYLON.MeshBuilder.CreateBox(
+    `remoteLegR:${id}`,
+    { width: LEG_W, height: LEG_H, depth: LEG_D },
+    rpScene
+  );
+  legR.parent = root;
+  legR.position.set(0.16, LEG_H * 0.5, 0);
+  legR.material = mat;
+  legR.isPickable = false;
+
+  // Always renderable
+  (body as any).isInFrustum = () => true;
+  (head as any).isInFrustum = () => true;
+  (armL as any).isInFrustum = () => true;
+  (armR as any).isInFrustum = () => true;
+  (legL as any).isInFrustum = () => true;
+  (legR as any).isInFrustum = () => true;
+
+  // Store references for animation
+  (root as any).__parts = { armL, armR, legL, legR };
+  (root as any).__walkPhase = 0;
+
   remoteMeshes.set(id, root);
+
+  // Initialize tracking maps
+  remotePrevPos.set(id, new BABYLON.Vector3(0, 0, 0));
+  remotePrevAt.set(id, performance.now());
+  remoteTargetPos.set(id, new BABYLON.Vector3(0, 0, 0));
+
   return root;
 }
 
@@ -880,6 +1001,10 @@ function removeRemoteMesh(id: string) {
     } catch {}
     remoteMats.delete(id);
   }
+
+  remotePrevPos.delete(id);
+  remotePrevAt.delete(id);
+  remoteTargetPos.delete(id);
 }
 
 function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
@@ -899,7 +1024,7 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
-  // ✅ ABSOLUTE camera sync (but NOA may be floating-origin)
+  // ABSOLUTE camera sync
   const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
   if (wm) {
     const absPos = new BABYLON.Vector3();
@@ -926,7 +1051,7 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
-  // ✅ Compute render offset: how NOA shifts render space relative to voxel/world coords
+  // Compute render offset: NOA shifts render space relative to voxel/world coords
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
   if (p) {
     rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
@@ -935,21 +1060,19 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   // X-ray depth behavior
   if (remoteXray) {
     rpScene.autoClearDepthAndStencil = true;
-    // Force always visible
     for (const mat of remoteMats.values()) {
       mat.disableDepthWrite = true;
       mat.depthFunction = BABYLON.Constants.ALWAYS;
     }
   } else {
     rpScene.autoClearDepthAndStencil = false;
-    // Try normal depth test (occlusion may work depending on NOA depth buffer)
     for (const mat of remoteMats.values()) {
       mat.disableDepthWrite = false;
       mat.depthFunction = BABYLON.Constants.LESS;
     }
   }
 
-  // ✅ Console debug log (throttled)
+  // Console debug log (throttled)
   const now = performance.now();
   if (now - lastRpOffsetLogAt > 1500) {
     lastRpOffsetLogAt = now;
@@ -985,17 +1108,66 @@ function updateRemoteMeshes() {
     if (!netTransforms.has(id)) removeRemoteMesh(id);
   }
 
+  const now = performance.now();
+
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
 
     const root = ensureRemoteMesh(id);
     if (!root) continue;
 
-    // ✅ Convert voxel/world coords -> NOA render coords using offset
-    root.position.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y, t.z + rpRenderOffset.z);
+    // Target render-space position (floating-origin corrected) + visual feet adjustment
+    const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
+    target.set(
+      t.x + rpRenderOffset.x,
+      t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET,
+      t.z + rpRenderOffset.z
+    );
+    remoteTargetPos.set(id, target);
 
-    // simple yaw rotation around Y
+    // Smooth toward target to reduce jitter
+    const lerp = 0.35;
+    root.position.x += (target.x - root.position.x) * lerp;
+    root.position.y += (target.y - root.position.y) * lerp;
+    root.position.z += (target.z - root.position.z) * lerp;
+
+    // yaw rotation around Y (if you later need handedness fix, we can negate here)
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
+
+    // Movement-based walk animation
+    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prevAt = remotePrevAt.get(id) ?? now;
+    const dt = Math.max(0.001, (now - prevAt) / 1000);
+
+    const dx = root.position.x - prev.x;
+    const dz = root.position.z - prev.z;
+    const speed = Math.sqrt(dx * dx + dz * dz) / dt; // units per sec
+
+    prev.copyFrom(root.position);
+    remotePrevPos.set(id, prev);
+    remotePrevAt.set(id, now);
+
+    const parts = (root as any).__parts as
+      | { armL: BABYLON.Mesh; armR: BABYLON.Mesh; legL: BABYLON.Mesh; legR: BABYLON.Mesh }
+      | undefined;
+
+    if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
+      const moving = speed > 0.15;
+      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
+
+      let phase = (root as any).__walkPhase as number;
+      if (!Number.isFinite(phase)) phase = 0;
+
+      phase += moving ? phaseSpeed : 0.02; // tiny idle sway
+      (root as any).__walkPhase = phase;
+
+      const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
+
+      parts.legL.rotation.x = swing * 0.55;
+      parts.legR.rotation.x = -swing * 0.55;
+      parts.armL.rotation.x = -swing * 0.35;
+      parts.armR.rotation.x = swing * 0.35;
+    }
   }
 }
 
