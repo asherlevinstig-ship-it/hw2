@@ -31,6 +31,13 @@
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
+ *
+ * IMPORTANT CHANGE (Option A):
+ * ✅ SERVER-AUTHORITATIVE mine/place:
+ * - Client NO LONGER sets blocks locally on click
+ * - Client only sends mineBlock/placeBlock requests
+ * - World updates come ONLY from server "blockUpdate"
+ * - Optional: handles "actionRejected" feedback from server
  */
 
 import { Engine } from "noa-engine";
@@ -290,7 +297,7 @@ function hasPointerLock(): boolean {
    5. Register Blocks & Materials (16x16 VERTICAL STRIP ATLAS)
 ================================ */
 // Block IDs (MUST match server)
-const AIR_ID = 0;
+
 const GRASS_ID = 1;
 const DIRT_ID = 2;
 const STONE_ID = 3;
@@ -991,9 +998,18 @@ function triggerPunch() {
   punchT = 0;
 }
 
+/* ---- Action throttle (server-authoritative mode) ---- */
+let lastMineReqAt = 0;
+let lastPlaceReqAt = 0;
+const ACTION_COOLDOWN_MS = 90;
+
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
+
+  const now = performance.now();
+  if (now - lastMineReqAt < ACTION_COOLDOWN_MS) return;
+  lastMineReqAt = now;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1001,13 +1017,18 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
-  noa.world.setBlockID(AIR_ID, x, y, z);
+
+  // ✅ server-authoritative: do NOT setBlockID locally
   room?.send("mineBlock", { x, y, z });
 });
 
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
+
+  const now = performance.now();
+  if (now - lastPlaceReqAt < ACTION_COOLDOWN_MS) return;
+  lastPlaceReqAt = now;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1031,7 +1052,7 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  noa.world.setBlockID(blockToPlace, x, y, z);
+  // ✅ server-authoritative: do NOT setBlockID locally
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
 
@@ -1837,8 +1858,16 @@ async function connect() {
 
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
+        // ✅ server-authoritative world updates
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
       }
+    });
+
+    // Optional: server rejection feedback
+    room.onMessage("actionRejected", (m: any) => {
+      const t = typeof (m as any)?.type === "string" ? (m as any).type : "action";
+      const r = typeof (m as any)?.reason === "string" ? (m as any).reason : "rejected";
+      updateOverlay(`${t} rejected: ${r}`);
     });
 
     // Inventory state from server

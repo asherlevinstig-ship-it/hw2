@@ -1,7 +1,8 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Path B (server authoritative chunks) + multiplayer + persistence
+// Option A (client sends mine/place requests; server broadcasts authoritative blockUpdate)
+// + multiplayer + persistence
 //
 // ✅ FIXES "world resets on refresh":
 // - NOA requests chunks using chunk ORIGIN coords (multiples of chunkSize), e.g. x = -32
@@ -30,6 +31,18 @@
 // Also:
 // - autoDispose = false so room isn't destroyed when last client disconnects
 // - loud logs for saves/loads/requests
+//
+// IMPORTANT (Option A):
+// - Server is authoritative for world edits.
+// - Client does NOT set blocks locally; it only sends:
+//     mineBlock {x,y,z}
+//     placeBlock {x,y,z,id,fromSlot}
+// - Server validates and then broadcasts:
+//     blockUpdate {x,y,z,id}
+//
+// Optional rejection feedback:
+// - Server may send to the acting client:
+//     actionRejected { type, reason }
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -364,7 +377,10 @@ export class MyRoom extends Room {
       if (oldId === this.AIR_ID) return;
 
       // bedrock is unbreakable
-      if (oldId === this.BEDROCK_ID) return;
+      if (oldId === this.BEDROCK_ID) {
+        client.send("actionRejected", { type: "mine", reason: "bedrock_unbreakable" });
+        return;
+      }
 
       // Tool gating (starter version):
       // - Without wood pick: you can break, but stone/ores drop nothing
@@ -412,11 +428,17 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const blockId = toInt(clamp(maybe.id, 0, 255));
 
-      // cannot place into bedrock? placing bedrock is disallowed anyway
-      if (blockId === this.BEDROCK_ID) return;
+      // cannot place bedrock
+      if (blockId === this.BEDROCK_ID) {
+        client.send("actionRejected", { type: "place", reason: "cannot_place_bedrock" });
+        return;
+      }
 
       const oldId = this.getBlockAt(x, y, z);
-      if (oldId !== this.AIR_ID) return; // only place into air
+      if (oldId !== this.AIR_ID) {
+        client.send("actionRejected", { type: "place", reason: "target_not_air" });
+        return;
+      }
 
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
@@ -425,15 +447,27 @@ export class MyRoom extends Room {
 
       // require fromSlot to be a valid hotbar slot
       const fromSlot = isFiniteNumber(maybe.fromSlot) ? toInt(maybe.fromSlot) : -1;
-      if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) return;
+      if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) {
+        client.send("actionRejected", { type: "place", reason: "missing_fromSlot" });
+        return;
+      }
 
       const stack = inv.slots[fromSlot];
-      if (!stack || stack.id <= 0 || stack.count <= 0) return;
+      if (!stack || stack.id <= 0 || stack.count <= 0) {
+        client.send("actionRejected", { type: "place", reason: "empty_slot" });
+        return;
+      }
 
       // item must be placeable and match blockId
       const def = this.ItemDefs[stack.id];
-      if (!def || typeof def.placeBlockId !== "number") return;
-      if (def.placeBlockId !== blockId) return;
+      if (!def || typeof def.placeBlockId !== "number") {
+        client.send("actionRejected", { type: "place", reason: "item_not_placeable" });
+        return;
+      }
+      if (def.placeBlockId !== blockId) {
+        client.send("actionRejected", { type: "place", reason: "block_mismatch" });
+        return;
+      }
 
       console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, blockId, fromSlot, itemId: stack.id });
 
@@ -879,7 +913,7 @@ export class MyRoom extends Room {
     const a = this.hash3i(x, y, z);
     const b = this.hash3i(x + 17, y - 11, z + 23);
     const c = this.hash3i(x - 31, y + 7, z - 19);
-    return (a * 0.60 + b * 0.25 + c * 0.15);
+    return a * 0.6 + b * 0.25 + c * 0.15;
   }
 
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
@@ -1030,8 +1064,8 @@ export class MyRoom extends Room {
   // Inventory helpers
   // =========================
   private normalizeStack(s: ItemStack): ItemStack {
-    const id = toInt(clamp(Number(s?.id ?? 0), 0, 999999));
-    const count = toInt(clamp(Number(s?.count ?? 0), 0, 999999));
+    const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999));
+    const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999));
     return id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
   }
 
@@ -1177,9 +1211,6 @@ export class MyRoom extends Room {
       // if can't move, do nothing
       return;
     }
-
-    const maxS_cursor = cursor.id > 0 ? this.maxStackFor(cursor.id) : 64;
-    const maxS_slot = slot.id > 0 ? this.maxStackFor(slot.id) : 64;
 
     if (button === "L") {
       // LEFT CLICK:
