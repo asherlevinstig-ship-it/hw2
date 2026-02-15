@@ -31,6 +31,13 @@
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
+ *
+ * IMPORTANT FIX (TEXTURES):
+ * Some NOA builds do not reliably apply `{ texture, atlasIndex }` material defs,
+ * resulting in WHITE blocks even with no 404 errors.
+ *
+ * This version registers REAL Babylon materials and slices the vertical atlas
+ * via vScale/vOffset. It also defers material creation until the NOA scene exists.
  */
 
 import { Engine } from "noa-engine";
@@ -323,67 +330,174 @@ const ATLAS = {
   DIAMOND_ORE: 10,
 } as const;
 
-// noa-engine typings may not include atlas fields; runtime supports them.
-// This wrapper avoids TS errors while keeping runtime correct.
-function registerAtlasMaterial(
+/**
+ * MATERIAL FIX:
+ * We register Babylon materials that slice the vertical atlas.
+ * We also DEFER creation until the NOA Babylon scene exists.
+ *
+ * This avoids the common "all blocks white" issue when NOA's
+ * `{ texture, atlasIndex }` options aren't applied/bound in some builds.
+ */
+
+type PendingAtlasMat = {
+  name: string;
+  texture: string;
+  atlasIndex: number;
+  texHasAlpha?: boolean;
+};
+
+const pendingAtlasMats: PendingAtlasMat[] = [];
+const createdAtlasMats = new Set<string>();
+
+function getNoaScene(): BABYLON.Scene | null {
+  const r = (noa as any).rendering as any;
+  if (!r) return null;
+  const s =
+    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
+  return (s as BABYLON.Scene) ?? null;
+}
+
+let cachedScene: BABYLON.Scene | null = null;
+let cachedSceneUid: string | number | null = null;
+
+function getStableScene(): BABYLON.Scene | null {
+  const s = getNoaScene();
+  if (!s) return cachedScene;
+
+  const uid = (s as any).uid as string | number | undefined;
+  if (!cachedScene || cachedSceneUid !== uid) {
+    cachedScene = s;
+    cachedSceneUid = uid ?? null;
+  }
+  return cachedScene;
+}
+
+function registerAtlasMaterialBabylonDeferred(
   name: string,
   opts: { texture: string; atlasIndex: number; texHasAlpha?: boolean }
 ) {
-  noa.registry.registerMaterial(name, opts as any);
+  pendingAtlasMats.push({
+    name,
+    texture: opts.texture,
+    atlasIndex: opts.atlasIndex,
+    texHasAlpha: opts.texHasAlpha,
+  });
 }
 
-registerAtlasMaterial("grass_top", {
+function ensureAtlasMaterials(scene: BABYLON.Scene) {
+  // Create any pending materials once we have a scene
+  for (const m of pendingAtlasMats) {
+    if (createdAtlasMats.has(m.name)) continue;
+
+    // Create texture
+    const tex = new BABYLON.Texture(
+      m.texture,
+      scene,
+      false, // no mipmaps (safer for tiny pixel atlases)
+      false,
+      BABYLON.Texture.NEAREST_NEAREST
+    );
+
+    tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.hasAlpha = !!m.texHasAlpha;
+
+    // Once loaded, slice the vertical strip using vScale/vOffset
+    tex.onLoadObservable.add(() => {
+      const sz = tex.getSize();
+      const tileSize = Math.max(1, sz.width); // expected 16
+      const numTiles = Math.max(1, Math.floor(sz.height / tileSize));
+      const vScale = tileSize / Math.max(1, sz.height);
+
+      tex.uScale = 1;
+      tex.uOffset = 0;
+
+      tex.vScale = vScale;
+      // We assume tiles are stacked TOP->BOTTOM; Babylon vOffset is from TOP in UV space for most cases.
+      // This matches the common vertical-strip atlas indexing.
+      tex.vOffset = (m.atlasIndex % numTiles) * vScale;
+
+      // Reduce bleeding: clamp already set, and nearest sampling prevents interpolation artifacts.
+      tex.updateSamplingMode(BABYLON.Texture.NEAREST_NEAREST);
+    });
+
+    // Create Babylon material using NOA helper if available
+    const noaRendering: any = (noa as any).rendering;
+    const stdMat: any =
+      typeof noaRendering?.makeStandardMaterial === "function"
+        ? noaRendering.makeStandardMaterial(m.name)
+        : new BABYLON.StandardMaterial(m.name, scene);
+
+    stdMat.diffuseTexture = tex;
+
+    // For pixel-voxel look, we generally want unlit-ish; NOA will still apply its lighting.
+    // Keep lighting on, but you can uncomment disableLighting if you prefer fully flat.
+    // stdMat.disableLighting = true;
+
+    // Register the material into NOA registry as a Babylon material
+    // registerMaterial(name, color?, texture?, transparent?, babylonMaterial?)
+    (noa.registry as any).registerMaterial(m.name, null, null, !!m.texHasAlpha, stdMat);
+
+
+    createdAtlasMats.add(m.name);
+  }
+}
+
+/**
+ * Declare atlas materials (DEFERRED)
+ */
+registerAtlasMaterialBabylonDeferred("grass_top", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.GRASS_TOP,
 });
 
-registerAtlasMaterial("grass_side", {
+registerAtlasMaterialBabylonDeferred("grass_side", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.GRASS_SIDE,
 });
 
-registerAtlasMaterial("dirt", {
+registerAtlasMaterialBabylonDeferred("dirt", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.DIRT,
 });
 
-registerAtlasMaterial("stone", {
+registerAtlasMaterialBabylonDeferred("stone", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.STONE,
 });
 
-registerAtlasMaterial("wood", {
+registerAtlasMaterialBabylonDeferred("wood", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.WOOD,
 });
 
-registerAtlasMaterial("leaves", {
+registerAtlasMaterialBabylonDeferred("leaves", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.LEAVES,
   texHasAlpha: true,
 });
 
-registerAtlasMaterial("bedrock", {
+registerAtlasMaterialBabylonDeferred("bedrock", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.BEDROCK,
 });
 
-registerAtlasMaterial("coal_ore", {
+registerAtlasMaterialBabylonDeferred("coal_ore", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.COAL_ORE,
 });
 
-registerAtlasMaterial("iron_ore", {
+registerAtlasMaterialBabylonDeferred("iron_ore", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.IRON_ORE,
 });
 
-registerAtlasMaterial("gold_ore", {
+registerAtlasMaterialBabylonDeferred("gold_ore", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.GOLD_ORE,
 });
 
-registerAtlasMaterial("diamond_ore", {
+registerAtlasMaterialBabylonDeferred("diamond_ore", {
   texture: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.DIAMOND_ORE,
 });
@@ -544,7 +658,9 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.style.width = "64px";
   el.style.height = "64px";
   el.style.borderRadius = "8px";
-  el.style.border = isSelected ? "2px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.18)";
+  el.style.border = isSelected
+    ? "2px solid rgba(255,255,255,0.9)"
+    : "1px solid rgba(255,255,255,0.18)";
   el.style.background = "rgba(0,0,0,0.35)";
   el.style.display = "flex";
   el.style.flexDirection = "column";
@@ -580,7 +696,8 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
 function renderInventoryUI() {
   // Cursor
   renderSlot(cursorSlotEl, invState.cursor, false);
-  cursorNameEl.textContent = invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
+  cursorNameEl.textContent =
+    invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
 
   // Hotbar
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
@@ -1021,32 +1138,6 @@ noa.inputs.down.on("alt-fire", () => {
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
-
-/* ===============================
-   9. Babylon scene access (NOA scene)
-================================ */
-function getNoaScene(): BABYLON.Scene | null {
-  const r = (noa as any).rendering as any;
-  if (!r) return null;
-  const s =
-    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
-  return (s as BABYLON.Scene) ?? null;
-}
-
-let cachedScene: BABYLON.Scene | null = null;
-let cachedSceneUid: string | number | null = null;
-
-function getStableScene(): BABYLON.Scene | null {
-  const s = getNoaScene();
-  if (!s) return cachedScene;
-
-  const uid = (s as any).uid as string | number | undefined;
-  if (!cachedScene || cachedSceneUid !== uid) {
-    cachedScene = s;
-    cachedSceneUid = uid ?? null;
-  }
-  return cachedScene;
-}
 
 /* ===============================
    9.1 Drop visuals in NOA world scene
@@ -2032,7 +2123,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + rp sync + drops)
+   13. Tick loop (drive vm updates + networking + rp sync + drops + MATERIAL ENSURE)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -2046,6 +2137,9 @@ let lastTickMs = performance.now();
 
   const scene = getStableScene();
   if (scene) {
+    // IMPORTANT: ensure atlas materials are created once scene exists
+    ensureAtlasMaterials(scene);
+
     ensureVmScene(scene);
     ensureRpScene(scene);
     ensureDropVisuals(scene);
