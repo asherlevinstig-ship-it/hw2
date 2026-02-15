@@ -7,30 +7,27 @@
  * - Remote players rendered in a SECOND Babylon scene (rpScene) rendered AFTER NOA
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
- * Added in this version (Basic survival loop):
- * ✅ Server-authoritative inventory (hotbar + backpack), stack sizes
- * ✅ Inventory UI (drag/drop, swap, stack, split, right-click place 1 into slot)
- * ✅ Block drops: mining spawns a pickup drop entity (from server)
- * ✅ Pickup loop: client detects proximity -> requests pickupDrop
- * ✅ Crafting UI (simple recipe list): wood -> planks -> sticks -> wood pick
+ * Why rpScene?
+ * NOA’s world scene/camera/layerMask/renderGroups can be swapped/managed internally.
+ * Rendering remotes in our own scene *after* NOA guarantees they appear (like the arm).
  *
  * Controls:
  * - V toggles viewmodel overlay ON/OFF
  * - P toggles Remote Player overlay ON/OFF
  * - O toggles Remote "X-RAY" (always visible) ON/OFF
  *
- * Inventory controls:
- * - E toggles inventory UI
- * - Left click slot: pick up / place / swap / stack
- * - Right click slot:
- *   - if cursor empty: take half (ceil) from slot
- *   - if cursor holding: place 1 into slot (if compatible)
- * - Shift + Left click slot: quick move between hotbar/backpack (simple)
- *
  * Debug controls (viewmodel):
  * - B toggles VM debug visuals (axes + screen frame)
  * - N toggles VM tuning mode (enables hotkey nudging)
  * - M toggles VM mirror (fixes "wrong direction"/handedness)
+ *
+ * Inventory/Crafting:
+ * - E toggles Inventory (hotbar + backpack) ON/OFF
+ * - C toggles Crafting list ON/OFF
+ * - Left click slot: pick/place/swap/stack (server authoritative cursor)
+ * - Right click slot: split/take-half/place-one (server authoritative cursor)
+ * - Shift + Left click slot: quick move between hotbar/backpack
+ * - Click recipe: craft once; Shift+click: craft max
  *
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
@@ -47,6 +44,24 @@ import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 const ENDPOINT = import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
 const colyseus = new Client(ENDPOINT);
 let room: Room | null = null;
+
+// Stable userId for persistence (server uses this to load/save inventory)
+const LS_USER_ID_KEY = "noa_uid_v1";
+function getOrCreateUserId(): string {
+  try {
+    const existing = localStorage.getItem(LS_USER_ID_KEY);
+    if (existing && existing.length >= 6) return existing;
+
+    const rnd = () => Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
+    const id = `u_${rnd()}_${rnd()}`.replace(/[^a-zA-Z0-9_\-]/g, "");
+    localStorage.setItem(LS_USER_ID_KEY, id);
+    return id;
+  } catch {
+    // fallback (non-persistent)
+    return `u_${Date.now().toString(16)}`;
+  }
+}
+const userId = getOrCreateUserId();
 
 /* ===============================
    2. DOM & CSS Setup
@@ -87,127 +102,153 @@ overlay.style.zIndex = "100";
 document.body.appendChild(overlay);
 
 /* ===============================
-   3.1 Inventory UI Setup (DOM)
+   3.1 Inventory UI (E) + Craft UI (C)
 ================================ */
-const invRoot = document.createElement("div");
-invRoot.style.position = "fixed";
-invRoot.style.left = "0";
-invRoot.style.top = "0";
-invRoot.style.right = "0";
-invRoot.style.bottom = "0";
-invRoot.style.display = "none";
-invRoot.style.alignItems = "center";
-invRoot.style.justifyContent = "center";
-invRoot.style.background = "rgba(0,0,0,0.45)";
-invRoot.style.zIndex = "200";
-invRoot.style.pointerEvents = "auto";
-invRoot.style.userSelect = "none";
-document.body.appendChild(invRoot);
+const uiRoot = document.createElement("div");
+uiRoot.style.position = "fixed";
+uiRoot.style.left = "0";
+uiRoot.style.top = "0";
+uiRoot.style.right = "0";
+uiRoot.style.bottom = "0";
+uiRoot.style.display = "none";
+uiRoot.style.zIndex = "200";
+uiRoot.style.pointerEvents = "auto";
+uiRoot.style.userSelect = "none";
+uiRoot.style.fontFamily = "monospace";
+document.body.appendChild(uiRoot);
+
+const uiBackdrop = document.createElement("div");
+uiBackdrop.style.position = "absolute";
+uiBackdrop.style.left = "0";
+uiBackdrop.style.top = "0";
+uiBackdrop.style.right = "0";
+uiBackdrop.style.bottom = "0";
+uiBackdrop.style.background = "rgba(0,0,0,0.35)";
+uiBackdrop.style.pointerEvents = "auto";
+uiRoot.appendChild(uiBackdrop);
+
+const uiPanel = document.createElement("div");
+uiPanel.style.position = "absolute";
+uiPanel.style.left = "50%";
+uiPanel.style.top = "50%";
+uiPanel.style.transform = "translate(-50%, -50%)";
+uiPanel.style.width = "720px";
+uiPanel.style.maxWidth = "95vw";
+uiPanel.style.background = "rgba(10,10,10,0.92)";
+uiPanel.style.border = "1px solid rgba(255,255,255,0.18)";
+uiPanel.style.borderRadius = "10px";
+uiPanel.style.boxShadow = "0 12px 40px rgba(0,0,0,0.35)";
+uiPanel.style.padding = "14px";
+uiPanel.style.display = "grid";
+uiPanel.style.gridTemplateColumns = "1fr 1fr";
+uiPanel.style.gap = "12px";
+uiPanel.style.pointerEvents = "auto";
+uiRoot.appendChild(uiPanel);
 
 const invPanel = document.createElement("div");
-invPanel.style.width = "860px";
-invPanel.style.maxWidth = "95vw";
-invPanel.style.background = "rgba(15,15,15,0.92)";
-invPanel.style.border = "1px solid rgba(255,255,255,0.18)";
-invPanel.style.borderRadius = "10px";
-invPanel.style.boxShadow = "0 12px 35px rgba(0,0,0,0.55)";
-invPanel.style.padding = "14px";
-invPanel.style.fontFamily = "monospace";
-invPanel.style.color = "white";
-invPanel.style.pointerEvents = "auto";
-invRoot.appendChild(invPanel);
+invPanel.style.display = "flex";
+invPanel.style.flexDirection = "column";
+invPanel.style.gap = "10px";
+uiPanel.appendChild(invPanel);
 
-const invHeader = document.createElement("div");
-invHeader.style.display = "flex";
-invHeader.style.alignItems = "center";
-invHeader.style.justifyContent = "space-between";
-invHeader.style.marginBottom = "10px";
-invPanel.appendChild(invHeader);
+const craftPanel = document.createElement("div");
+craftPanel.style.display = "flex";
+craftPanel.style.flexDirection = "column";
+craftPanel.style.gap = "10px";
+uiPanel.appendChild(craftPanel);
 
 const invTitle = document.createElement("div");
-invTitle.textContent = "Inventory";
-invTitle.style.fontSize = "18px";
+invTitle.textContent = "Inventory (E to close)";
+invTitle.style.color = "white";
+invTitle.style.fontSize = "16px";
 invTitle.style.fontWeight = "700";
-invHeader.appendChild(invTitle);
+invPanel.appendChild(invTitle);
 
 const invHint = document.createElement("div");
-invHint.style.fontSize = "12px";
-invHint.style.opacity = "0.85";
 invHint.innerHTML =
-  "E: close &nbsp;|&nbsp; LMB: move/swap/stack &nbsp;|&nbsp; RMB: split/place-1 &nbsp;|&nbsp; Shift+LMB: quick-move";
-invHeader.appendChild(invHint);
+  `<span style="opacity:.9">L-click: pick/place/swap/stack | R-click: split/place-one | Shift+L: quick move</span>`;
+invHint.style.color = "white";
+invHint.style.fontSize = "12px";
+invHint.style.opacity = "0.95";
+invPanel.appendChild(invHint);
 
-const invBody = document.createElement("div");
-invBody.style.display = "grid";
-invBody.style.gridTemplateColumns = "1fr 320px";
-invBody.style.gap = "14px";
-invPanel.appendChild(invBody);
+const invGrid = document.createElement("div");
+invGrid.style.display = "grid";
+invGrid.style.gridTemplateColumns = "repeat(5, 1fr)";
+invGrid.style.gap = "8px";
+invGrid.style.padding = "8px";
+invGrid.style.borderRadius = "10px";
+invGrid.style.border = "1px solid rgba(255,255,255,0.15)";
+invGrid.style.background = "rgba(255,255,255,0.04)";
+invPanel.appendChild(invGrid);
 
-const invLeft = document.createElement("div");
-invLeft.style.display = "flex";
-invLeft.style.flexDirection = "column";
-invLeft.style.gap = "10px";
-invBody.appendChild(invLeft);
+const invCursorLine = document.createElement("div");
+invCursorLine.style.color = "white";
+invCursorLine.style.fontSize = "12px";
+invCursorLine.style.opacity = "0.95";
+invCursorLine.textContent = "Cursor: (empty)";
+invPanel.appendChild(invCursorLine);
 
-const invRight = document.createElement("div");
-invRight.style.display = "flex";
-invRight.style.flexDirection = "column";
-invRight.style.gap = "10px";
-invBody.appendChild(invRight);
+const craftTitle = document.createElement("div");
+craftTitle.textContent = "Crafting (C to close)";
+craftTitle.style.color = "white";
+craftTitle.style.fontSize = "16px";
+craftTitle.style.fontWeight = "700";
+craftPanel.appendChild(craftTitle);
 
-const hotbarLabel = document.createElement("div");
-hotbarLabel.textContent = "Hotbar (1–5)";
-hotbarLabel.style.fontWeight = "700";
-hotbarLabel.style.opacity = "0.9";
-invLeft.appendChild(hotbarLabel);
-
-const hotbarGrid = document.createElement("div");
-hotbarGrid.style.display = "grid";
-hotbarGrid.style.gridTemplateColumns = "repeat(5, 1fr)";
-hotbarGrid.style.gap = "8px";
-invLeft.appendChild(hotbarGrid);
-
-const backpackLabel = document.createElement("div");
-backpackLabel.textContent = "Backpack";
-backpackLabel.style.fontWeight = "700";
-backpackLabel.style.opacity = "0.9";
-invLeft.appendChild(backpackLabel);
-
-const backpackGrid = document.createElement("div");
-backpackGrid.style.display = "grid";
-backpackGrid.style.gridTemplateColumns = "repeat(5, 1fr)";
-backpackGrid.style.gap = "8px";
-invLeft.appendChild(backpackGrid);
-
-const craftLabel = document.createElement("div");
-craftLabel.textContent = "Crafting (shapeless)";
-craftLabel.style.fontWeight = "700";
-craftLabel.style.opacity = "0.9";
-invRight.appendChild(craftLabel);
+const craftHint = document.createElement("div");
+craftHint.innerHTML = `<span style="opacity:.9">Click recipe: craft once | Shift+click: craft max</span>`;
+craftHint.style.color = "white";
+craftHint.style.fontSize = "12px";
+craftHint.style.opacity = "0.95";
+craftPanel.appendChild(craftHint);
 
 const craftList = document.createElement("div");
 craftList.style.display = "flex";
 craftList.style.flexDirection = "column";
 craftList.style.gap = "8px";
-invRight.appendChild(craftList);
+craftList.style.padding = "8px";
+craftList.style.borderRadius = "10px";
+craftList.style.border = "1px solid rgba(255,255,255,0.15)";
+craftList.style.background = "rgba(255,255,255,0.04)";
+craftPanel.appendChild(craftList);
 
-const cursorBox = document.createElement("div");
-cursorBox.style.marginTop = "6px";
-cursorBox.style.padding = "10px";
-cursorBox.style.border = "1px solid rgba(255,255,255,0.18)";
-cursorBox.style.borderRadius = "8px";
-cursorBox.style.background = "rgba(0,0,0,0.25)";
-cursorBox.style.fontSize = "12px";
-cursorBox.style.opacity = "0.95";
-invRight.appendChild(cursorBox);
+const craftResultLine = document.createElement("div");
+craftResultLine.style.color = "white";
+craftResultLine.style.fontSize = "12px";
+craftResultLine.style.opacity = "0.95";
+craftResultLine.textContent = "";
+craftPanel.appendChild(craftResultLine);
 
-const invFooter = document.createElement("div");
-invFooter.style.marginTop = "12px";
-invFooter.style.fontSize = "12px";
-invFooter.style.opacity = "0.85";
-invFooter.innerHTML =
-  "Tip: When inventory is open, mining/placing is disabled. Close inventory to resume.";
-invPanel.appendChild(invFooter);
+let uiInventoryOpen = false;
+let uiCraftOpen = false;
+
+function showUIIfNeeded() {
+  const shouldShow = uiInventoryOpen || uiCraftOpen;
+  uiRoot.style.display = shouldShow ? "block" : "none";
+  invPanel.style.display = uiInventoryOpen ? "flex" : "none";
+  craftPanel.style.display = uiCraftOpen ? "flex" : "none";
+
+  if (shouldShow) {
+    try {
+      (document as any).exitPointerLock?.();
+    } catch {}
+  }
+}
+
+uiBackdrop.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  // clicking outside closes both
+  uiInventoryOpen = false;
+  uiCraftOpen = false;
+  showUIIfNeeded();
+});
+
+uiPanel.addEventListener("mousedown", (e) => {
+  // prevent backdrop close
+  e.stopPropagation();
+});
 
 /* ===============================
    4. NOA Engine Initialization
@@ -225,6 +266,9 @@ const noa = new Engine({
    4.1 Pointer Lock
 ================================ */
 function requestPointerLock() {
+  // do not lock pointer if UI is open
+  if (uiInventoryOpen || uiCraftOpen) return;
+
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
@@ -236,18 +280,10 @@ function requestPointerLock() {
   }
 }
 
-function exitPointerLock() {
-  try {
-    if (document.pointerLockElement) document.exitPointerLock();
-  } catch {}
-}
-
-appEl.addEventListener("click", () => {
-  if (!inventoryOpen) requestPointerLock();
-});
+appEl.addEventListener("click", () => requestPointerLock());
 
 function hasPointerLock(): boolean {
-  return document.pointerLockElement != null;
+  return !!(noa.container as any)?.hasPointerLock;
 }
 
 /* ===============================
@@ -273,12 +309,11 @@ noa.registry.registerBlock(WOOD_ID, { material: "wood" });
 noa.registry.registerBlock(LEAVES_ID, { material: "leaves" });
 
 /* ===============================
-   6. Items + Inventory State
+   6. Items / Inventory (client mirror of server ids)
 ================================ */
 type ItemStack = { id: number; count: number };
 
-
-const Items = {
+const ITEMS = {
   GRASS: 1,
   DIRT: 2,
   STONE: 3,
@@ -298,14 +333,15 @@ type ItemDef = {
 };
 
 const ITEM_DEFS: Record<number, ItemDef> = {
-  [Items.GRASS]: { id: Items.GRASS, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
-  [Items.DIRT]: { id: Items.DIRT, name: "Dirt", maxStack: 64, placeBlockId: DIRT_ID },
-  [Items.STONE]: { id: Items.STONE, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
-  [Items.WOOD_LOG]: { id: Items.WOOD_LOG, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
-  [Items.LEAVES]: { id: Items.LEAVES, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
-  [Items.PLANK]: { id: Items.PLANK, name: "Planks", maxStack: 64 },
-  [Items.STICK]: { id: Items.STICK, name: "Stick", maxStack: 64 },
-  [Items.WOOD_PICK]: { id: Items.WOOD_PICK, name: "Wood Pick", maxStack: 1 },
+  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: 1 },
+  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: 2 },
+  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: 3 },
+  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: 4 },
+  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: 5 },
+
+  10: { id: 10, name: "Planks", maxStack: 64 },
+  11: { id: 11, name: "Stick", maxStack: 64 },
+  20: { id: 20, name: "Wood Pick", maxStack: 1 },
 };
 
 type Recipe = {
@@ -316,31 +352,22 @@ type Recipe = {
 };
 
 const RECIPES: Recipe[] = [
-  { id: "planks_from_log", name: "Planks", inputs: [{ id: Items.WOOD_LOG, count: 1 }], output: { id: Items.PLANK, count: 4 } },
-  { id: "sticks_from_planks", name: "Sticks", inputs: [{ id: Items.PLANK, count: 2 }], output: { id: Items.STICK, count: 4 } },
-  { id: "wood_pick", name: "Wood Pick", inputs: [{ id: Items.PLANK, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.WOOD_PICK, count: 1 } },
+  { id: "planks_from_log", name: "Planks", inputs: [{ id: ITEMS.WOOD_LOG, count: 1 }], output: { id: ITEMS.PLANK, count: 4 } },
+  { id: "sticks_from_planks", name: "Sticks", inputs: [{ id: ITEMS.PLANK, count: 2 }], output: { id: ITEMS.STICK, count: 4 } },
+  { id: "wood_pick", name: "Wood Pick", inputs: [{ id: ITEMS.PLANK, count: 3 }, { id: ITEMS.STICK, count: 2 }], output: { id: ITEMS.WOOD_PICK, count: 1 } },
 ];
 
+// Inventory layout must match server
 const HOTBAR_SLOTS = 5;
 const BACKPACK_SLOTS = 20;
 const INV_SLOTS = HOTBAR_SLOTS + BACKPACK_SLOTS;
 
-// Server-authoritative inventory snapshot
 let invSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
+let invCursor: ItemStack = { id: 0, count: 0 };
 
-// Selected hotbar index (0..4)
 let selectedSlot = 0;
 
-// Inventory UI open?
-let inventoryOpen = false;
-
-// Client-side cursor stack for UI interaction (server is still the authority; cursor only drives requests)
-let cursorStack: ItemStack = { id: 0, count: 0 };
-
-// UI slot nodes
-const slotEls: HTMLDivElement[] = [];
-
-// Toggle states
+// Viewmodel + remote toggles
 let viewModelEnabled = true;
 let remotePlayersEnabled = true;
 let remoteXray = true; // always visible by default (debug)
@@ -379,27 +406,28 @@ let lastSnapshotAt = 0;
 let lastTransformAt = 0;
 
 /* ===============================
-   6.3 Drop state (server authoritative)
+   6.3 Drops (server authoritative)
 ================================ */
-type DropMsg = { dropId: string; itemId: number; count: number; x: number; y: number; z: number; createdAt?: number };
-const drops = new Map<string, DropMsg>();
-const dropMeshes = new Map<string, BABYLON.Mesh>();
-const dropPickupCooldown = new Map<string, number>(); // dropId -> last request time (ms)
+type Drop = {
+  dropId: string;
+  itemId: number;
+  count: number;
+  x: number;
+  y: number;
+  z: number;
+  createdAt?: number;
+};
+
+const drops = new Map<string, Drop>();
+const dropMeshes = new Map<string, BABYLON.AbstractMesh>();
+let dropMat: BABYLON.StandardMaterial | null = null;
+
+// render offset for world-space meshes that we draw in NOA scene
+let worldRenderOffset = new BABYLON.Vector3(0, 0, 0);
 
 /* ===============================
-   6.4 Overlay helpers
+   6.4 Overlay
 ================================ */
-function getItemName(id: number): string {
-  if (!id) return "Empty";
-  return ITEM_DEFS[id]?.name ?? `Item ${id}`;
-}
-
-function getHoldingName(): string {
-  const s = invSlots[selectedSlot] ?? { id: 0, count: 0 };
-  if (!s.id || s.count <= 0) return "Empty";
-  return `${getItemName(s.id)} x${s.count}`;
-}
-
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
   const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
@@ -415,6 +443,22 @@ function getClosestRemoteDistance(): number | null {
     if (best == null || d < best) best = d;
   }
   return best;
+}
+
+function itemName(id: number): string {
+  const d = ITEM_DEFS[id];
+  return d ? d.name : id === 0 ? "Empty" : `Item#${id}`;
+}
+
+function hotbarLabel(slotIndex: number): string {
+  const s = invSlots[slotIndex] ?? { id: 0, count: 0 };
+  if (!s.id || s.count <= 0) return "(empty)";
+  return `${itemName(s.id)} x${s.count}`;
+}
+
+function formatCursor(): string {
+  if (!invCursor.id || invCursor.count <= 0) return "(empty)";
+  return `${itemName(invCursor.id)} x${invCursor.count}`;
 }
 
 function updateOverlay(extraLine = "") {
@@ -433,10 +477,10 @@ function updateOverlay(extraLine = "") {
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
-    <strong>Holding:</strong> [${selectedSlot + 1}] ${getHoldingName()}<br>
-    <strong>Inventory:</strong> ${inventoryOpen ? "OPEN" : "CLOSED"} | <strong>Cursor:</strong> ${
-      cursorStack.id ? `${getItemName(cursorStack.id)} x${cursorStack.count}` : "Empty"
-    }<br>
+    <strong>UserId:</strong> ${userId}<br>
+    <strong>Hotbar:</strong> [${selectedSlot + 1}] ${hotbarLabel(selectedSlot)}<br>
+    <strong>Cursor:</strong> ${formatCursor()}<br>
+    <strong>UI:</strong> Inv=${uiInventoryOpen ? "OPEN" : "closed"} Craft=${uiCraftOpen ? "OPEN" : "closed"}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
     <strong>Remote Players:</strong> ${remotePlayersEnabled ? "ON" : "OFF"} |
     <strong>Xray:</strong> ${remoteXray ? "ON" : "OFF"}<br>
@@ -447,10 +491,11 @@ function updateOverlay(extraLine = "") {
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
     [WASD] Move  |  [Space] Jump<br>
-    [E] Inventory<br>
     [V] Toggle Viewmodel<br>
     [P] Toggle Remote Players<br>
     [O] Toggle Remote Xray<br>
+    [E] Toggle Inventory UI<br>
+    [C] Toggle Crafting UI<br>
     [B] Toggle VM Debug (axes/frame)<br>
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
@@ -462,420 +507,204 @@ function updateOverlay(extraLine = "") {
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
+
 updateOverlay();
 
 /* ===============================
-   6.5 Inventory UI rendering + interactions
+   6.5 Inventory UI rendering + input
 ================================ */
-function setInventoryOpen(open: boolean) {
-  inventoryOpen = open;
-  invRoot.style.display = open ? "flex" : "none";
-
-  if (open) {
-    exitPointerLock();
-  } else {
-    // leave cursor stack as-is; users can close while holding (Minecraft-like)
-    // but you can auto-drop later if you want.
-  }
-  renderInventoryUI();
-  updateOverlay(open ? "Inventory: OPEN" : "Inventory: CLOSED");
-}
-
-function safeStackClone(s: ItemStack | undefined | null): ItemStack {
-  if (!s) return { id: 0, count: 0 };
-  return { id: s.id | 0, count: s.count | 0 };
-}
-
-function slotLabel(stack: ItemStack): string {
-  if (!stack.id || stack.count <= 0) return "";
-  return `${getItemName(stack.id)}\n x${stack.count}`;
-}
-
-function createSlotEl(slotIndex: number): HTMLDivElement {
-  const el = document.createElement("div");
-  el.style.height = "64px";
-  el.style.borderRadius = "8px";
-  el.style.border = "1px solid rgba(255,255,255,0.18)";
-  el.style.background = "rgba(0,0,0,0.25)";
-  el.style.display = "flex";
-  el.style.flexDirection = "column";
-  el.style.alignItems = "center";
-  el.style.justifyContent = "center";
-  el.style.textAlign = "center";
-  el.style.whiteSpace = "pre-line";
-  el.style.fontSize = "11px";
-  el.style.lineHeight = "1.05";
-  el.style.cursor = "pointer";
-  el.style.pointerEvents = "auto";
-
-  const badge = document.createElement("div");
-  badge.style.position = "absolute";
-  badge.style.right = "10px";
-  badge.style.bottom = "8px";
-  badge.style.fontSize = "11px";
-  badge.style.opacity = "0.92";
-  badge.style.pointerEvents = "none";
-
-  const wrap = document.createElement("div");
-  wrap.style.position = "relative";
-  wrap.style.width = "100%";
-  wrap.style.height = "100%";
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.justifyContent = "center";
-  wrap.appendChild(badge);
-  el.appendChild(wrap);
-
-  function setSelectedVisual() {
-    if (slotIndex === selectedSlot) {
-      el.style.outline = "2px solid rgba(255,255,255,0.55)";
-      el.style.boxShadow = "0 0 0 2px rgba(0,0,0,0.3) inset";
-    } else {
-      el.style.outline = "none";
-      el.style.boxShadow = "none";
-    }
-  }
-
-  function updateText() {
-    const s = safeStackClone(invSlots[slotIndex]);
-    wrap.textContent = slotLabel(s);
-    wrap.appendChild(badge);
-
-    if (slotIndex < HOTBAR_SLOTS) {
-      badge.textContent = `${slotIndex + 1}`;
-    } else {
-      badge.textContent = "";
-    }
-
-    setSelectedVisual();
-  }
-
-  updateText();
-
-  // Left click: move/swap/stack
-  el.addEventListener("mousedown", (ev) => {
-    if (!inventoryOpen) return;
-    if (ev.button !== 0) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-
-    const shift = (ev as MouseEvent).shiftKey;
-
-    if (shift) {
-      // quick move between hotbar/backpack
-      quickMoveSlot(slotIndex);
-      return;
-    }
-
-    handleSlotLeftClick(slotIndex);
-  });
-
-  // Right click: split / place-1
-  el.addEventListener("contextmenu", (ev) => {
-    if (!inventoryOpen) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-  });
-
-  el.addEventListener("mousedown", (ev) => {
-    if (!inventoryOpen) return;
-    if (ev.button !== 2) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    handleSlotRightClick(slotIndex);
-  });
-
-  // Hover highlight
-  el.addEventListener("mouseenter", () => {
-    if (!inventoryOpen) return;
-    el.style.border = "1px solid rgba(255,255,255,0.40)";
-  });
-  el.addEventListener("mouseleave", () => {
-    el.style.border = "1px solid rgba(255,255,255,0.18)";
-  });
-
-  // stored for refresh calls
-  (el as any).__update = updateText;
-  return el;
-}
-
-function rebuildInventorySlotsUI() {
-  hotbarGrid.innerHTML = "";
-  backpackGrid.innerHTML = "";
+const slotEls: HTMLDivElement[] = [];
+function buildInventoryGrid() {
+  invGrid.innerHTML = "";
   slotEls.length = 0;
 
-  for (let i = 0; i < INV_SLOTS; i++) {
-    const el = createSlotEl(i);
-    slotEls.push(el);
-    if (i < HOTBAR_SLOTS) hotbarGrid.appendChild(el);
-    else backpackGrid.appendChild(el);
-  }
-}
+  const makeSlotEl = (slotIndex: number) => {
+    const el = document.createElement("div");
+    el.style.height = "56px";
+    el.style.borderRadius = "10px";
+    el.style.border = "1px solid rgba(255,255,255,0.18)";
+    el.style.background = "rgba(0,0,0,0.25)";
+    el.style.display = "flex";
+    el.style.alignItems = "center";
+    el.style.justifyContent = "center";
+    el.style.position = "relative";
+    el.style.cursor = "pointer";
+    el.style.pointerEvents = "auto";
 
-function updateCursorBox() {
-  const cs = cursorStack;
-  const txt =
-    cs.id && cs.count > 0
-      ? `Cursor: ${getItemName(cs.id)} x${cs.count}`
-      : `Cursor: (empty)`;
-  cursorBox.textContent = txt;
-}
+    const label = document.createElement("div");
+    label.style.color = "white";
+    label.style.fontSize = "11px";
+    label.style.textAlign = "center";
+    label.style.padding = "0 4px";
+    label.style.lineHeight = "1.05";
+    label.style.opacity = "0.95";
+    el.appendChild(label);
 
-function renderInventoryUI() {
-  if (slotEls.length !== INV_SLOTS) rebuildInventorySlotsUI();
+    const count = document.createElement("div");
+    count.style.position = "absolute";
+    count.style.right = "6px";
+    count.style.bottom = "4px";
+    count.style.color = "white";
+    count.style.fontSize = "12px";
+    count.style.fontWeight = "700";
+    count.style.textShadow = "0 1px 2px rgba(0,0,0,0.6)";
+    el.appendChild(count);
 
-  for (const el of slotEls) {
-    const upd = (el as any).__update as (() => void) | undefined;
-    upd?.();
-  }
+    const tag = document.createElement("div");
+    tag.style.position = "absolute";
+    tag.style.left = "6px";
+    tag.style.top = "4px";
+    tag.style.color = "rgba(255,255,255,0.8)";
+    tag.style.fontSize = "10px";
+    tag.style.opacity = "0.9";
+    tag.textContent = slotIndex < HOTBAR_SLOTS ? `${slotIndex + 1}` : `${slotIndex - HOTBAR_SLOTS + 1}`;
+    el.appendChild(tag);
 
-  craftList.innerHTML = "";
-  for (const r of RECIPES) {
-    const btn = document.createElement("button");
-    btn.style.padding = "10px";
-    btn.style.borderRadius = "8px";
-    btn.style.border = "1px solid rgba(255,255,255,0.20)";
-    btn.style.background = "rgba(0,0,0,0.30)";
-    btn.style.color = "white";
-    btn.style.cursor = "pointer";
-    btn.style.textAlign = "left";
-    btn.style.fontFamily = "monospace";
-    btn.style.fontSize = "12px";
-    btn.style.lineHeight = "1.2";
+    const updateSlotEl = () => {
+      const s = invSlots[slotIndex] ?? { id: 0, count: 0 };
+      const isSel = slotIndex === selectedSlot && slotIndex < HOTBAR_SLOTS;
 
-    const inputsStr = r.inputs.map((x) => `${getItemName(x.id)} x${x.count}`).join(", ");
-    const outStr = `${getItemName(r.output.id)} x${r.output.count}`;
-    btn.textContent = `${r.name}\n${inputsStr}  →  ${outStr}`;
+      el.style.outline = isSel ? "2px solid rgba(120,220,255,0.9)" : "none";
+      el.style.boxShadow = isSel ? "0 0 0 2px rgba(120,220,255,0.25)" : "none";
 
-    btn.addEventListener("click", () => {
+      if (!s.id || s.count <= 0) {
+        label.textContent = "";
+        count.textContent = "";
+        el.style.background = "rgba(0,0,0,0.25)";
+      } else {
+        label.textContent = itemName(s.id);
+        count.textContent = s.count > 1 ? String(s.count) : "";
+        el.style.background = "rgba(255,255,255,0.06)";
+      }
+    };
+
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
       if (!room) return;
-      room.send("craft", { recipeId: r.id, times: 1 });
+
+      const button = e.button === 2 ? "R" : "L";
+      const shift = !!e.shiftKey;
+
+      // If hotbar slot clicked, also select it for quick place
+      if (slotIndex < HOTBAR_SLOTS && button === "L" && !shift) {
+        selectedSlot = slotIndex;
+      }
+
+      room.send("invClick", { slot: slotIndex, button, shift });
+      updateOverlay();
     });
 
-    craftList.appendChild(btn);
+    (el as any).__update = updateSlotEl;
+
+    slotEls.push(el);
+    invGrid.appendChild(el);
+  };
+
+  // Build 5x5 layout: first row is hotbar (5), next 4 rows are backpack (20)
+  for (let i = 0; i < INV_SLOTS; i++) makeSlotEl(i);
+}
+
+buildInventoryGrid();
+
+function updateInventoryUI() {
+  invCursorLine.textContent = `Cursor: ${formatCursor()}`;
+  for (const el of slotEls) {
+    const u = (el as any).__update as (() => void) | undefined;
+    u?.();
   }
-
-  updateCursorBox();
 }
 
-function isEmpty(s: ItemStack): boolean {
-  return !s.id || s.count <= 0;
+function countInInventory(itemId: number): number {
+  let n = 0;
+  for (const s of invSlots) if (s.id === itemId && s.count > 0) n += s.count;
+  return n;
 }
 
-function handleSlotLeftClick(slotIndex: number) {
-  if (!room) return;
+function renderCraftList() {
+  craftList.innerHTML = "";
+  for (const r of RECIPES) {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.gap = "10px";
+    row.style.padding = "10px";
+    row.style.borderRadius = "10px";
+    row.style.border = "1px solid rgba(255,255,255,0.16)";
+    row.style.background = "rgba(0,0,0,0.25)";
+    row.style.cursor = "pointer";
 
+    const left = document.createElement("div");
+    left.style.display = "flex";
+    left.style.flexDirection = "column";
+    left.style.gap = "4px";
 
+    const name = document.createElement("div");
+    name.textContent = r.name;
+    name.style.color = "white";
+    name.style.fontWeight = "700";
+    name.style.fontSize = "14px";
+    left.appendChild(name);
 
-  // If cursor empty: pick up full stack from slot -> cursor (request invMove slot->cursor is not a thing).
-  // We'll do the classic approach: cursor is client-side, but server inventory is authoritative.
-  // To keep server authority and still allow cursor interactions, we implement cursor as:
-  // - cursorStack just mirrors what we "intend" to hold
-  // - and we use invMove between slots to simulate actions
-  //
-  // So for left click:
-  // - if cursor empty: take entire slot into cursor by moving it into a special "cursor slot" doesn't exist server-side.
-  //   Therefore: we do a SWAP protocol:
-  //   - store cursor locally
-  //   - request server to move slot to a "free" staging slot? (not good)
-  //
-  // Instead: simplest server-authoritative UI is "slot-to-slot only".
-  // But user asked drag/drop + cursor. We'll implement cursor purely client-side and convert operations into invMove messages:
-  //
-  // Rules:
-  // 1) Cursor empty, click slot:
-  //    - copy slot into cursor locally
-  //    - request server to clear slot by moving it to itself with amount?? Not supported.
-  //
-  // Therefore we implement cursor operations using server messages:
-  // ✅ We use invMove for slot-to-slot actions.
-  // ✅ For cursor, we keep it client-side ONLY for display, but we DO NOT actually remove items from inventory until placed.
-  // That feels wrong.
-  //
-  // Better approach (still no schemas): treat cursor as "virtual", and send direct invMove requests using
-  // a selected "cursor source slot" stored client-side.
-  //
-  // We'll do this:
-  // - cursorSourceSlot: number | null
-  // - cursorAmount: number (how many we're moving from that source)
-  // - operations translate to invMove from cursorSourceSlot -> target.
-  //
-  // This keeps server inventory authoritative and eliminates "ghost" cursor stacks.
-  //
-  // So: implement cursor as a reference to a real source slot, not an extracted stack.
+    const io = document.createElement("div");
+    io.style.color = "rgba(255,255,255,0.9)";
+    io.style.fontSize = "12px";
 
-  // This is implemented below with cursorSourceSlot.
-  // We keep this function as wrapper to route to ref-based cursor behavior.
-  slotLeftClickRefCursor(slotIndex);
-}
+    const ins = r.inputs
+      .map((x) => {
+        const have = countInInventory(x.id);
+        const ok = have >= x.count;
+        return `${itemName(x.id)} ${have}/${x.count}${ok ? " ✓" : ""}`;
+      })
+      .join("  •  ");
 
-let cursorSourceSlot: number | null = null; // inventory slot index we are "holding" from
-let cursorHeldCount = 0; // how many from source we intend to move (<= source count)
-let cursorHeldId = 0;
+    io.textContent = `${ins}  →  ${itemName(r.output.id)} x${r.output.count}`;
+    left.appendChild(io);
 
-function refreshCursorFromSource() {
-  if (cursorSourceSlot == null) {
-    cursorStack = { id: 0, count: 0 };
-    cursorHeldCount = 0;
-    cursorHeldId = 0;
-    updateCursorBox();
-    updateOverlay();
-    return;
+    const right = document.createElement("div");
+    right.style.color = "rgba(255,255,255,0.9)";
+    right.style.fontSize = "12px";
+    right.style.opacity = "0.95";
+    right.textContent = "Craft";
+    row.appendChild(left);
+    row.appendChild(right);
+
+    row.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!room) return;
+
+      const max = !!e.shiftKey;
+      room.send("craft", { recipeId: r.id, max, times: 1 });
+      craftResultLine.textContent = max ? `Crafting max: ${r.name}...` : `Crafting: ${r.name}...`;
+    });
+
+    craftList.appendChild(row);
   }
-
-  const src = safeStackClone(invSlots[cursorSourceSlot]);
-  if (isEmpty(src)) {
-    cursorSourceSlot = null;
-    cursorStack = { id: 0, count: 0 };
-    cursorHeldCount = 0;
-    cursorHeldId = 0;
-  } else {
-    // cap held count by current source count
-    cursorHeldId = src.id;
-    cursorHeldCount = Math.min(cursorHeldCount, src.count);
-    if (cursorHeldCount <= 0) cursorHeldCount = src.count;
-    cursorStack = { id: cursorHeldId, count: cursorHeldCount };
-  }
-
-  updateCursorBox();
-  updateOverlay();
 }
 
-function clearCursorRef() {
-  cursorSourceSlot = null;
-  cursorHeldCount = 0;
-  cursorHeldId = 0;
-  cursorStack = { id: 0, count: 0 };
-  updateCursorBox();
-  updateOverlay();
-}
-
-function slotLeftClickRefCursor(slotIndex: number) {
-  if (!room) return;
-
-  // If not holding anything yet: start holding from this slot (full stack)
-  if (cursorSourceSlot == null) {
-    const s = safeStackClone(invSlots[slotIndex]);
-    if (isEmpty(s)) return;
-    cursorSourceSlot = slotIndex;
-    cursorHeldId = s.id;
-    cursorHeldCount = s.count;
-    cursorStack = { id: cursorHeldId, count: cursorHeldCount };
-    renderInventoryUI();
-    updateOverlay(`Picked up: ${getItemName(cursorHeldId)} x${cursorHeldCount}`);
-    return;
-  }
-
-  // If clicking the same source slot: drop cursor (cancel)
-  if (cursorSourceSlot === slotIndex) {
-    clearCursorRef();
-    renderInventoryUI();
-    return;
-  }
-
-  // Attempt to move from source -> target (full held count)
-  const from = cursorSourceSlot;
-  const to = slotIndex;
-  const amount = cursorHeldCount;
-
-  // Send invMove to server; server decides stacking/swap
-  room.send("invMove", { from, to, amount });
-
-  // After sending, we keep cursorSourceSlot as-is, but the server snapshot may change it.
-  // We'll refresh cursor after next invState.
-  updateOverlay(`Move request: ${from} -> ${to} amount=${amount}`);
-}
-
-function slotRightClickRefCursor(slotIndex: number) {
-  if (!room) return;
-
-  // If not holding: right click takes HALF (ceil) from that slot
-  if (cursorSourceSlot == null) {
-    const s = safeStackClone(invSlots[slotIndex]);
-    if (isEmpty(s)) return;
-
-    cursorSourceSlot = slotIndex;
-    cursorHeldId = s.id;
-    cursorHeldCount = Math.ceil(s.count / 2);
-    cursorStack = { id: cursorHeldId, count: cursorHeldCount };
-    renderInventoryUI();
-    updateOverlay(`Split: took ${cursorHeldCount} of ${getItemName(cursorHeldId)}`);
-    return;
-  }
-
-  // Holding something: place 1 into clicked slot
-  const from = cursorSourceSlot;
-  const to = slotIndex;
-
-  if (cursorHeldCount <= 0) {
-    clearCursorRef();
-    renderInventoryUI();
-    return;
-  }
-
-  room.send("invMove", { from, to, amount: 1 });
-  cursorHeldCount = Math.max(0, cursorHeldCount - 1);
-  cursorStack.count = cursorHeldCount;
-
-  // If we placed last, clear
-  if (cursorHeldCount <= 0) clearCursorRef();
-
-  updateOverlay(`Place 1: ${from} -> ${to}`);
-}
-
-function handleSlotRightClick(slotIndex: number) {
-  slotRightClickRefCursor(slotIndex);
-}
-
-function quickMoveSlot(slotIndex: number) {
-  if (!room) return;
-
-  // If cursor is active, quick-move not supported (avoid complexity)
-  if (cursorSourceSlot != null) return;
-
-  const s = safeStackClone(invSlots[slotIndex]);
-  if (isEmpty(s)) return;
-
-  const isHotbar = slotIndex < HOTBAR_SLOTS;
-  const destStart = isHotbar ? HOTBAR_SLOTS : 0;
-  const destEnd = isHotbar ? INV_SLOTS : HOTBAR_SLOTS;
-
-  // Find first compatible stack or empty slot
-  let dest = -1;
-  for (let i = destStart; i < destEnd; i++) {
-    const d = safeStackClone(invSlots[i]);
-    if (isEmpty(d)) {
-      if (dest < 0) dest = i;
-      continue;
-    }
-    if (d.id === s.id) {
-      dest = i;
-      break;
-    }
-  }
-  if (dest < 0) return;
-
-  room.send("invMove", { from: slotIndex, to: dest, amount: s.count });
-  updateOverlay(`Quick move: ${slotIndex} -> ${dest}`);
-}
+renderCraftList();
 
 /* ===============================
    6.6 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
-  // Inventory toggle
-  if (e.key === "e" || e.key === "E") {
-    setInventoryOpen(!inventoryOpen);
-    return;
-  }
+  // If VM tuning is enabled, we still allow toggles here,
+  // but tuning movement keys are captured in capture-phase handler below.
+  // If UI is open, we want E/C to close, but avoid movement/hotbar changes while typing UI.
+  const uiOpen = uiInventoryOpen || uiCraftOpen;
 
-  // Hotbar 1-5
-  const key = Number.parseInt(e.key, 10);
-  if (Number.isFinite(key) && key >= 1 && key <= HOTBAR_SLOTS) {
-    selectedSlot = key - 1;
-    renderInventoryUI();
-    updateOverlay();
-    return;
+  // Hotbar 1-5 (disabled if UI open)
+  if (!uiOpen) {
+    const key = Number.parseInt(e.key, 10);
+    if (Number.isFinite(key) && key >= 1 && key <= HOTBAR_SLOTS) {
+      selectedSlot = key - 1;
+      updateOverlay();
+      updateInventoryUI();
+      return;
+    }
   }
 
   if (e.key === "v" || e.key === "V") {
@@ -911,6 +740,28 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "m" || e.key === "M") {
     vmMirrorX = !vmMirrorX;
     updateOverlay(vmMirrorX ? "VM Mirror: ON" : "VM Mirror: OFF");
+    return;
+  }
+
+  if (e.key === "e" || e.key === "E") {
+    uiInventoryOpen = !uiInventoryOpen;
+    // if opening inv, close craft (optional)
+    if (uiInventoryOpen) uiCraftOpen = false;
+    showUIIfNeeded();
+    updateInventoryUI();
+    renderCraftList();
+    updateOverlay(uiInventoryOpen ? "Inventory: OPEN" : "Inventory: closed");
+    return;
+  }
+
+  if (e.key === "c" || e.key === "C") {
+    uiCraftOpen = !uiCraftOpen;
+    // if opening craft, close inv (optional)
+    if (uiCraftOpen) uiInventoryOpen = false;
+    showUIIfNeeded();
+    updateInventoryUI();
+    renderCraftList();
+    updateOverlay(uiCraftOpen ? "Crafting: OPEN" : "Crafting: closed");
     return;
   }
 });
@@ -1082,18 +933,21 @@ function triggerPunch() {
   punchT = 0;
 }
 
-function currentHeldPlaceBlockId(): number | null {
-  const s = invSlots[selectedSlot];
-  if (!s || !s.id || s.count <= 0) return null;
-  const def = ITEM_DEFS[s.id];
-  const placeId = def?.placeBlockId;
-  if (typeof placeId === "number" && placeId > 0) return placeId;
-  return null;
+function selectedHotbarStack(): ItemStack {
+  const s = invSlots[selectedSlot] ?? { id: 0, count: 0 };
+  return { id: s.id | 0, count: s.count | 0 };
+}
+
+function itemPlacesBlock(itemId: number): number | null {
+  const def = ITEM_DEFS[itemId];
+  if (!def) return null;
+  const b = def.placeBlockId;
+  return typeof b === "number" ? b : null;
 }
 
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
-  if (inventoryOpen) return;
+  if (uiInventoryOpen || uiCraftOpen) return;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1101,36 +955,42 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
+
+  // local prediction (server will confirm via blockUpdate)
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
 
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
-  if (inventoryOpen) return;
+  if (uiInventoryOpen || uiCraftOpen) return;
 
   const target = getTargetInfo();
   if (!target) return;
-
-  const blockToPlace = currentHeldPlaceBlockId();
-  if (!blockToPlace) return;
 
   triggerPunch();
 
   const { x, y, z } = target.adj;
 
+  // Don't place inside yourself (client-side best-effort)
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
-
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  noa.world.setBlockID(blockToPlace, x, y, z);
-  room?.send("placeBlock", { x, y, z, id: blockToPlace });
+  // Determine placeable block from selected hotbar item
+  const s = selectedHotbarStack();
+  if (!s.id || s.count <= 0) return;
 
-  // (Optional later) also request server to consume 1 from inventory.
-  // For now, your survival loop focuses on pickup + crafting; placing consumption can be added next step.
+  const blockId = itemPlacesBlock(s.id);
+  if (blockId == null) return;
+
+  // local prediction
+  noa.world.setBlockID(blockId, x, y, z);
+
+  // authoritative place: consumes 1 from selectedSlot on server
+  room?.send("placeBlock", { x, y, z, id: blockId, fromSlot: selectedSlot });
 });
 
 /* ===============================
@@ -1160,56 +1020,97 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   9.1 Drop mesh helpers
+   9.1 Drops rendering in NOA scene
 ================================ */
-let dropMat: BABYLON.StandardMaterial | null = null;
-
 function ensureDropMaterial(scene: BABYLON.Scene) {
-  if (dropMat && dropMat.getScene() === scene) return dropMat;
+  if (dropMat && dropMat.getScene() === scene) return;
 
   dropMat = new BABYLON.StandardMaterial("dropMat", scene);
   dropMat.disableLighting = true;
-  dropMat.emissiveColor = new BABYLON.Color3(0.9, 0.85, 0.25);
+  dropMat.emissiveColor = new BABYLON.Color3(1, 1, 0.2);
   dropMat.diffuseColor = dropMat.emissiveColor.clone();
   dropMat.specularColor = new BABYLON.Color3(0, 0, 0);
   dropMat.backFaceCulling = false;
   (dropMat as any).fogEnabled = false;
-  return dropMat;
 }
 
-function spawnDropMesh(d: DropMsg) {
-  const scene = getStableScene();
-  if (!scene) return;
+function ensureDropMesh(drop: Drop, scene: BABYLON.Scene) {
+  const existing = dropMeshes.get(drop.dropId);
+  if (existing && existing.getScene() === scene) return;
 
-  const existing = dropMeshes.get(d.dropId);
-  if (existing) {
-    existing.position.set(d.x, d.y, d.z);
-    return;
+  // If existing from old scene, dispose
+  if (existing && existing.getScene() !== scene) {
+    try {
+      existing.dispose();
+    } catch {}
+    dropMeshes.delete(drop.dropId);
   }
 
-  const mat = ensureDropMaterial(scene);
+  ensureDropMaterial(scene);
 
-  const mesh = BABYLON.MeshBuilder.CreateBox(
-    `drop:${d.dropId}`,
-    { width: 0.35, height: 0.35, depth: 0.35 },
-    scene
-  );
-  mesh.position.set(d.x, d.y, d.z);
-  mesh.material = mat;
+  const mesh = BABYLON.MeshBuilder.CreateSphere(`drop:${drop.dropId}`, { diameter: 0.25, segments: 10 }, scene);
   mesh.isPickable = false;
+  mesh.material = dropMat!;
+  mesh.renderingGroupId = 2;
 
   (mesh as any).isInFrustum = () => true;
 
-  dropMeshes.set(d.dropId, mesh);
+  dropMeshes.set(drop.dropId, mesh);
 }
 
-function despawnDropMesh(dropId: string) {
+function removeDropMesh(dropId: string) {
   const m = dropMeshes.get(dropId);
   if (m) {
     try {
       m.dispose();
     } catch {}
     dropMeshes.delete(dropId);
+  }
+}
+
+function updateDropMeshes(dtSec: number) {
+  const scene = getStableScene();
+  if (!scene) return;
+
+  // Create meshes for known drops
+  for (const d of drops.values()) ensureDropMesh(d, scene);
+
+  const time = performance.now() / 1000;
+
+  for (const d of drops.values()) {
+    const m = dropMeshes.get(d.dropId);
+    if (!m) continue;
+
+    // Floating-origin correction: render offset computed from camera - player
+    const bob = Math.sin(time * 3.2 + (d.x + d.z) * 0.3) * 0.06;
+    m.position.set(
+      d.x + worldRenderOffset.x,
+      d.y + worldRenderOffset.y + bob,
+      d.z + worldRenderOffset.z
+    );
+
+    m.rotation.y += dtSec * 1.6;
+  }
+}
+
+function tryAutoPickupDrops() {
+  if (!room) return;
+  if (!hasPointerLock()) return; // only auto-pickup during active play
+
+  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  if (!p) return;
+
+  // small radius; server validates anyway
+  const r2 = 2.25 * 2.25;
+
+  for (const d of drops.values()) {
+    const dx = d.x - p[0];
+    const dy = d.y - p[1];
+    const dz = d.z - p[2];
+    const dist2 = dx * dx + dy * dy + dz * dz;
+    if (dist2 <= r2) {
+      room.send("pickupDrop", { dropId: d.dropId });
+    }
   }
 }
 
@@ -1490,8 +1391,7 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
@@ -1726,6 +1626,7 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
   if (p) {
     rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
+    worldRenderOffset.copyFrom(rpRenderOffset);
   }
 
   if (remoteXray) {
@@ -1785,7 +1686,11 @@ function updateRemoteMeshes() {
     if (!root) continue;
 
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
-    target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
+    target.set(
+      t.x + rpRenderOffset.x,
+      t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET,
+      t.z + rpRenderOffset.z
+    );
     remoteTargetPos.set(id, target);
 
     const lerp = 0.35;
@@ -1848,13 +1753,15 @@ async function connect() {
   try {
     updateOverlay();
 
-    room = await colyseus.joinOrCreate("my_room");
+    // Pass userId for persistence
+    room = await colyseus.joinOrCreate("my_room", { userId });
     (globalThis as any).room = room;
 
-    console.log("[NET] joined room", { sessionId: room.sessionId });
+    console.log("[NET] joined room", { sessionId: room.sessionId, userId });
 
     updateOverlay();
 
+    // Flush queued chunk requests
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
@@ -1869,30 +1776,51 @@ async function connect() {
 
     // Inventory snapshot
     room.onMessage("invState", (msg: any) => {
-      if (!msg || !Array.isArray(msg.slots)) return;
+      try {
+        const slots = Array.isArray(msg?.slots) ? msg.slots : null;
+        const cursor = msg?.cursor ?? null;
 
-      // Copy into fixed-size local
-      const next: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
-      for (let i = 0; i < Math.min(INV_SLOTS, msg.slots.length); i++) {
-        const s = msg.slots[i];
-        const id = Number(s?.id ?? 0) | 0;
-        const count = Number(s?.count ?? 0) | 0;
-        next[i] = id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
+        if (slots) {
+          const next: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
+          for (let i = 0; i < Math.min(INV_SLOTS, slots.length); i++) {
+            const s = slots[i];
+            const id = Number(s?.id ?? 0) | 0;
+            const count = Number(s?.count ?? 0) | 0;
+            next[i] = id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
+          }
+          invSlots = next;
+        }
+
+        const cId = Number(cursor?.id ?? 0) | 0;
+        const cCount = Number(cursor?.count ?? 0) | 0;
+        invCursor = cId > 0 && cCount > 0 ? { id: cId, count: cCount } : { id: 0, count: 0 };
+
+        updateInventoryUI();
+        renderCraftList();
+        updateOverlay("invState received");
+      } catch {}
+    });
+
+    room.onMessage("craftResult", (msg: any) => {
+      const ok = !!msg?.ok;
+      const recipeId = String(msg?.recipeId ?? "");
+      const crafted = Number(msg?.crafted ?? 0) | 0;
+      const reason = String(msg?.reason ?? "");
+
+      if (ok) {
+        craftResultLine.textContent = `Crafted ${crafted} × ${recipeId}`;
+        updateOverlay(`Crafted ${crafted} × ${recipeId}`);
+      } else {
+        craftResultLine.textContent = `Craft failed: ${recipeId} (${reason || "unknown"})`;
+        updateOverlay(`Craft failed: ${recipeId} (${reason || "unknown"})`);
       }
-      invSlots = next;
-
-      // Cursor ref must stay consistent with server
-      refreshCursorFromSource();
-
-      renderInventoryUI();
-      updateOverlay("invState received");
     });
 
     // Drops
     room.onMessage("dropSpawn", (d: any) => {
       if (!d || typeof d.dropId !== "string") return;
-      const drop: DropMsg = {
-        dropId: d.dropId,
+      const drop: Drop = {
+        dropId: String(d.dropId),
         itemId: Number(d.itemId ?? 0) | 0,
         count: Number(d.count ?? 1) | 0,
         x: Number(d.x ?? 0),
@@ -1900,18 +1828,15 @@ async function connect() {
         z: Number(d.z ?? 0),
         createdAt: typeof d.createdAt === "number" ? d.createdAt : undefined,
       };
+      if (!Number.isFinite(drop.x) || !Number.isFinite(drop.y) || !Number.isFinite(drop.z)) return;
       drops.set(drop.dropId, drop);
-      spawnDropMesh(drop);
-      updateOverlay("dropSpawn");
     });
 
     room.onMessage("dropDespawn", (d: any) => {
-      const id = typeof d?.dropId === "string" ? d.dropId : null;
+      const id = String(d?.dropId ?? "");
       if (!id) return;
       drops.delete(id);
-      despawnDropMesh(id);
-      dropPickupCooldown.delete(id);
-      updateOverlay("dropDespawn");
+      removeDropMesh(id);
     });
 
     room.onMessage("existingPlayers", (players: any) => {
@@ -2021,48 +1946,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Drop pickup loop
-================================ */
-function tryPickupNearbyDrops() {
-  if (!room) return;
-  if (inventoryOpen) return; // optional: disable pickups while UI open
-
-  const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
-  if (!me) return;
-
-  const now = performance.now();
-
-  for (const d of drops.values()) {
-    const dx = d.x - me[0];
-    const dy = d.y - me[1];
-    const dz = d.z - me[2];
-    const dist2 = dx * dx + dy * dy + dz * dz;
-
-    // client-side threshold a bit tighter than server (server uses its own)
-    if (dist2 > 2.0 * 2.0) continue;
-
-    const last = dropPickupCooldown.get(d.dropId) ?? 0;
-    if (now - last < 350) continue;
-
-    dropPickupCooldown.set(d.dropId, now);
-    room.send("pickupDrop", { dropId: d.dropId });
-  }
-}
-
-function animateDropMeshes(dtSec: number) {
-  // Bobbing + spin
-  const t = performance.now() / 1000;
-  for (const d of drops.values()) {
-    const m = dropMeshes.get(d.dropId);
-    if (!m) continue;
-    const bob = Math.sin(t * 2.6 + (d.dropId.length % 10)) * 0.08;
-    m.position.y = d.y + bob;
-    m.rotation.y += dtSec * 1.6;
-  }
-}
-
-/* ===============================
-   14. Tick loop (drive vm updates + networking + rp sync + drops)
+   13. Tick loop (drive vm updates + networking + rp sync)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -2081,24 +1965,16 @@ let lastTickMs = performance.now();
 
     // Sync rp camera from NOA camera every tick (critical)
     syncRpCameraFromWorld(scene);
-
-    // Ensure drop material is bound to current scene (if NOA rebuilds scene)
-    ensureDropMaterial(scene);
-
-    // Ensure any drops have meshes in the current scene
-    if (tickCount % 10 === 0) {
-      for (const d of drops.values()) spawnDropMesh(d);
-    }
   }
 
   updateViewmodel(dtSec);
 
+  // Update remote meshes every tick (cheap; few boxes)
   updateRemoteMeshes();
 
-  animateDropMeshes(dtSec);
-
-  // Pickup checks (throttled)
-  if (tickCount % 5 === 0) tryPickupNearbyDrops();
+  // Drops
+  updateDropMeshes(dtSec);
+  if (tickCount % 2 === 0) tryAutoPickupDrops();
 
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
@@ -2107,19 +1983,12 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Keep overlay fresh
-  if (tickCount % 10 === 0) updateOverlay();
-});
-
-/* ===============================
-   15. Inventory UI background click closes (optional)
-================================ */
-invRoot.addEventListener("mousedown", (ev) => {
-  // click outside panel closes
-  if (ev.target === invRoot) {
-    setInventoryOpen(false);
+  // Keep overlay + UI fresh
+  if (tickCount % 10 === 0) {
+    updateOverlay();
+    if (uiInventoryOpen || uiCraftOpen) {
+      updateInventoryUI();
+      renderCraftList();
+    }
   }
 });
-
-// Also keep cursor selection visuals consistent
-renderInventoryUI();
