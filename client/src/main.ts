@@ -358,68 +358,27 @@ function registerAtlasMaterial(
   noa.registry.registerMaterial(name, opts as any);
 }
 
-registerAtlasMaterial("grass_top", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_TOP,
-});
-
-registerAtlasMaterial("grass_side", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_SIDE,
-});
-
-registerAtlasMaterial("dirt", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIRT,
-});
-
-registerAtlasMaterial("stone", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.STONE,
-});
-
-registerAtlasMaterial("wood", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.WOOD,
-});
-
+registerAtlasMaterial("grass_top", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
+registerAtlasMaterial("grass_side", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
+registerAtlasMaterial("dirt", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
+registerAtlasMaterial("stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
+registerAtlasMaterial("wood", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
 registerAtlasMaterial("leaves", {
   textureURL: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.LEAVES,
   texHasAlpha: true,
 });
-
-registerAtlasMaterial("bedrock", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.BEDROCK,
-});
-
-registerAtlasMaterial("coal_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.COAL_ORE,
-});
-
-registerAtlasMaterial("iron_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.IRON_ORE,
-});
-
-registerAtlasMaterial("gold_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GOLD_ORE,
-});
-
+registerAtlasMaterial("bedrock", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
+registerAtlasMaterial("coal_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
+registerAtlasMaterial("iron_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
+registerAtlasMaterial("gold_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
 registerAtlasMaterial("diamond_ore", {
   textureURL: TERRAIN_ATLAS_URL,
   atlasIndex: ATLAS.DIAMOND_ORE,
 });
 
 // Blocks
-noa.registry.registerBlock(GRASS_ID, {
-  // [top, bottom, sides]
-  material: ["grass_top", "dirt", "grass_side"],
-});
-
+noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
@@ -452,12 +411,7 @@ const Items = {
   DIAMOND: 33,
 } as const;
 
-type ItemDef = {
-  id: number;
-  name: string;
-  maxStack: number;
-  placeBlockId?: number;
-};
+type ItemDef = { id: number; name: string; maxStack: number; placeBlockId?: number };
 
 const ITEM_DEFS: Record<number, ItemDef> = {
   1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
@@ -612,14 +566,11 @@ function renderInventoryUI() {
     invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
 
   // Hotbar
-  for (let i = 0; i < HOTBAR_SLOTS; i++) {
-    renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
-  }
+  for (let i = 0; i < HOTBAR_SLOTS; i++) renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
 
   // Backpack
-  for (let i = 0; i < BACKPACK_SLOTS; i++) {
+  for (let i = 0; i < BACKPACK_SLOTS; i++)
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
-  }
 
   // Craft buttons enable/disable (client hint only)
   const canCraft = (recipeId: string) => {
@@ -628,7 +579,6 @@ function renderInventoryUI() {
       for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
       return n;
     };
-
     if (recipeId === "planks_from_log") return countItem(Items.WOOD_LOG) >= 1;
     if (recipeId === "sticks_from_planks") return countItem(Items.PLANK) >= 2;
     if (recipeId === "wood_pick") return countItem(Items.PLANK) >= 3 && countItem(Items.STICK) >= 2;
@@ -679,9 +629,7 @@ function setupInventorySlots() {
     backpackGrid.appendChild(el);
   }
 }
-// setupInventorySlots(); // (called in initUI)
 
-// Craft buttons
 function addCraftButton(title: string, recipeId: string) {
   const b = mkButton(title);
   (b as any).__recipeId = recipeId;
@@ -699,7 +647,6 @@ function addCraftButton(title: string, recipeId: string) {
   };
   craftList.appendChild(b);
 }
-// addCraftButton(...) calls moved to initUI
 
 function initUI() {
   try {
@@ -724,7 +671,6 @@ function initUI() {
     updateOverlay();
   } catch {}
 }
-
 
 /* ===============================
    6.5 Overlay
@@ -756,12 +702,8 @@ function getHotbarHeldName(): string {
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
 
-  const snapAge = lastSnapshotAt
-    ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s`
-    : "n/a";
-  const xformAge = lastTransformAt
-    ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s`
-    : "n/a";
+  const snapAge = lastSnapshotAt ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s` : "n/a";
+  const xformAge = lastTransformAt ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s` : "n/a";
   const snapPreview = lastSnapshotIds.slice(0, 6).join(", ");
 
   const closest = getClosestRemoteDistance();
@@ -806,7 +748,6 @@ function updateOverlay(extraLine = "") {
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
-// updateOverlay(); // (called in initUI)
 
 /* ===============================
    6.6 Key handling
@@ -876,13 +817,7 @@ window.addEventListener(
       e.key === "ArrowUp" ||
       e.key === "ArrowDown";
 
-    const isRotKey =
-      e.key === "7" ||
-      e.key === "8" ||
-      e.key === "9" ||
-      e.key === "0" ||
-      e.key === "-" ||
-      e.key === "=";
+    const isRotKey = e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -908,9 +843,9 @@ window.addEventListener(
     if (e.key === "=") vmRotZ += rStep;
 
     updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(
         2
-      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
+      )},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -922,10 +857,7 @@ window.addEventListener(
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<
-  string,
-  { id: string; chunkSize: number; x: number; y: number; z: number }
->();
+const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
 const worldAny = noa.world as any;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -982,9 +914,7 @@ function applyChunkFromServer(msg: any) {
   if (!pending) return;
 
   const CS =
-    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
-      ? msg.chunkSize
-      : pending.chunkSize;
+    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
 
   const expected = CS * CS * CS;
 
@@ -1025,6 +955,15 @@ function getTargetInfo() {
   };
 }
 
+function getMineFaceNormalFromTarget(): BABYLON.Vector3 {
+  const t = getTargetInfo();
+  if (!t) return new BABYLON.Vector3(0, 0, 0);
+  const nx = BABYLON.Scalar.Clamp(t.adj.x - t.pos.x, -1, 1);
+  const ny = BABYLON.Scalar.Clamp(t.adj.y - t.pos.y, -1, 1);
+  const nz = BABYLON.Scalar.Clamp(t.adj.z - t.pos.z, -1, 1);
+  return new BABYLON.Vector3(nx, ny, nz);
+}
+
 /* ---- Viewmodel punch ---- */
 let punchT = 1; // 0..1
 function triggerPunch() {
@@ -1054,8 +993,10 @@ let miningActive = false;
 let miningStickyUntil = 0;
 const MINING_STICKY_MS = 1200; // after click release, keep mining active briefly (then auto-extends if progress arriving)
 
+// Heartbeat controls (FIXED: allow same-target resends after a short window)
 let lastMineSentKey = "";
 let lastMineSendAt = 0;
+const MINE_RESEND_SAME_TARGET_MS = 250;
 
 // Continuous arm action while mining
 let lastMinePunchAt = 0;
@@ -1063,12 +1004,17 @@ const MINE_PUNCH_INTERVAL_MS = 180;
 
 function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
+
   const now = performance.now();
-  if (now - lastMineSendAt < 40) return; // tiny throttle
-  lastMineSendAt = now;
+  if (now - lastMineSendAt < 40) return; // tiny micro-throttle
 
   const key = `${x},${y},${z}`;
-  if (key === lastMineSentKey) return;
+  const sameTarget = key === lastMineSentKey;
+
+  // FIX: allow same target heartbeat after a short window
+  if (sameTarget && now - lastMineSendAt < MINE_RESEND_SAME_TARGET_MS) return;
+
+  lastMineSendAt = now;
   lastMineSentKey = key;
 
   room.send("startMine", { x, y, z });
@@ -1081,6 +1027,7 @@ function cancelMiningLocal(reason = "") {
   miningTarget = null;
   miningProgress = null;
   lastMineSentKey = "";
+  lastMineSendAt = 0;
   if (room) room.send("cancelMine", { reason });
 }
 
@@ -1115,6 +1062,7 @@ noa.inputs.down.on("fire", () => {
   miningProgress = { x, y, z, progress: miningProgress?.progress ?? 0, stage: miningProgress?.stage ?? 0 };
 
   lastMineSentKey = "";
+  lastMineSendAt = 0;
   sendStartMine(x, y, z);
 });
 
@@ -1199,12 +1147,8 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
 
   // if scene changed (NOA scene recreated), rebuild
   if (crackSceneUid !== (uid ?? null)) {
-    try {
-      crackMesh?.dispose();
-    } catch {}
-    try {
-      crackMat?.dispose();
-    } catch {}
+    try { crackMesh?.dispose(); } catch {}
+    try { crackMat?.dispose(); } catch {}
     crackMesh = null;
     crackMat = null;
     crackSceneUid = uid ?? null;
@@ -1292,6 +1236,7 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
   mat.backFaceCulling = true;
   (mat as any).fogEnabled = false;
 
+  // NOTE: invertY=false keeps atlas top-to-bottom consistent in most pipelines
   const tex = new BABYLON.Texture(TERRAIN_ATLAS_URL, scene, false, false);
   tex.hasAlpha = !!alpha;
   tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
@@ -1300,11 +1245,11 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
   // Pixel-art nearest sampling
   tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
 
-  // Vertical strip selection
+  // Vertical strip selection (tile 0 is TOP of image)
   tex.uScale = 1;
   tex.vScale = 1 / ATLAS_TILE_COUNT;
   tex.uOffset = 0;
-  tex.vOffset = (atlasIndex | 0) / ATLAS_TILE_COUNT;
+  tex.vOffset = 1 - (Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0)) + 1) / ATLAS_TILE_COUNT;
 
   mat.diffuseTexture = tex;
   mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
@@ -1331,9 +1276,7 @@ function itemIdToAtlasIndex(itemId: number): number {
 
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
-    try {
-      m.dispose();
-    } catch {}
+    try { m.dispose(); } catch {}
   }
   dropMeshes.clear();
 }
@@ -1358,7 +1301,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
     const alpha = d.itemId === Items.LEAVES;
     box.material = getDropAtlasMaterial(scene, tile, alpha);
 
-    // make it feel like Minecraft item entity (bob + spin later)
+    // Minecraft-ish: slight tilt + random yaw (then spin)
     box.rotation.x = 0.25;
     box.rotation.y = Math.random() * Math.PI * 2;
 
@@ -1369,9 +1312,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const id of Array.from(dropMeshes.keys())) {
     if (!drops.has(id)) {
       const m = dropMeshes.get(id);
-      try {
-        m?.dispose();
-      } catch {}
+      try { m?.dispose(); } catch {}
       dropMeshes.delete(id);
     }
   }
@@ -1464,7 +1405,7 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   minePSTex = dt;
 
-  const ps = new BABYLON.ParticleSystem("minePS", 250, scene);
+  const ps = new BABYLON.ParticleSystem("minePS", 300, scene);
   ps.particleTexture = minePSTex;
 
   ps.minSize = 0.02;
@@ -1475,19 +1416,22 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   ps.emitRate = 0;
 
-  ps.minEmitPower = 0.6;
-  ps.maxEmitPower = 1.2;
+  ps.minEmitPower = 0.7;
+  ps.maxEmitPower = 1.4;
   ps.updateSpeed = 0.015;
 
   ps.gravity = new BABYLON.Vector3(0, -2.2, 0);
+
+  // default directions (we also shift emitter to face so these read as chips)
   ps.direction1 = new BABYLON.Vector3(-1, 0.5, -1);
   ps.direction2 = new BABYLON.Vector3(1, 1.2, 1);
 
+  // A compact box emitter (we reposition it to the hit face)
   ps.createBoxEmitter(
-    new BABYLON.Vector3(-0.35, -0.35, -0.35),
-    new BABYLON.Vector3(0.35, 0.35, 0.35),
-    new BABYLON.Vector3(-0.2, 0.2, -0.2),
-    new BABYLON.Vector3(0.2, 0.6, 0.2)
+    new BABYLON.Vector3(-0.08, -0.08, -0.08),
+    new BABYLON.Vector3(0.08, 0.08, 0.08),
+    new BABYLON.Vector3(-0.6, 0.2, -0.6),
+    new BABYLON.Vector3(0.6, 1.0, 0.6)
   );
 
   ps.color1 = new BABYLON.Color4(1, 1, 1, 1);
@@ -1507,7 +1451,6 @@ function stopMiningParticles() {
 
 function updateMiningParticles(scene: BABYLON.Scene) {
   ensureMiningParticles(scene);
-
   if (!minePS) return;
 
   if (!miningProgress || !miningActive) {
@@ -1522,7 +1465,15 @@ function updateMiningParticles(scene: BABYLON.Scene) {
   }
 
   const { x, y, z, progress } = miningProgress;
-  minePS.emitter = new BABYLON.Vector3(x + 0.5, y + 0.5, z + 0.5);
+
+  // Emit from the *hit face*, slightly outside the block, so particles aren't occluded inside voxel
+  const n = getMineFaceNormalFromTarget(); // adj - pos
+  const cx = x + 0.5;
+  const cy = y + 0.5;
+  const cz = z + 0.5;
+
+  const faceOffset = 0.52; // just outside surface
+  minePS.emitter = new BABYLON.Vector3(cx + n.x * faceOffset, cy + n.y * faceOffset, cz + n.z * faceOffset);
 
   const base = miningHeld ? 110 : 70;
   const ramp = progress * 170;
@@ -1596,21 +1547,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox(
-    "vmUpperArm",
-    { width: 0.16, height: 0.44, depth: 0.16 },
-    vmScene
-  );
-  const fore = BABYLON.MeshBuilder.CreateBox(
-    "vmForeArm",
-    { width: 0.16, height: 0.38, depth: 0.16 },
-    vmScene
-  );
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "vmHand",
-    { width: 0.17, height: 0.18, depth: 0.17 },
-    vmScene
-  );
+  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
+  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
@@ -1628,6 +1567,8 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   armMat.diffuseColor = armMat.emissiveColor.clone();
   armMat.specularColor = new BABYLON.Color3(0, 0, 0);
   armMat.backFaceCulling = false;
+
+  // Always overlay on top
   armMat.disableDepthWrite = true;
   armMat.depthFunction = BABYLON.Constants.ALWAYS;
 
@@ -1649,11 +1590,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes.parent = vmRoot;
 
       const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(
-          name,
-          { points: [BABYLON.Vector3.Zero(), to] },
-          vmScene!
-        );
+        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -1690,14 +1627,15 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     vmEngineHooked = true;
 
     engine.onEndFrameObservable.add(() => {
+      // FIX: render remote players FIRST, then viewmodel LAST (arm should overlay everything)
+      if (remotePlayersEnabled && rpReady && rpScene) {
+        rpScene.render();
+      }
+
       if (viewModelEnabled && vmScene) {
         if (vmAxes) vmAxes.setEnabled(vmDebug);
         if (vmFrame) vmFrame.setEnabled(vmDebug);
         vmScene.render();
-      }
-
-      if (remotePlayersEnabled && rpReady && rpScene) {
-        rpScene.render();
       }
     });
   }
@@ -1895,61 +1833,37 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
-  const body = BABYLON.MeshBuilder.CreateBox(
-    `remoteBody:${id}`,
-    { width: BODY_W, height: BODY_H, depth: BODY_D },
-    rpScene
-  );
+  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
   body.parent = root;
   body.position.set(0, bodyCenterY, 0);
   body.material = mat;
   body.isPickable = false;
 
-  const head = BABYLON.MeshBuilder.CreateBox(
-    `remoteHead:${id}`,
-    { width: HEAD, height: HEAD, depth: HEAD },
-    rpScene
-  );
+  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
   head.parent = root;
   head.position.set(0, headCenterY, 0);
   head.material = mat;
   head.isPickable = false;
 
-  const armL = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmL:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armL.parent = root;
   armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armL.material = mat;
   armL.isPickable = false;
 
-  const armR = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmR:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armR.parent = root;
   armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armR.material = mat;
   armR.isPickable = false;
 
-  const legL = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegL:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legL.parent = root;
   legL.position.set(-0.16, LEG_H * 0.5, 0);
   legL.material = mat;
   legL.isPickable = false;
 
-  const legR = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegR:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legR.parent = root;
   legR.position.set(0.16, LEG_H * 0.5, 0);
   legR.material = mat;
@@ -1977,16 +1891,12 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
 function removeRemoteMesh(id: string) {
   const root = remoteMeshes.get(id);
   if (root) {
-    try {
-      root.dispose();
-    } catch {}
+    try { root.dispose(); } catch {}
     remoteMeshes.delete(id);
   }
   const mat = remoteMats.get(id);
   if (mat) {
-    try {
-      mat.dispose();
-    } catch {}
+    try { mat.dispose(); } catch {}
     remoteMats.delete(id);
   }
 
@@ -2097,11 +2007,7 @@ function updateRemoteMeshes() {
     if (!root) continue;
 
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
-    target.set(
-      t.x + rpRenderOffset.x,
-      t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET,
-      t.z + rpRenderOffset.z
-    );
+    target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
     remoteTargetPos.set(id, target);
 
     const lerp = 0.35;
@@ -2111,9 +2017,7 @@ function updateRemoteMeshes() {
 
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
-    const prev =
-      remotePrevPos.get(id) ??
-      new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
@@ -2201,12 +2105,7 @@ async function connect() {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
 
         // if the block we were mining changed, clear cracks
-        if (
-          miningProgress &&
-          msg.x === miningProgress.x &&
-          msg.y === miningProgress.y &&
-          msg.z === miningProgress.z
-        ) {
+        if (miningProgress && msg.x === miningProgress.x && msg.y === miningProgress.y && msg.z === miningProgress.z) {
           miningProgress = null;
         }
       }
@@ -2234,7 +2133,7 @@ async function connect() {
         reason: typeof (m as any).reason === "string" ? (m as any).reason : undefined,
       };
 
-      // Extend sticky mining if progress is arriving (so it never "resets" unless you cancel/retarget/out-of-range)
+      // Extend sticky mining if progress is arriving
       miningActive = true;
       miningStickyUntil = performance.now() + MINING_STICKY_MS;
 
@@ -2243,6 +2142,7 @@ async function connect() {
         miningActive = false;
         miningTarget = null;
         lastMineSentKey = "";
+        lastMineSendAt = 0;
       }
     });
 
@@ -2252,6 +2152,7 @@ async function connect() {
       miningActive = false;
       miningTarget = null;
       lastMineSentKey = "";
+      lastMineSendAt = 0;
     });
 
     // Inventory state from server
@@ -2267,17 +2168,13 @@ async function connect() {
         const id = Number((s as any)?.id ?? 0);
         const count = Number((s as any)?.count ?? 0);
         outSlots[i] =
-          Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0
-            ? { id, count }
-            : { id: 0, count: 0 };
+          Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
       }
 
       const cId = Number((cursor as any)?.id ?? 0);
       const cCount = Number((cursor as any)?.count ?? 0);
       const outCursor: ItemStack =
-        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0
-          ? { id: cId, count: cCount }
-          : { id: 0, count: 0 };
+        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0 ? { id: cId, count: cCount } : { id: 0, count: 0 };
 
       invState = { slots: outSlots, cursor: outCursor };
       renderInventoryUI();
@@ -2307,9 +2204,7 @@ async function connect() {
       drops.delete(id);
       const mesh = dropMeshes.get(id);
       if (mesh) {
-        try {
-          mesh.dispose();
-        } catch {}
+        try { mesh.dispose(); } catch {}
         dropMeshes.delete(id);
       }
       updateOverlay();
@@ -2343,12 +2238,7 @@ async function connect() {
         const z = Number((p as any).z ?? 0);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
-        netTransforms.set(id, {
-          x,
-          y,
-          z,
-          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-        });
+        netTransforms.set(id, { x, y, z, yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined });
       }
 
       lastTransformAt = performance.now();
@@ -2365,12 +2255,7 @@ async function connect() {
       const z = Number((p as any).z ?? 0);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      netTransforms.set(id, {
-        x,
-        y,
-        z,
-        yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-      });
+      netTransforms.set(id, { x, y, z, yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined });
 
       lastTransformAt = performance.now();
       console.log("[NET] playerJoined", { id, x, y, z });
@@ -2398,12 +2283,7 @@ async function connect() {
       const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      netTransforms.set(id, {
-        x,
-        y,
-        z,
-        yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-      });
+      netTransforms.set(id, { x, y, z, yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined });
       lastTransformAt = performance.now();
     });
 
@@ -2422,12 +2302,7 @@ async function connect() {
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         ids.push(id);
-        netTransforms.set(id, {
-          x,
-          y,
-          z,
-          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-        });
+        netTransforms.set(id, { x, y, z, yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined });
       }
 
       lastSnapshotIds = ids;
@@ -2441,9 +2316,7 @@ async function connect() {
       const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      try {
-        noa.ents.setPosition(noa.playerEntity, [x, y, z]);
-      } catch {}
+      try { noa.ents.setPosition(noa.playerEntity, [x, y, z]); } catch {}
 
       canSendMoves = true;
       console.log("[NET] youJoined spawn", { x, y, z });
@@ -2455,9 +2328,7 @@ async function connect() {
   }
 }
 
-
 initUI();
-
 connect();
 
 /* ===============================
@@ -2516,9 +2387,10 @@ let lastTickMs = performance.now();
           miningTarget = { x, y, z };
           miningProgress = { x, y, z, progress: 0, stage: 0 };
           lastMineSentKey = "";
+          lastMineSendAt = 0;
           sendStartMine(x, y, z);
         } else {
-          // keep-alive / resync occasionally
+          // keep-alive / resync occasionally (now actually sends, due to resend window)
           if (tickCount % 20 === 0) sendStartMine(x, y, z);
         }
       } else {
@@ -2527,12 +2399,13 @@ let lastTickMs = performance.now();
           miningTarget = { x, y, z };
           miningProgress = { x, y, z, progress: 0, stage: 0 };
           lastMineSentKey = "";
+          lastMineSendAt = 0;
           sendStartMine(x, y, z);
         } else {
           // Keep mining the existing target (don't retarget unless player clicks/holds again)
           if (tickCount % 6 === 0) sendStartMine(miningTarget.x, miningTarget.y, miningTarget.z);
 
-          // stop if sticky window expires and we aren't receiving progress (e.g., server cancelled/out-of-range)
+          // stop if sticky window expires and we aren't receiving progress
           if (performance.now() > miningStickyUntil && !miningHeld) {
             // If progress exists and not done, extend a little longer; else cancel.
             if (miningProgress && miningProgress.progress < 1) {
@@ -2552,8 +2425,7 @@ let lastTickMs = performance.now();
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw =
-      typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
+    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
