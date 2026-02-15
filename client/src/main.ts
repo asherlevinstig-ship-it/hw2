@@ -32,12 +32,16 @@
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
  *
- * IMPORTANT FIX (TEXTURES):
- * Some NOA builds do not reliably apply `{ texture, atlasIndex }` material defs,
- * resulting in WHITE blocks even with no 404 errors.
+ * TEXTURE DEBUG + FIX:
+ * If blocks render WHITE even with no 404, this file includes:
+ * - A texture probe plane that renders the atlas directly in Babylon (proves texture load/bind).
+ * - A chunk mesh/material logger (proves what chunk meshes are actually using).
+ * - A "T" key dump that lists scene materials and their textures.
+ * - A "Y" key toggle to flip probe atlas V direction (top-down vs bottom-up).
  *
- * This version registers REAL Babylon materials and slices the vertical atlas
- * via vScale/vOffset. It also defers material creation until the NOA scene exists.
+ * MATERIAL APPROACH:
+ * We defer creation until a Babylon scene exists, then create Babylon materials and register
+ * them via `(noa.registry as any).registerMaterial(...)` to bypass TS signature mismatches.
  */
 
 import { Engine } from "noa-engine";
@@ -330,195 +334,6 @@ const ATLAS = {
   DIAMOND_ORE: 10,
 } as const;
 
-/**
- * MATERIAL FIX:
- * We register Babylon materials that slice the vertical atlas.
- * We also DEFER creation until the NOA Babylon scene exists.
- *
- * This avoids the common "all blocks white" issue when NOA's
- * `{ texture, atlasIndex }` options aren't applied/bound in some builds.
- */
-
-type PendingAtlasMat = {
-  name: string;
-  texture: string;
-  atlasIndex: number;
-  texHasAlpha?: boolean;
-};
-
-const pendingAtlasMats: PendingAtlasMat[] = [];
-const createdAtlasMats = new Set<string>();
-
-function getNoaScene(): BABYLON.Scene | null {
-  const r = (noa as any).rendering as any;
-  if (!r) return null;
-  const s =
-    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
-  return (s as BABYLON.Scene) ?? null;
-}
-
-let cachedScene: BABYLON.Scene | null = null;
-let cachedSceneUid: string | number | null = null;
-
-function getStableScene(): BABYLON.Scene | null {
-  const s = getNoaScene();
-  if (!s) return cachedScene;
-
-  const uid = (s as any).uid as string | number | undefined;
-  if (!cachedScene || cachedSceneUid !== uid) {
-    cachedScene = s;
-    cachedSceneUid = uid ?? null;
-  }
-  return cachedScene;
-}
-
-function registerAtlasMaterialBabylonDeferred(
-  name: string,
-  opts: { texture: string; atlasIndex: number; texHasAlpha?: boolean }
-) {
-  pendingAtlasMats.push({
-    name,
-    texture: opts.texture,
-    atlasIndex: opts.atlasIndex,
-    texHasAlpha: opts.texHasAlpha,
-  });
-}
-
-function ensureAtlasMaterials(scene: BABYLON.Scene) {
-  // Create any pending materials once we have a scene
-  for (const m of pendingAtlasMats) {
-    if (createdAtlasMats.has(m.name)) continue;
-
-    // Create texture
-    const tex = new BABYLON.Texture(
-      m.texture,
-      scene,
-      false, // no mipmaps (safer for tiny pixel atlases)
-      false,
-      BABYLON.Texture.NEAREST_NEAREST
-    );
-
-    tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-    tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-    tex.hasAlpha = !!m.texHasAlpha;
-
-    // Once loaded, slice the vertical strip using vScale/vOffset
-    tex.onLoadObservable.add(() => {
-      const sz = tex.getSize();
-      const tileSize = Math.max(1, sz.width); // expected 16
-      const numTiles = Math.max(1, Math.floor(sz.height / tileSize));
-      const vScale = tileSize / Math.max(1, sz.height);
-
-      tex.uScale = 1;
-      tex.uOffset = 0;
-
-      tex.vScale = vScale;
-      // We assume tiles are stacked TOP->BOTTOM; Babylon vOffset is from TOP in UV space for most cases.
-      // This matches the common vertical-strip atlas indexing.
-      tex.vOffset = (m.atlasIndex % numTiles) * vScale;
-
-      // Reduce bleeding: clamp already set, and nearest sampling prevents interpolation artifacts.
-      tex.updateSamplingMode(BABYLON.Texture.NEAREST_NEAREST);
-    });
-
-    // Create Babylon material using NOA helper if available
-    const noaRendering: any = (noa as any).rendering;
-    const stdMat: any =
-      typeof noaRendering?.makeStandardMaterial === "function"
-        ? noaRendering.makeStandardMaterial(m.name)
-        : new BABYLON.StandardMaterial(m.name, scene);
-
-    stdMat.diffuseTexture = tex;
-
-    // For pixel-voxel look, we generally want unlit-ish; NOA will still apply its lighting.
-    // Keep lighting on, but you can uncomment disableLighting if you prefer fully flat.
-    // stdMat.disableLighting = true;
-
-    // Register the material into NOA registry as a Babylon material
-    // registerMaterial(name, color?, texture?, transparent?, babylonMaterial?)
-    (noa.registry as any).registerMaterial(m.name, null, null, !!m.texHasAlpha, stdMat);
-
-
-    createdAtlasMats.add(m.name);
-  }
-}
-
-/**
- * Declare atlas materials (DEFERRED)
- */
-registerAtlasMaterialBabylonDeferred("grass_top", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_TOP,
-});
-
-registerAtlasMaterialBabylonDeferred("grass_side", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_SIDE,
-});
-
-registerAtlasMaterialBabylonDeferred("dirt", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIRT,
-});
-
-registerAtlasMaterialBabylonDeferred("stone", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.STONE,
-});
-
-registerAtlasMaterialBabylonDeferred("wood", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.WOOD,
-});
-
-registerAtlasMaterialBabylonDeferred("leaves", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.LEAVES,
-  texHasAlpha: true,
-});
-
-registerAtlasMaterialBabylonDeferred("bedrock", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.BEDROCK,
-});
-
-registerAtlasMaterialBabylonDeferred("coal_ore", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.COAL_ORE,
-});
-
-registerAtlasMaterialBabylonDeferred("iron_ore", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.IRON_ORE,
-});
-
-registerAtlasMaterialBabylonDeferred("gold_ore", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GOLD_ORE,
-});
-
-registerAtlasMaterialBabylonDeferred("diamond_ore", {
-  texture: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIAMOND_ORE,
-});
-
-// Blocks
-noa.registry.registerBlock(GRASS_ID, {
-  // [top, bottom, sides]
-  material: ["grass_top", "dirt", "grass_side"],
-});
-
-noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
-noa.registry.registerBlock(STONE_ID, { material: "stone" });
-noa.registry.registerBlock(WOOD_ID, { material: "wood" });
-noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
-
-noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
-noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
-noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
-noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
-noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
-
 /* ===============================
    6. Item/Inventory State
 ================================ */
@@ -658,9 +473,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.style.width = "64px";
   el.style.height = "64px";
   el.style.borderRadius = "8px";
-  el.style.border = isSelected
-    ? "2px solid rgba(255,255,255,0.9)"
-    : "1px solid rgba(255,255,255,0.18)";
+  el.style.border = isSelected ? "2px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.18)";
   el.style.background = "rgba(0,0,0,0.35)";
   el.style.display = "flex";
   el.style.flexDirection = "column";
@@ -696,8 +509,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
 function renderInventoryUI() {
   // Cursor
   renderSlot(cursorSlotEl, invState.cursor, false);
-  cursorNameEl.textContent =
-    invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
+  cursorNameEl.textContent = invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
 
   // Hotbar
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
@@ -828,12 +640,8 @@ function getHotbarHeldName(): string {
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
 
-  const snapAge = lastSnapshotAt
-    ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s`
-    : "n/a";
-  const xformAge = lastTransformAt
-    ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s`
-    : "n/a";
+  const snapAge = lastSnapshotAt ? `${((performance.now() - lastSnapshotAt) / 1000).toFixed(1)}s` : "n/a";
+  const xformAge = lastTransformAt ? `${((performance.now() - lastTransformAt) / 1000).toFixed(1)}s` : "n/a";
   const snapPreview = lastSnapshotIds.slice(0, 6).join(", ");
 
   const closest = getClosestRemoteDistance();
@@ -926,6 +734,77 @@ document.addEventListener("keydown", (e) => {
     updateOverlay(vmMirrorX ? "VM Mirror: ON" : "VM Mirror: OFF");
     return;
   }
+
+  // DEBUG: dump scene materials/textures
+  if (e.key === "t" || e.key === "T") {
+    const scene = getStableScene();
+    if (!scene) {
+      console.log("[DEBUG-T] no scene yet");
+      return;
+    }
+
+    console.log("[DEBUG-T] scene.materials:", scene.materials.map((m) => m.name));
+
+    for (const m of scene.materials) {
+      const anyM = m as any;
+      const dt = anyM.diffuseTexture as BABYLON.Texture | undefined;
+      if (dt) {
+        console.log(
+          "[DEBUG-T] material",
+          m.name,
+          "diffuseTexture=",
+          dt.name,
+          "ready=",
+          dt.isReady(),
+          "url=",
+          (dt as any)._url
+        );
+        try {
+          console.log("[DEBUG-T] texture size", dt.getSize());
+        } catch {}
+      }
+    }
+
+    // also dump a few meshes
+    console.log("[DEBUG-T] scene.meshes:", scene.meshes.slice(0, 40).map((mm) => mm.name));
+  }
+
+  // DEBUG: flip probe atlas V direction
+  if (e.key === "y" || e.key === "Y") {
+    const scene = getStableScene();
+    if (!scene) return;
+
+    const probe = scene.getMeshByName("atlasProbe");
+    if (!probe || !probe.material) {
+      console.log("[TEX-PROBE] no probe yet");
+      return;
+    }
+
+    const mat = probe.material as any;
+    const tex = mat.diffuseTexture as BABYLON.Texture | undefined;
+    if (!tex) {
+      console.log("[TEX-PROBE] probe has no diffuseTexture");
+      return;
+    }
+
+    const sz = tex.getSize();
+    const tileSize = Math.max(1, sz.width);
+    const vScale = tileSize / Math.max(1, sz.height);
+
+    probeFlip = !probeFlip;
+
+    if (!probeFlip) {
+      // top tile
+      tex.vScale = vScale;
+      tex.vOffset = 0;
+      console.log("[TEX-PROBE] TOP-DOWN vOffset=0 vScale=", vScale);
+    } else {
+      // bottom-most tile
+      tex.vScale = vScale;
+      tex.vOffset = 1 - vScale;
+      console.log("[TEX-PROBE] BOTTOM-UP vOffset=", tex.vOffset, "vScale=", vScale);
+    }
+  }
 });
 
 // Capture-phase handler for tuning keys ONLY (so mouse/NOA stays normal)
@@ -940,13 +819,7 @@ window.addEventListener(
       e.key === "ArrowUp" ||
       e.key === "ArrowDown";
 
-    const isRotKey =
-      e.key === "7" ||
-      e.key === "8" ||
-      e.key === "9" ||
-      e.key === "0" ||
-      e.key === "-" ||
-      e.key === "=";
+    const isRotKey = e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -972,9 +845,9 @@ window.addEventListener(
     if (e.key === "=") vmRotZ += rStep;
 
     updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(
         2
-      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
+      )},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -986,10 +859,7 @@ window.addEventListener(
 type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<
-  string,
-  { id: string; chunkSize: number; x: number; y: number; z: number }
->();
+const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
 const worldAny = noa.world as any;
 
 function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
@@ -1045,10 +915,7 @@ function applyChunkFromServer(msg: any) {
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
-  const CS =
-    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize)
-      ? msg.chunkSize
-      : pending.chunkSize;
+  const CS = typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
 
   const expected = CS * CS * CS;
 
@@ -1138,6 +1005,219 @@ noa.inputs.down.on("alt-fire", () => {
   noa.world.setBlockID(blockToPlace, x, y, z);
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
+
+/* ===============================
+   9. Babylon scene access (NOA scene)
+================================ */
+function getNoaScene(): BABYLON.Scene | null {
+  const r = (noa as any).rendering as any;
+  if (!r) return null;
+  const s = (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
+  return (s as BABYLON.Scene) ?? null;
+}
+
+let cachedScene: BABYLON.Scene | null = null;
+let cachedSceneUid: string | number | null = null;
+
+function getStableScene(): BABYLON.Scene | null {
+  const s = getNoaScene();
+  if (!s) return cachedScene;
+
+  const uid = (s as any).uid as string | number | undefined;
+  if (!cachedScene || cachedSceneUid !== uid) {
+    cachedScene = s;
+    cachedSceneUid = uid ?? null;
+  }
+  return cachedScene;
+}
+
+/* ===============================
+   9.0 Atlas materials (DEFER + Babylon slice)
+================================ */
+type PendingAtlasMat = { name: string; texture: string; atlasIndex: number; texHasAlpha?: boolean };
+
+const pendingAtlasMats: PendingAtlasMat[] = [];
+const createdAtlasMats = new Set<string>();
+
+function registerAtlasMaterialBabylonDeferred(
+  name: string,
+  opts: { texture: string; atlasIndex: number; texHasAlpha?: boolean }
+) {
+  pendingAtlasMats.push({
+    name,
+    texture: opts.texture,
+    atlasIndex: opts.atlasIndex,
+    texHasAlpha: opts.texHasAlpha,
+  });
+}
+
+function ensureAtlasMaterials(scene: BABYLON.Scene) {
+  for (const m of pendingAtlasMats) {
+    if (createdAtlasMats.has(m.name)) continue;
+
+    console.log("[ATLAS] creating material", m.name, "index", m.atlasIndex, "url", m.texture);
+
+    const tex = new BABYLON.Texture(
+      m.texture,
+      scene,
+      false, // no mipmaps (safest)
+      false,
+      BABYLON.Texture.NEAREST_NEAREST
+    );
+
+    tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.hasAlpha = !!m.texHasAlpha;
+
+    tex.onLoadObservable.add(() => {
+      const sz = tex.getSize();
+      const tileSize = Math.max(1, sz.width); // expect 16
+      const numTiles = Math.max(1, Math.floor(sz.height / tileSize));
+      const vScale = tileSize / Math.max(1, sz.height);
+
+      tex.uScale = 1;
+      tex.uOffset = 0;
+      tex.vScale = vScale;
+
+      // Default assumption: tile 0 at TOP
+      tex.vOffset = (m.atlasIndex % numTiles) * vScale;
+
+      tex.updateSamplingMode(BABYLON.Texture.NEAREST_NEAREST);
+
+      console.log("[ATLAS] loaded", m.name, "size", sz, "tileSize", tileSize, "numTiles", numTiles, "vScale", vScale, "vOffset", tex.vOffset);
+    });
+
+    const stdMat = new BABYLON.StandardMaterial(m.name, scene);
+    stdMat.diffuseTexture = tex;
+    stdMat.backFaceCulling = true;
+
+    // Register into NOA registry (type defs may not match runtime)
+    // registerMaterial(name, color?, texture?, transparent?, babylonMaterial?)
+    (noa.registry as any).registerMaterial(m.name, null, null, !!m.texHasAlpha, stdMat);
+
+    createdAtlasMats.add(m.name);
+  }
+}
+
+/* Declare atlas materials */
+registerAtlasMaterialBabylonDeferred("grass_top", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
+registerAtlasMaterialBabylonDeferred("grass_side", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
+registerAtlasMaterialBabylonDeferred("dirt", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
+registerAtlasMaterialBabylonDeferred("stone", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
+registerAtlasMaterialBabylonDeferred("wood", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
+registerAtlasMaterialBabylonDeferred("leaves", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LEAVES, texHasAlpha: true });
+registerAtlasMaterialBabylonDeferred("bedrock", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
+registerAtlasMaterialBabylonDeferred("coal_ore", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
+registerAtlasMaterialBabylonDeferred("iron_ore", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
+registerAtlasMaterialBabylonDeferred("gold_ore", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
+registerAtlasMaterialBabylonDeferred("diamond_ore", { texture: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIAMOND_ORE });
+
+/* Register blocks */
+noa.registry.registerBlock(GRASS_ID, {
+  // [top, bottom, sides]
+  material: ["grass_top", "dirt", "grass_side"],
+});
+noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
+noa.registry.registerBlock(STONE_ID, { material: "stone" });
+noa.registry.registerBlock(WOOD_ID, { material: "wood" });
+noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
+
+noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
+noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
+noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
+noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
+noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
+
+/* ===============================
+   9.0.1 TEXTURE PROBE (direct Babylon plane)
+================================ */
+let debugProbeCreated = false;
+let probeFlip = false;
+
+function makeTextureProbe(scene: BABYLON.Scene) {
+  if (debugProbeCreated) return;
+  debugProbeCreated = true;
+
+  console.log("[TEX-PROBE] Creating probe using", TERRAIN_ATLAS_URL);
+
+  const plane = BABYLON.MeshBuilder.CreatePlane("atlasProbe", { size: 6 }, scene);
+  plane.isPickable = false;
+
+  // Put it near spawn area
+  plane.position.set(0, 22, 8);
+  plane.rotation.y = Math.PI;
+
+  const mat = new BABYLON.StandardMaterial("atlasProbeMat", scene);
+  mat.disableLighting = true;
+
+  const tex = new BABYLON.Texture(
+    TERRAIN_ATLAS_URL,
+    scene,
+    false,
+    false,
+    BABYLON.Texture.NEAREST_NEAREST
+  );
+
+  tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+
+  tex.onLoadObservable.add(() => {
+    const sz = tex.getSize();
+    console.log("[TEX-PROBE] Loaded OK size=", sz);
+
+    const tileSize = Math.max(1, sz.width);
+    const vScale = tileSize / Math.max(1, sz.height);
+
+    tex.uScale = 1;
+    tex.uOffset = 0;
+    tex.vScale = vScale;
+
+    // default: show tile 0 from TOP
+    tex.vOffset = 0;
+
+    console.log("[TEX-PROBE] set vScale=", vScale, "vOffset=", tex.vOffset);
+  });
+
+  mat.diffuseTexture = tex;
+  plane.material = mat;
+
+  console.log("[TEX-PROBE] If the probe plane is white, texture is NOT binding. If it shows pixels, texture load/bind is OK.");
+}
+
+/* ===============================
+   9.0.2 Chunk mesh/material logger
+================================ */
+let chunkMatLogged = false;
+
+function logChunkMeshMaterials(scene: BABYLON.Scene) {
+  const meshes = scene.meshes.filter((m) => {
+    const n = (m.name || "").toLowerCase();
+    return n.includes("chunk") || n.includes("terrain") || n.includes("world");
+  });
+
+  console.log("[CHUNK-DEBUG] candidate meshes:", meshes.map((m) => m.name).slice(0, 80));
+
+  for (const m of meshes.slice(0, 25)) {
+    const mat = m.material as any;
+    if (!mat) {
+      console.log("[CHUNK-DEBUG]", m.name, "has NO material");
+      continue;
+    }
+    const dt = mat.diffuseTexture as BABYLON.Texture | undefined;
+    console.log(
+      "[CHUNK-DEBUG]",
+      m.name,
+      "mat=",
+      mat.name,
+      "hasTex=",
+      !!dt,
+      "texReady=",
+      dt?.isReady?.(),
+      "texUrl=",
+      (dt as any)?._url
+    );
+  }
+}
 
 /* ===============================
    9.1 Drop visuals in NOA world scene
@@ -1323,21 +1403,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox(
-    "vmUpperArm",
-    { width: 0.16, height: 0.44, depth: 0.16 },
-    vmScene
-  );
-  const fore = BABYLON.MeshBuilder.CreateBox(
-    "vmForeArm",
-    { width: 0.16, height: 0.38, depth: 0.16 },
-    vmScene
-  );
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "vmHand",
-    { width: 0.17, height: 0.18, depth: 0.17 },
-    vmScene
-  );
+  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
+  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
@@ -1376,11 +1444,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes.parent = vmRoot;
 
       const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(
-          name,
-          { points: [BABYLON.Vector3.Zero(), to] },
-          vmScene!
-        );
+        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -1612,61 +1676,37 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
-  const body = BABYLON.MeshBuilder.CreateBox(
-    `remoteBody:${id}`,
-    { width: BODY_W, height: BODY_H, depth: BODY_D },
-    rpScene
-  );
+  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
   body.parent = root;
   body.position.set(0, bodyCenterY, 0);
   body.material = mat;
   body.isPickable = false;
 
-  const head = BABYLON.MeshBuilder.CreateBox(
-    `remoteHead:${id}`,
-    { width: HEAD, height: HEAD, depth: HEAD },
-    rpScene
-  );
+  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
   head.parent = root;
   head.position.set(0, headCenterY, 0);
   head.material = mat;
   head.isPickable = false;
 
-  const armL = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmL:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armL.parent = root;
   armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armL.material = mat;
   armL.isPickable = false;
 
-  const armR = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmR:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armR.parent = root;
   armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armR.material = mat;
   armR.isPickable = false;
 
-  const legL = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegL:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legL.parent = root;
   legL.position.set(-0.16, LEG_H * 0.5, 0);
   legL.material = mat;
   legL.isPickable = false;
 
-  const legR = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegR:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legR.parent = root;
   legR.position.set(0.16, LEG_H * 0.5, 0);
   legR.material = mat;
@@ -2123,7 +2163,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + rp sync + drops + MATERIAL ENSURE)
+   13. Tick loop (drive vm updates + networking + rp sync + drops + ATLAS ENSURE + DEBUG)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -2137,9 +2177,17 @@ let lastTickMs = performance.now();
 
   const scene = getStableScene();
   if (scene) {
-    // IMPORTANT: ensure atlas materials are created once scene exists
+    // Ensure atlas materials exist once the scene is present
     ensureAtlasMaterials(scene);
 
+    // Debug probe + chunk mat logging
+    makeTextureProbe(scene);
+    if (!chunkMatLogged) {
+      chunkMatLogged = true;
+      logChunkMeshMaterials(scene);
+    }
+
+    // Ensure overlay scenes
     ensureVmScene(scene);
     ensureRpScene(scene);
     ensureDropVisuals(scene);
@@ -2160,8 +2208,7 @@ let lastTickMs = performance.now();
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw =
-      typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
+    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
