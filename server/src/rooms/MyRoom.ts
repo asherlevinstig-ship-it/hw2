@@ -1,8 +1,7 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - paste exactly as-is
 //
-// Option A (client sends mine/place requests; server broadcasts authoritative blockUpdate)
-// + multiplayer + persistence
+// Path B (server authoritative chunks) + multiplayer + persistence
 //
 // ✅ FIXES "world resets on refresh":
 // - NOA requests chunks using chunk ORIGIN coords (multiples of chunkSize), e.g. x = -32
@@ -23,6 +22,13 @@
 // - Inventory clicks: left/right/shift (cursor-based)
 // - Crafting: simple recipe list (wood -> planks -> sticks -> wood pick)
 //
+// ✅ Option A Mining (HOLD-TO-MINE, tool speed, progress messages):
+// - Client sends startMine {x,y,z} repeatedly while held; server is authoritative.
+// - Server computes break time based on block + tool held (inventory contains tool).
+// - Server sends mineProgress {x,y,z,progress,stage,done?} to the mining client.
+// - When done, server edits the world (persistent) and broadcasts blockUpdate.
+// - Server also sends mineCancelled when mining is interrupted.
+//
 // Persistence:
 // - Saves chunk files keyed by CHUNK INDEX: c_<cx>_<cy>_<cz>.bin
 // - Saves player inventories keyed by userId: inv_<userId>.json
@@ -31,18 +37,6 @@
 // Also:
 // - autoDispose = false so room isn't destroyed when last client disconnects
 // - loud logs for saves/loads/requests
-//
-// IMPORTANT (Option A):
-// - Server is authoritative for world edits.
-// - Client does NOT set blocks locally; it only sends:
-//     mineBlock {x,y,z}
-//     placeBlock {x,y,z,id,fromSlot}
-// - Server validates and then broadcasts:
-//     blockUpdate {x,y,z,id}
-//
-// Optional rejection feedback:
-// - Server may send to the acting client:
-//     actionRejected { type, reason }
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -115,6 +109,19 @@ type PlaceBlockMsg = {
   fromSlot?: number; // hotbar slot index to consume from
 };
 
+type StartMineMsg = { x: number; y: number; z: number };
+type CancelMineMsg = { reason?: string };
+
+type MineProgressMsg = {
+  x: number;
+  y: number;
+  z: number;
+  progress: number; // 0..1
+  stage: number; // 0..9
+  done?: boolean;
+  reason?: string;
+};
+
 function isFiniteNumber(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n);
 }
@@ -141,6 +148,20 @@ function safeUserId(v: unknown): string {
   const ok = trimmed.replace(/[^a-zA-Z0-9_\-]/g, "");
   return ok.length >= 3 ? ok : "anon";
 }
+
+type MiningState = {
+  sessionId: string;
+  userId: string;
+  x: number;
+  y: number;
+  z: number;
+  startedAt: number; // ms
+  lastHeartbeatAt: number; // ms
+  breakTimeMs: number;
+  lastStageSent: number;
+  lastProgressSentAt: number;
+  lastBlockId: number;
+};
 
 export class MyRoom extends Room {
   // =========================
@@ -240,6 +261,15 @@ export class MyRoom extends Room {
   private nextDropSeq = 1;
 
   // =========================
+  // Mining (Option A)
+  // =========================
+  private mining = new Map<string, MiningState>(); // by sessionId
+  private readonly mineTickMs = 50;
+  private readonly mineHeartbeatTimeoutMs = 450; // if client stops sending startMine, cancel
+  private readonly mineReach = 6.0; // max distance to mine
+  private readonly mineProgressSendMinMs = 80; // throttle progress messages per client
+
+  // =========================
   // Persistence
   // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
@@ -275,6 +305,11 @@ export class MyRoom extends Room {
         console.log("[SNAPSHOT]", { count: all.length, ids: all.map((p) => p.id).slice(0, 5) });
       }
     }, this.snapshotIntervalMs);
+
+    // Mining tick loop
+    this.clock.setInterval(() => {
+      this.tickMining();
+    }, this.mineTickMs);
 
     // =========================
     // Chunk streaming
@@ -362,8 +397,100 @@ export class MyRoom extends Room {
     });
 
     // =========================
-    // Block edits (authoritative + persistent + drops)
+    // Mining (Option A): hold-to-mine
     // =========================
+    this.onMessage("startMine", (client: Client, payload: unknown) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const p = payload as Partial<StartMineMsg>;
+      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
+
+      const x = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
+      const y = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
+      const z = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
+
+      const pl = this.players.get(client.sessionId);
+      if (!pl) return;
+
+      // reach check
+      const dx = (x + 0.5) - pl.x;
+      const dy = (y + 0.5) - pl.y;
+      const dz = (z + 0.5) - pl.z;
+      const dist2 = dx * dx + dy * dy + dz * dz;
+      if (dist2 > this.mineReach * this.mineReach) {
+        this.cancelMiningFor(client, "too_far");
+        return;
+      }
+
+      const blockId = this.getBlockAt(x, y, z);
+      if (blockId === this.AIR_ID) {
+        this.cancelMiningFor(client, "air");
+        return;
+      }
+      if (blockId === this.BEDROCK_ID) {
+        this.cancelMiningFor(client, "bedrock");
+        return;
+      }
+
+      const userId = pl.userId;
+      const inv = this.getOrLoadInventory(userId);
+
+      // If already mining same block, update heartbeat only
+      const cur = this.mining.get(client.sessionId);
+      const now = Date.now();
+
+      if (cur && cur.x === x && cur.y === y && cur.z === z) {
+        cur.lastHeartbeatAt = now;
+        // If block changed under them, restart timing (or cancel)
+        const nowBlock = this.getBlockAt(x, y, z);
+        if (nowBlock !== cur.lastBlockId) {
+          this.cancelMiningFor(client, "block_changed");
+          return;
+        }
+        return;
+      }
+
+      // starting a new target: cancel any previous
+      if (cur) this.cancelMiningFor(client, "retarget");
+
+      const breakTimeMs = this.computeBreakTimeMs(blockId, inv);
+      const st: MiningState = {
+        sessionId: client.sessionId,
+        userId,
+        x,
+        y,
+        z,
+        startedAt: now,
+        lastHeartbeatAt: now,
+        breakTimeMs,
+        lastStageSent: -1,
+        lastProgressSentAt: 0,
+        lastBlockId: blockId,
+      };
+
+      this.mining.set(client.sessionId, st);
+
+      // send immediate first progress update (0%)
+      const msg: MineProgressMsg = { x, y, z, progress: 0, stage: 0 };
+      client.send("mineProgress", msg);
+
+      console.log("[MINE start]", {
+        by: client.sessionId,
+        userId,
+        x,
+        y,
+        z,
+        blockId,
+        breakTimeMs,
+        hasWoodPick: this.inventoryHas(inv, this.Items.WOOD_PICK),
+      });
+    });
+
+    this.onMessage("cancelMine", (client: Client, payload: unknown) => {
+      const reason = typeof (payload as any)?.reason === "string" ? String((payload as any).reason).slice(0, 60) : "client_cancel";
+      this.cancelMiningFor(client, reason);
+    });
+
+    // Legacy instant mine (if still sent by old clients)
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
@@ -375,47 +502,26 @@ export class MyRoom extends Room {
 
       const oldId = this.getBlockAt(x, y, z);
       if (oldId === this.AIR_ID) return;
+      if (oldId === this.BEDROCK_ID) return;
 
-      // bedrock is unbreakable
-      if (oldId === this.BEDROCK_ID) {
-        client.send("actionRejected", { type: "mine", reason: "bedrock_unbreakable" });
-        return;
-      }
-
-      // Tool gating (starter version):
-      // - Without wood pick: you can break, but stone/ores drop nothing
-      // - With wood pick: stone/coal/iron can drop
-      // - Gold/diamond: break but no drops until better picks exist (future)
       const pl = this.players.get(client.sessionId);
       const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
 
-      const needsPick =
-        oldId === this.STONE_ID ||
-        oldId === this.COAL_ORE_ID ||
-        oldId === this.IRON_ORE_ID ||
-        oldId === this.GOLD_ORE_ID ||
-        oldId === this.DIAMOND_ORE_ID;
+      const canDrop = inv ? this.canBlockDropWithTool(oldId, inv) : this.canBlockDropWithTool(oldId, null);
 
-      const hasWoodPick = inv ? this.inventoryHas(inv, this.Items.WOOD_PICK) : false;
+      console.log("[EDIT mineBlock legacy]", { by: client.sessionId, x, y, z, oldId, canDrop });
 
-      const canDrop =
-        !needsPick ||
-        (hasWoodPick && (oldId === this.STONE_ID || oldId === this.COAL_ORE_ID || oldId === this.IRON_ORE_ID));
-
-      console.log("[EDIT mineBlock]", { by: client.sessionId, x, y, z, oldId, canDrop });
-
-      // remove block
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
 
-      // spawn drop if allowed
       if (canDrop) {
         const dropItem = this.blockIdToDropItemId(oldId);
-        if (dropItem > 0) {
-          this.spawnDrop(dropItem, 1, x + 0.5, y + 0.65, z + 0.5);
-        }
+        if (dropItem > 0) this.spawnDrop(dropItem, 1, x + 0.5, y + 0.65, z + 0.5);
       }
     });
 
+    // =========================
+    // Block placing (authoritative + persistent)
+    // =========================
     this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
 
@@ -429,16 +535,10 @@ export class MyRoom extends Room {
       const blockId = toInt(clamp(maybe.id, 0, 255));
 
       // cannot place bedrock
-      if (blockId === this.BEDROCK_ID) {
-        client.send("actionRejected", { type: "place", reason: "cannot_place_bedrock" });
-        return;
-      }
+      if (blockId === this.BEDROCK_ID) return;
 
       const oldId = this.getBlockAt(x, y, z);
-      if (oldId !== this.AIR_ID) {
-        client.send("actionRejected", { type: "place", reason: "target_not_air" });
-        return;
-      }
+      if (oldId !== this.AIR_ID) return; // only place into air
 
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
@@ -447,27 +547,15 @@ export class MyRoom extends Room {
 
       // require fromSlot to be a valid hotbar slot
       const fromSlot = isFiniteNumber(maybe.fromSlot) ? toInt(maybe.fromSlot) : -1;
-      if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) {
-        client.send("actionRejected", { type: "place", reason: "missing_fromSlot" });
-        return;
-      }
+      if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) return;
 
       const stack = inv.slots[fromSlot];
-      if (!stack || stack.id <= 0 || stack.count <= 0) {
-        client.send("actionRejected", { type: "place", reason: "empty_slot" });
-        return;
-      }
+      if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
       // item must be placeable and match blockId
       const def = this.ItemDefs[stack.id];
-      if (!def || typeof def.placeBlockId !== "number") {
-        client.send("actionRejected", { type: "place", reason: "item_not_placeable" });
-        return;
-      }
-      if (def.placeBlockId !== blockId) {
-        client.send("actionRejected", { type: "place", reason: "block_mismatch" });
-        return;
-      }
+      if (!def || typeof def.placeBlockId !== "number") return;
+      if (def.placeBlockId !== blockId) return;
 
       console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, blockId, fromSlot, itemId: stack.id });
 
@@ -477,6 +565,10 @@ export class MyRoom extends Room {
 
       this.saveInventory(pl.userId, inv);
       this.sendInvStateToClient(client, inv);
+
+      // placing cancels mining if they were mining that spot
+      const ms = this.mining.get(client.sessionId);
+      if (ms && ms.x === x && ms.y === y && ms.z === z) this.cancelMiningFor(client, "placed_on_target");
 
       this.setBlockAuthoritative(x, y, z, blockId);
     });
@@ -721,6 +813,7 @@ export class MyRoom extends Room {
 
   onLeave(client: Client, code?: number) {
     console.log("➖ onLeave", client.sessionId, "code:", code);
+    this.cancelMiningFor(client, "leave");
     const existed = this.players.delete(client.sessionId);
     if (existed) this.broadcast("playerLeft", { id: client.sessionId });
   }
@@ -728,6 +821,7 @@ export class MyRoom extends Room {
   onDispose() {
     console.log("🧹 MyRoom disposed");
     this.players.clear();
+    this.mining.clear();
     // keep chunks/drops maps as-is? room disposed means process exit, so doesn't matter.
   }
 
@@ -906,7 +1000,7 @@ export class MyRoom extends Room {
     let h = x * 374761393 + y * 668265263 + z * 2147483647;
     h = (h ^ (h >>> 13)) * 1274126177;
     h = h ^ (h >>> 16);
-    return ((h >>> 0) / 4294967296);
+    return (h >>> 0) / 4294967296;
   }
 
   private veinNoise(x: number, y: number, z: number): number {
@@ -1061,11 +1155,199 @@ export class MyRoom extends Room {
   }
 
   // =========================
+  // Mining helpers
+  // =========================
+  private isStoneLike(blockId: number): boolean {
+    return (
+      blockId === this.STONE_ID ||
+      blockId === this.COAL_ORE_ID ||
+      blockId === this.IRON_ORE_ID ||
+      blockId === this.GOLD_ORE_ID ||
+      blockId === this.DIAMOND_ORE_ID
+    );
+  }
+
+  // Tool gating + drops rule
+  private canBlockDropWithTool(blockId: number, inv: InvState | null): boolean {
+    // bedrock never drops
+    if (blockId === this.BEDROCK_ID) return false;
+
+    const needsPick = this.isStoneLike(blockId);
+
+    const hasWoodPick = inv ? this.inventoryHas(inv, this.Items.WOOD_PICK) : false;
+
+    // Starter rules:
+    // - Without wood pick: can break, but stone/ores drop nothing.
+    // - With wood pick: stone/coal/iron drop.
+    // - Gold/diamond: still no drops until better pick exists (future).
+    const canDrop =
+      !needsPick ||
+      (hasWoodPick && (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID));
+
+    return canDrop;
+  }
+
+  // Compute break time based on block + tool
+  private computeBreakTimeMs(blockId: number, inv: InvState): number {
+    // base times (ms) tuned for feel
+    let base = 450;
+
+    if (blockId === this.LEAVES_ID) base = 180;
+    else if (blockId === this.GRASS_ID) base = 420;
+    else if (blockId === this.DIRT_ID) base = 420;
+    else if (blockId === this.WOOD_ID) base = 950;
+    else if (blockId === this.STONE_ID) base = 1250;
+    else if (blockId === this.COAL_ORE_ID) base = 1400;
+    else if (blockId === this.IRON_ORE_ID) base = 1650;
+    else if (blockId === this.GOLD_ORE_ID) base = 2200;
+    else if (blockId === this.DIAMOND_ORE_ID) base = 2850;
+    else if (blockId === this.BEDROCK_ID) return 999999999;
+
+    const hasWoodPick = this.inventoryHas(inv, this.Items.WOOD_PICK);
+
+    // Tool multipliers:
+    // - Pick speeds up stone-like blocks; other blocks mostly unchanged
+    if (this.isStoneLike(blockId)) {
+      if (hasWoodPick) base = Math.floor(base * 0.65); // faster with pick
+      else base = Math.floor(base * 2.8); // painful by hand
+    } else {
+      // small bonus with pick on wood (optional)
+      if (blockId === this.WOOD_ID && hasWoodPick) base = Math.floor(base * 0.92);
+    }
+
+    // clamp to sane range
+    return clamp(base, 80, 12000);
+  }
+
+  private cancelMiningFor(client: Client, reason: string): void {
+    const st = this.mining.get(client.sessionId);
+    if (!st) return;
+
+    this.mining.delete(client.sessionId);
+    client.send("mineCancelled", { reason });
+
+    // Also send a last progress reset-ish message if you want; client already clears on cancelMine local.
+    console.log("[MINE cancel]", { by: client.sessionId, reason, target: { x: st.x, y: st.y, z: st.z }, blockId: st.lastBlockId });
+  }
+
+  private tickMining(): void {
+    const now = Date.now();
+
+    for (const [sid, st] of this.mining.entries()) {
+      const client = this.clients.find((c) => c.sessionId === sid);
+      if (!client) {
+        this.mining.delete(sid);
+        continue;
+      }
+
+      const pl = this.players.get(sid);
+      if (!pl) {
+        this.cancelMiningFor(client, "no_player");
+        continue;
+      }
+
+      // heartbeat timeout (client released LMB or lost focus)
+      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) {
+        this.cancelMiningFor(client, "timeout");
+        continue;
+      }
+
+      // reach check
+      const dx = (st.x + 0.5) - pl.x;
+      const dy = (st.y + 0.5) - pl.y;
+      const dz = (st.z + 0.5) - pl.z;
+      const dist2 = dx * dx + dy * dy + dz * dz;
+      if (dist2 > this.mineReach * this.mineReach) {
+        this.cancelMiningFor(client, "too_far");
+        continue;
+      }
+
+      // block still exists and same id?
+      const currentId = this.getBlockAt(st.x, st.y, st.z);
+      if (currentId === this.AIR_ID) {
+        this.cancelMiningFor(client, "air");
+        continue;
+      }
+      if (currentId === this.BEDROCK_ID) {
+        this.cancelMiningFor(client, "bedrock");
+        continue;
+      }
+      if (currentId !== st.lastBlockId) {
+        this.cancelMiningFor(client, "block_changed");
+        continue;
+      }
+
+      // recompute break time occasionally (tool could have changed mid-mine)
+      const inv = this.getOrLoadInventory(st.userId);
+      const newBreak = this.computeBreakTimeMs(currentId, inv);
+      if (newBreak !== st.breakTimeMs) {
+        // keep progress proportionally similar
+        const elapsed = Math.max(0, now - st.startedAt);
+        const p = st.breakTimeMs > 0 ? elapsed / st.breakTimeMs : 0;
+        st.breakTimeMs = newBreak;
+        st.startedAt = now - Math.floor(p * st.breakTimeMs);
+      }
+
+      const elapsedMs = Math.max(0, now - st.startedAt);
+      const progress01 = clamp(elapsedMs / Math.max(1, st.breakTimeMs), 0, 1);
+
+      const stage = clamp(Math.floor(progress01 * 10), 0, 9);
+
+      const shouldSend =
+        stage !== st.lastStageSent || now - st.lastProgressSentAt >= this.mineProgressSendMinMs || progress01 >= 1;
+
+      if (shouldSend) {
+        st.lastStageSent = stage;
+        st.lastProgressSentAt = now;
+
+        const msg: MineProgressMsg = {
+          x: st.x,
+          y: st.y,
+          z: st.z,
+          progress: progress01,
+          stage,
+        };
+
+        // if done, mine completes now
+        if (progress01 >= 1) {
+          // Finish: remove block + drops (authoritative + persistent)
+          const canDrop = this.canBlockDropWithTool(currentId, inv);
+
+          this.setBlockAuthoritative(st.x, st.y, st.z, this.AIR_ID);
+
+          if (canDrop) {
+            const dropItem = this.blockIdToDropItemId(currentId);
+            if (dropItem > 0) this.spawnDrop(dropItem, 1, st.x + 0.5, st.y + 0.65, st.z + 0.5);
+          }
+
+          msg.done = true;
+          client.send("mineProgress", msg);
+
+          console.log("[MINE done]", {
+            by: sid,
+            userId: st.userId,
+            x: st.x,
+            y: st.y,
+            z: st.z,
+            blockId: currentId,
+            canDrop,
+            breakTimeMs: st.breakTimeMs,
+          });
+
+          this.mining.delete(sid);
+        } else {
+          client.send("mineProgress", msg);
+        }
+      }
+    }
+  }
+
+  // =========================
   // Inventory helpers
   // =========================
   private normalizeStack(s: ItemStack): ItemStack {
-    const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999));
-    const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999));
+    const id = toInt(clamp(Number(s?.id ?? 0), 0, 999999));
+    const count = toInt(clamp(Number(s?.count ?? 0), 0, 999999));
     return id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
   }
 

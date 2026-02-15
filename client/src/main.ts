@@ -3,7 +3,7 @@
  *
  * NOA voxel client + Colyseus multiplayer
  * - Server authoritative chunk streaming (Path B)
- * - Mine/place block sync
+ * - Mine/place block sync (Option A: server authoritative)
  * - Remote players rendered in a SECOND Babylon scene (rpScene) rendered AFTER NOA
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
@@ -12,6 +12,11 @@
  * ✅ Server-authoritative drops + pickup (auto pickup when close)
  * ✅ Basic crafting via simple recipe list (buttons in inventory UI)
  * ✅ 16x16 TEXTURE ATLAS (vertical strip) for blocks (grass top/side/bottom etc)
+ *
+ * Option A (new):
+ * ✅ Server-authoritative mining (hold-to-mine): client does NOT remove blocks locally
+ * ✅ Mining progress "cracks" (visual overlay wireframe cube, driven by server progress)
+ * ✅ Tool-based mining speeds (server computes; client just displays progress)
  *
  * Atlas requirement (NOA):
  * - Atlas is a VERTICAL STRIP: width=16, height=16*N tiles stacked top->bottom.
@@ -31,13 +36,6 @@
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
- *
- * IMPORTANT CHANGE (Option A):
- * ✅ SERVER-AUTHORITATIVE mine/place:
- * - Client NO LONGER sets blocks locally on click
- * - Client only sends mineBlock/placeBlock requests
- * - World updates come ONLY from server "blockUpdate"
- * - Optional: handles "actionRejected" feedback from server
  */
 
 import { Engine } from "noa-engine";
@@ -297,7 +295,6 @@ function hasPointerLock(): boolean {
    5. Register Blocks & Materials (16x16 VERTICAL STRIP ATLAS)
 ================================ */
 // Block IDs (MUST match server)
-
 const GRASS_ID = 1;
 const DIRT_ID = 2;
 const STONE_ID = 3;
@@ -694,11 +691,22 @@ addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_
 addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
 addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
 
+function cancelMiningLocal(reason = "") {
+  miningHeld = false;
+  miningTarget = null;
+  miningProgress = null;
+  lastMineSentKey = "";
+  if (room) room.send("cancelMine", { reason });
+}
+
 function setInvOpen(open: boolean) {
   invOpen = open;
   invRoot.style.display = invOpen ? "block" : "none";
   craftStatus.textContent = invOpen ? "RMB a recipe to craft MAX." : "";
   renderInventoryUI();
+
+  // cancel mining when opening UI
+  if (invOpen) cancelMiningLocal("inventory_open");
 }
 
 /* ===============================
@@ -744,6 +752,11 @@ function updateOverlay(extraLine = "") {
 
   const heldName = getHotbarHeldName();
 
+  const mineLine =
+    miningProgress && miningProgress.progress > 0
+      ? `Mining: ${(miningProgress.progress * 100).toFixed(0)}% (stage ${miningProgress.stage})`
+      : "Mining: -";
+
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
@@ -754,8 +767,9 @@ function updateOverlay(extraLine = "") {
     <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} |
     <strong>VM Tune:</strong> ${vmTuning ? "ON" : "OFF"} |
     <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
+    <strong>${mineLine}</strong><br>
     -------------------------<br>
-    [L-Click] Mine  |  [R-Click] Place<br>
+    [Hold LMB] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
     [WASD] Move  |  [Space] Jump<br>
     [I] Inventory<br>
@@ -975,7 +989,7 @@ function applyChunkFromServer(msg: any) {
 }
 
 /* ===============================
-   8. Interaction (Mine/Place)
+   8. Interaction (Mine/Place) - Option A mining
 ================================ */
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
@@ -998,18 +1012,46 @@ function triggerPunch() {
   punchT = 0;
 }
 
-/* ---- Action throttle (server-authoritative mode) ---- */
-let lastMineReqAt = 0;
-let lastPlaceReqAt = 0;
-const ACTION_COOLDOWN_MS = 90;
+/* ===============================
+   8.1 Mining progress (Option A)
+================================ */
+type MineProgressMsg = {
+  x: number;
+  y: number;
+  z: number;
+  progress: number; // 0..1
+  stage: number; // 0..9
+  done?: boolean;
+  reason?: string;
+};
 
+let miningHeld = false;
+let miningTarget: { x: number; y: number; z: number } | null = null;
+let miningProgress: MineProgressMsg | null = null;
+let lastMineSentKey = "";
+let lastMineSendAt = 0;
+
+let crackMesh: BABYLON.Mesh | null = null;
+let crackMat: BABYLON.StandardMaterial | null = null;
+let crackSceneUid: string | number | null = null;
+
+function sendStartMine(x: number, y: number, z: number) {
+  if (!room) return;
+  const now = performance.now();
+  if (now - lastMineSendAt < 40) return; // tiny throttle
+  lastMineSendAt = now;
+
+  const key = `${x},${y},${z}`;
+  if (key === lastMineSentKey) return;
+  lastMineSentKey = key;
+
+  room.send("startMine", { x, y, z });
+}
+
+/* Hold-to-mine start */
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
-
-  const now = performance.now();
-  if (now - lastMineReqAt < ACTION_COOLDOWN_MS) return;
-  lastMineReqAt = now;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1017,18 +1059,25 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
+  miningHeld = true;
+  miningTarget = { x, y, z };
+  miningProgress = { x, y, z, progress: 0, stage: 0 };
 
-  // ✅ server-authoritative: do NOT setBlockID locally
-  room?.send("mineBlock", { x, y, z });
+  lastMineSentKey = "";
+  sendStartMine(x, y, z);
 });
 
+/* Release to cancel */
+window.addEventListener("mouseup", (e) => {
+  if (e.button !== 0) return; // left button only
+  if (!miningHeld) return;
+  cancelMiningLocal("mouseup");
+});
+
+/* Place block (Option A: do NOT setBlockID locally) */
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
-
-  const now = performance.now();
-  if (now - lastPlaceReqAt < ACTION_COOLDOWN_MS) return;
-  lastPlaceReqAt = now;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1050,9 +1099,9 @@ noa.inputs.down.on("alt-fire", () => {
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
+  // don't place into your own body
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  // ✅ server-authoritative: do NOT setBlockID locally
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
 
@@ -1083,7 +1132,76 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   9.1 Drop visuals in NOA world scene
+   9.1 Mining crack visuals (wireframe overlay)
+================================ */
+function ensureCrackVisual(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  if (crackSceneUid == null) crackSceneUid = uid ?? null;
+
+  // if scene changed (NOA scene recreated), rebuild
+  if (crackSceneUid !== (uid ?? null)) {
+    try {
+      crackMesh?.dispose();
+    } catch {}
+    try {
+      crackMat?.dispose();
+    } catch {}
+    crackMesh = null;
+    crackMat = null;
+    crackSceneUid = uid ?? null;
+  }
+
+  if (crackMesh && crackMat) return;
+
+  crackMesh = BABYLON.MeshBuilder.CreateBox("mineCrackBox", { size: 1.02 }, scene);
+  crackMesh.isPickable = false;
+  crackMesh.setEnabled(false);
+  (crackMesh as any).isInFrustum = () => true;
+
+  crackMat = new BABYLON.StandardMaterial("mineCrackMat", scene);
+  crackMat.disableLighting = true;
+  crackMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  crackMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+  crackMat.specularColor = new BABYLON.Color3(0, 0, 0);
+  crackMat.alpha = 0.0;
+
+  crackMat.backFaceCulling = false;
+  crackMat.disableDepthWrite = true;
+  crackMat.depthFunction = BABYLON.Constants.LEQUAL;
+
+  crackMat.wireframe = true;
+  crackMesh.material = crackMat;
+}
+
+function hideCrackVisual() {
+  if (crackMesh) crackMesh.setEnabled(false);
+  if (crackMat) crackMat.alpha = 0;
+}
+
+function updateCrackVisual(scene: BABYLON.Scene) {
+  ensureCrackVisual(scene);
+
+  if (!miningProgress || !crackMesh || !crackMat) {
+    hideCrackVisual();
+    return;
+  }
+
+  const { x, y, z, progress } = miningProgress;
+
+  crackMesh.setEnabled(true);
+  crackMesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+
+  // opacity ramps up with progress
+  const a = BABYLON.Scalar.Clamp(0.15 + progress * 0.65, 0, 0.9);
+  crackMat.alpha = a;
+
+  // subtle “pulse” as you mine
+  const pulse = 1.02 + Math.sin(performance.now() / 80) * 0.005;
+  crackMesh.scaling.set(pulse, pulse, pulse);
+}
+
+/* ===============================
+   9.2 Drop visuals in NOA world scene
 ================================ */
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
@@ -1858,16 +1976,54 @@ async function connect() {
 
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
-        // ✅ server-authoritative world updates
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
+
+        // if the block we were mining changed, clear cracks
+        if (
+          miningProgress &&
+          msg.x === miningProgress.x &&
+          msg.y === miningProgress.y &&
+          msg.z === miningProgress.z
+        ) {
+          miningProgress = null;
+        }
       }
     });
 
-    // Optional: server rejection feedback
-    room.onMessage("actionRejected", (m: any) => {
-      const t = typeof (m as any)?.type === "string" ? (m as any).type : "action";
-      const r = typeof (m as any)?.reason === "string" ? (m as any).reason : "rejected";
-      updateOverlay(`${t} rejected: ${r}`);
+    // Mining progress (server authoritative)
+    room.onMessage("mineProgress", (m: any) => {
+      if (!m || typeof m !== "object") return;
+      const x = Number((m as any).x);
+      const y = Number((m as any).y);
+      const z = Number((m as any).z);
+      const progress = Number((m as any).progress);
+      const stage = Number((m as any).stage);
+
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (!Number.isFinite(progress) || !Number.isFinite(stage)) return;
+
+      miningProgress = {
+        x,
+        y,
+        z,
+        progress: Math.max(0, Math.min(1, progress)),
+        stage: Math.max(0, Math.min(9, stage | 0)),
+        done: !!(m as any).done,
+        reason: typeof (m as any).reason === "string" ? (m as any).reason : undefined,
+      };
+
+      if ((m as any).done) {
+        miningHeld = false;
+        miningTarget = null;
+        lastMineSentKey = "";
+      }
+    });
+
+    room.onMessage("mineCancelled", (_m: any) => {
+      miningProgress = null;
+      miningHeld = false;
+      miningTarget = null;
+      lastMineSentKey = "";
     });
 
     // Inventory state from server
@@ -2074,7 +2230,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + rp sync + drops)
+   13. Tick loop (drive vm updates + networking + rp sync + drops + mining)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -2094,6 +2250,9 @@ let lastTickMs = performance.now();
 
     // Sync rp camera from NOA camera every tick (critical)
     syncRpCameraFromWorld(scene);
+
+    // crack overlay updates
+    updateCrackVisual(scene);
   }
 
   updateViewmodel(dtSec);
@@ -2104,6 +2263,23 @@ let lastTickMs = performance.now();
   // Drop visuals + pickup
   updateDropVisuals(dtSec);
   tryAutoPickup();
+
+  // Hold-to-mine tracking: if you drag to a new block, start mining that instead
+  if (miningHeld && hasPointerLock() && !invOpen) {
+    const t = getTargetInfo();
+    if (t?.pos) {
+      const { x, y, z } = t.pos;
+      if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
+        miningTarget = { x, y, z };
+        miningProgress = { x, y, z, progress: 0, stage: 0 };
+        lastMineSentKey = "";
+        sendStartMine(x, y, z);
+      } else {
+        // keep-alive / resync occasionally
+        if (tickCount % 20 === 0) sendStartMine(x, y, z);
+      }
+    }
+  }
 
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
