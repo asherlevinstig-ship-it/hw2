@@ -7,6 +7,12 @@
  * - Remote players rendered in a SECOND Babylon scene (rpScene) rendered AFTER NOA
  * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
  *
+ * Added:
+ * ✅ Inventory (hotbar + backpack) with cursor + clicks (left/right/shift)
+ * ✅ Server-authoritative drops + pickup (auto pickup when close)
+ * ✅ Basic crafting via simple recipe list (buttons in inventory UI)
+ * ✅ Minecraft-ish minerals + bedrock (materials + block registration)
+ *
  * Why rpScene?
  * NOA’s world scene/camera/layerMask/renderGroups can be swapped/managed internally.
  * Rendering remotes in our own scene *after* NOA guarantees they appear (like the arm).
@@ -15,19 +21,12 @@
  * - V toggles viewmodel overlay ON/OFF
  * - P toggles Remote Player overlay ON/OFF
  * - O toggles Remote "X-RAY" (always visible) ON/OFF
+ * - I toggles Inventory UI
  *
  * Debug controls (viewmodel):
  * - B toggles VM debug visuals (axes + screen frame)
  * - N toggles VM tuning mode (enables hotkey nudging)
  * - M toggles VM mirror (fixes "wrong direction"/handedness)
- *
- * Inventory/Crafting:
- * - E toggles Inventory (hotbar + backpack) ON/OFF
- * - C toggles Crafting list ON/OFF
- * - Left click slot: pick/place/swap/stack (server authoritative cursor)
- * - Right click slot: split/take-half/place-one (server authoritative cursor)
- * - Shift + Left click slot: quick move between hotbar/backpack
- * - Click recipe: craft once; Shift+click: craft max
  *
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
@@ -44,24 +43,6 @@ import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 const ENDPOINT = import.meta.env.VITE_COLYSEUS_ENDPOINT ?? "ws://localhost:2567";
 const colyseus = new Client(ENDPOINT);
 let room: Room | null = null;
-
-// Stable userId for persistence (server uses this to load/save inventory)
-const LS_USER_ID_KEY = "noa_uid_v1";
-function getOrCreateUserId(): string {
-  try {
-    const existing = localStorage.getItem(LS_USER_ID_KEY);
-    if (existing && existing.length >= 6) return existing;
-
-    const rnd = () => Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
-    const id = `u_${rnd()}_${rnd()}`.replace(/[^a-zA-Z0-9_\-]/g, "");
-    localStorage.setItem(LS_USER_ID_KEY, id);
-    return id;
-  } catch {
-    // fallback (non-persistent)
-    return `u_${Date.now().toString(16)}`;
-  }
-}
-const userId = getOrCreateUserId();
 
 /* ===============================
    2. DOM & CSS Setup
@@ -102,153 +83,170 @@ overlay.style.zIndex = "100";
 document.body.appendChild(overlay);
 
 /* ===============================
-   3.1 Inventory UI (E) + Craft UI (C)
+   3.1 Inventory UI
 ================================ */
-const uiRoot = document.createElement("div");
-uiRoot.style.position = "fixed";
-uiRoot.style.left = "0";
-uiRoot.style.top = "0";
-uiRoot.style.right = "0";
-uiRoot.style.bottom = "0";
-uiRoot.style.display = "none";
-uiRoot.style.zIndex = "200";
-uiRoot.style.pointerEvents = "auto";
-uiRoot.style.userSelect = "none";
-uiRoot.style.fontFamily = "monospace";
-document.body.appendChild(uiRoot);
+const invRoot = document.createElement("div");
+invRoot.style.position = "fixed";
+invRoot.style.left = "50%";
+invRoot.style.top = "50%";
+invRoot.style.transform = "translate(-50%, -50%)";
+invRoot.style.width = "760px";
+invRoot.style.maxWidth = "95vw";
+invRoot.style.background = "rgba(0,0,0,0.78)";
+invRoot.style.border = "1px solid rgba(255,255,255,0.15)";
+invRoot.style.borderRadius = "10px";
+invRoot.style.padding = "14px";
+invRoot.style.color = "white";
+invRoot.style.fontFamily = "monospace";
+invRoot.style.zIndex = "200";
+invRoot.style.pointerEvents = "auto";
+invRoot.style.display = "none";
+invRoot.style.userSelect = "none";
+invRoot.style.boxShadow = "0 10px 30px rgba(0,0,0,0.4)";
+document.body.appendChild(invRoot);
 
-const uiBackdrop = document.createElement("div");
-uiBackdrop.style.position = "absolute";
-uiBackdrop.style.left = "0";
-uiBackdrop.style.top = "0";
-uiBackdrop.style.right = "0";
-uiBackdrop.style.bottom = "0";
-uiBackdrop.style.background = "rgba(0,0,0,0.35)";
-uiBackdrop.style.pointerEvents = "auto";
-uiRoot.appendChild(uiBackdrop);
-
-const uiPanel = document.createElement("div");
-uiPanel.style.position = "absolute";
-uiPanel.style.left = "50%";
-uiPanel.style.top = "50%";
-uiPanel.style.transform = "translate(-50%, -50%)";
-uiPanel.style.width = "720px";
-uiPanel.style.maxWidth = "95vw";
-uiPanel.style.background = "rgba(10,10,10,0.92)";
-uiPanel.style.border = "1px solid rgba(255,255,255,0.18)";
-uiPanel.style.borderRadius = "10px";
-uiPanel.style.boxShadow = "0 12px 40px rgba(0,0,0,0.35)";
-uiPanel.style.padding = "14px";
-uiPanel.style.display = "grid";
-uiPanel.style.gridTemplateColumns = "1fr 1fr";
-uiPanel.style.gap = "12px";
-uiPanel.style.pointerEvents = "auto";
-uiRoot.appendChild(uiPanel);
-
-const invPanel = document.createElement("div");
-invPanel.style.display = "flex";
-invPanel.style.flexDirection = "column";
-invPanel.style.gap = "10px";
-uiPanel.appendChild(invPanel);
-
-const craftPanel = document.createElement("div");
-craftPanel.style.display = "flex";
-craftPanel.style.flexDirection = "column";
-craftPanel.style.gap = "10px";
-uiPanel.appendChild(craftPanel);
+const invHeader = document.createElement("div");
+invHeader.style.display = "flex";
+invHeader.style.alignItems = "center";
+invHeader.style.justifyContent = "space-between";
+invHeader.style.marginBottom = "10px";
+invRoot.appendChild(invHeader);
 
 const invTitle = document.createElement("div");
-invTitle.textContent = "Inventory (E to close)";
-invTitle.style.color = "white";
-invTitle.style.fontSize = "16px";
+invTitle.textContent = "Inventory";
+invTitle.style.fontSize = "18px";
 invTitle.style.fontWeight = "700";
-invPanel.appendChild(invTitle);
+invHeader.appendChild(invTitle);
 
 const invHint = document.createElement("div");
-invHint.innerHTML =
-  `<span style="opacity:.9">L-click: pick/place/swap/stack | R-click: split/place-one | Shift+L: quick move</span>`;
-invHint.style.color = "white";
+invHint.style.opacity = "0.85";
 invHint.style.fontSize = "12px";
-invHint.style.opacity = "0.95";
-invPanel.appendChild(invHint);
+invHint.textContent = "LMB: pick/place/stack | RMB: half/place-one | Shift+LMB: quick move";
+invHeader.appendChild(invHint);
 
-const invGrid = document.createElement("div");
-invGrid.style.display = "grid";
-invGrid.style.gridTemplateColumns = "repeat(5, 1fr)";
-invGrid.style.gap = "8px";
-invGrid.style.padding = "8px";
-invGrid.style.borderRadius = "10px";
-invGrid.style.border = "1px solid rgba(255,255,255,0.15)";
-invGrid.style.background = "rgba(255,255,255,0.04)";
-invPanel.appendChild(invGrid);
+const invMain = document.createElement("div");
+invMain.style.display = "grid";
+invMain.style.gridTemplateColumns = "1fr 260px";
+invMain.style.gap = "12px";
+invRoot.appendChild(invMain);
 
-const invCursorLine = document.createElement("div");
-invCursorLine.style.color = "white";
-invCursorLine.style.fontSize = "12px";
-invCursorLine.style.opacity = "0.95";
-invCursorLine.textContent = "Cursor: (empty)";
-invPanel.appendChild(invCursorLine);
+const invLeft = document.createElement("div");
+invLeft.style.display = "flex";
+invLeft.style.flexDirection = "column";
+invLeft.style.gap = "10px";
+invMain.appendChild(invLeft);
+
+const invRight = document.createElement("div");
+invRight.style.display = "flex";
+invRight.style.flexDirection = "column";
+invRight.style.gap = "10px";
+invMain.appendChild(invRight);
+
+const cursorRow = document.createElement("div");
+cursorRow.style.display = "flex";
+cursorRow.style.alignItems = "center";
+cursorRow.style.gap = "10px";
+cursorRow.style.padding = "8px";
+cursorRow.style.border = "1px solid rgba(255,255,255,0.12)";
+cursorRow.style.borderRadius = "8px";
+cursorRow.style.background = "rgba(255,255,255,0.05)";
+invLeft.appendChild(cursorRow);
+
+const cursorLabel = document.createElement("div");
+cursorLabel.textContent = "Cursor:";
+cursorLabel.style.opacity = "0.9";
+cursorRow.appendChild(cursorLabel);
+
+const cursorSlotEl = document.createElement("div");
+cursorSlotEl.style.width = "64px";
+cursorSlotEl.style.height = "64px";
+cursorSlotEl.style.borderRadius = "8px";
+cursorSlotEl.style.border = "1px solid rgba(255,255,255,0.18)";
+cursorSlotEl.style.display = "flex";
+cursorSlotEl.style.flexDirection = "column";
+cursorSlotEl.style.alignItems = "center";
+cursorSlotEl.style.justifyContent = "center";
+cursorSlotEl.style.background = "rgba(0,0,0,0.35)";
+cursorSlotEl.style.position = "relative";
+cursorRow.appendChild(cursorSlotEl);
+
+const cursorNameEl = document.createElement("div");
+cursorNameEl.style.fontSize = "11px";
+cursorNameEl.style.opacity = "0.95";
+cursorNameEl.style.textAlign = "center";
+cursorNameEl.style.padding = "0 6px";
+cursorNameEl.style.wordBreak = "break-word";
+cursorRow.appendChild(cursorNameEl);
+
+const invGridWrap = document.createElement("div");
+invGridWrap.style.display = "flex";
+invGridWrap.style.flexDirection = "column";
+invGridWrap.style.gap = "10px";
+invLeft.appendChild(invGridWrap);
+
+const hotbarLabel = document.createElement("div");
+hotbarLabel.textContent = "Hotbar (1–5)";
+hotbarLabel.style.opacity = "0.9";
+invGridWrap.appendChild(hotbarLabel);
+
+const hotbarGrid = document.createElement("div");
+hotbarGrid.style.display = "grid";
+hotbarGrid.style.gridTemplateColumns = "repeat(5, 64px)";
+hotbarGrid.style.gap = "8px";
+invGridWrap.appendChild(hotbarGrid);
+
+const backpackLabel = document.createElement("div");
+backpackLabel.textContent = "Backpack";
+backpackLabel.style.opacity = "0.9";
+invGridWrap.appendChild(backpackLabel);
+
+const backpackGrid = document.createElement("div");
+backpackGrid.style.display = "grid";
+backpackGrid.style.gridTemplateColumns = "repeat(5, 64px)";
+backpackGrid.style.gap = "8px";
+invGridWrap.appendChild(backpackGrid);
+
+const craftCard = document.createElement("div");
+craftCard.style.padding = "10px";
+craftCard.style.border = "1px solid rgba(255,255,255,0.12)";
+craftCard.style.borderRadius = "8px";
+craftCard.style.background = "rgba(255,255,255,0.05)";
+invRight.appendChild(craftCard);
 
 const craftTitle = document.createElement("div");
-craftTitle.textContent = "Crafting (C to close)";
-craftTitle.style.color = "white";
-craftTitle.style.fontSize = "16px";
+craftTitle.textContent = "Crafting (basic)";
 craftTitle.style.fontWeight = "700";
-craftPanel.appendChild(craftTitle);
-
-const craftHint = document.createElement("div");
-craftHint.innerHTML = `<span style="opacity:.9">Click recipe: craft once | Shift+click: craft max</span>`;
-craftHint.style.color = "white";
-craftHint.style.fontSize = "12px";
-craftHint.style.opacity = "0.95";
-craftPanel.appendChild(craftHint);
+craftTitle.style.marginBottom = "8px";
+craftCard.appendChild(craftTitle);
 
 const craftList = document.createElement("div");
 craftList.style.display = "flex";
 craftList.style.flexDirection = "column";
 craftList.style.gap = "8px";
-craftList.style.padding = "8px";
-craftList.style.borderRadius = "10px";
-craftList.style.border = "1px solid rgba(255,255,255,0.15)";
-craftList.style.background = "rgba(255,255,255,0.04)";
-craftPanel.appendChild(craftList);
+craftCard.appendChild(craftList);
 
-const craftResultLine = document.createElement("div");
-craftResultLine.style.color = "white";
-craftResultLine.style.fontSize = "12px";
-craftResultLine.style.opacity = "0.95";
-craftResultLine.textContent = "";
-craftPanel.appendChild(craftResultLine);
+const craftStatus = document.createElement("div");
+craftStatus.style.opacity = "0.9";
+craftStatus.style.fontSize = "12px";
+craftStatus.textContent = "";
+invRight.appendChild(craftStatus);
 
-let uiInventoryOpen = false;
-let uiCraftOpen = false;
-
-function showUIIfNeeded() {
-  const shouldShow = uiInventoryOpen || uiCraftOpen;
-  uiRoot.style.display = shouldShow ? "block" : "none";
-  invPanel.style.display = uiInventoryOpen ? "flex" : "none";
-  craftPanel.style.display = uiCraftOpen ? "flex" : "none";
-
-  if (shouldShow) {
-    try {
-      (document as any).exitPointerLock?.();
-    } catch {}
-  }
+function mkButton(label: string): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.style.width = "100%";
+  b.style.padding = "10px 10px";
+  b.style.borderRadius = "8px";
+  b.style.border = "1px solid rgba(255,255,255,0.2)";
+  b.style.background = "rgba(0,0,0,0.25)";
+  b.style.color = "white";
+  b.style.cursor = "pointer";
+  b.style.fontFamily = "monospace";
+  b.style.fontSize = "13px";
+  b.onmouseenter = () => (b.style.background = "rgba(255,255,255,0.10)");
+  b.onmouseleave = () => (b.style.background = "rgba(0,0,0,0.25)");
+  return b;
 }
-
-uiBackdrop.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  // clicking outside closes both
-  uiInventoryOpen = false;
-  uiCraftOpen = false;
-  showUIIfNeeded();
-});
-
-uiPanel.addEventListener("mousedown", (e) => {
-  // prevent backdrop close
-  e.stopPropagation();
-});
 
 /* ===============================
    4. NOA Engine Initialization
@@ -266,9 +264,6 @@ const noa = new Engine({
    4.1 Pointer Lock
 ================================ */
 function requestPointerLock() {
-  // do not lock pointer if UI is open
-  if (uiInventoryOpen || uiCraftOpen) return;
-
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
@@ -289,6 +284,7 @@ function hasPointerLock(): boolean {
 /* ===============================
    5. Register Blocks & Materials
 ================================ */
+// Block IDs (MUST match server)
 const AIR_ID = 0;
 const GRASS_ID = 1;
 const DIRT_ID = 2;
@@ -296,11 +292,24 @@ const STONE_ID = 3;
 const WOOD_ID = 4;
 const LEAVES_ID = 5;
 
+// Minerals + bedrock
+const BEDROCK_ID = 6;
+const COAL_ORE_ID = 7;
+const IRON_ORE_ID = 8;
+const GOLD_ORE_ID = 9;
+const DIAMOND_ORE_ID = 10;
+
 noa.registry.registerMaterial("grass", { color: [0.2, 0.8, 0.2] });
 noa.registry.registerMaterial("dirt", { color: [0.5, 0.35, 0.15] });
 noa.registry.registerMaterial("stone", { color: [0.5, 0.5, 0.5] });
 noa.registry.registerMaterial("wood", { color: [0.4, 0.25, 0.1] });
 noa.registry.registerMaterial("leaves", { color: [0.1, 0.6, 0.1] });
+
+noa.registry.registerMaterial("bedrock", { color: [0.05, 0.05, 0.05] });
+noa.registry.registerMaterial("coalOre", { color: [0.2, 0.2, 0.2] });
+noa.registry.registerMaterial("ironOre", { color: [0.75, 0.55, 0.35] });
+noa.registry.registerMaterial("goldOre", { color: [0.85, 0.75, 0.2] });
+noa.registry.registerMaterial("diamondOre", { color: [0.2, 0.85, 0.85] });
 
 noa.registry.registerBlock(GRASS_ID, { material: "grass" });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
@@ -308,12 +317,17 @@ noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
 noa.registry.registerBlock(LEAVES_ID, { material: "leaves" });
 
-/* ===============================
-   6. Items / Inventory (client mirror of server ids)
-================================ */
-type ItemStack = { id: number; count: number };
+noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
+noa.registry.registerBlock(COAL_ORE_ID, { material: "coalOre" });
+noa.registry.registerBlock(IRON_ORE_ID, { material: "ironOre" });
+noa.registry.registerBlock(GOLD_ORE_ID, { material: "goldOre" });
+noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamondOre" });
 
-const ITEMS = {
+/* ===============================
+   6. Item/Inventory State
+================================ */
+// Item IDs (MUST match server)
+const Items = {
   GRASS: 1,
   DIRT: 2,
   STONE: 3,
@@ -323,7 +337,15 @@ const ITEMS = {
   PLANK: 10,
   STICK: 11,
   WOOD_PICK: 20,
+
+  COAL: 30,
+  RAW_IRON: 31,
+  RAW_GOLD: 32,
+  DIAMOND: 33,
 } as const;
+
+
+
 
 type ItemDef = {
   id: number;
@@ -333,42 +355,39 @@ type ItemDef = {
 };
 
 const ITEM_DEFS: Record<number, ItemDef> = {
-  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: 1 },
-  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: 2 },
-  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: 3 },
-  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: 4 },
-  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: 5 },
+  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
+  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: DIRT_ID },
+  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
+  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
+  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
 
   10: { id: 10, name: "Planks", maxStack: 64 },
   11: { id: 11, name: "Stick", maxStack: 64 },
   20: { id: 20, name: "Wood Pick", maxStack: 1 },
+
+  30: { id: 30, name: "Coal", maxStack: 64 },
+  31: { id: 31, name: "Raw Iron", maxStack: 64 },
+  32: { id: 32, name: "Raw Gold", maxStack: 64 },
+  33: { id: 33, name: "Diamond", maxStack: 64 },
 };
 
-type Recipe = {
-  id: string;
-  name: string;
-  inputs: Array<{ id: number; count: number }>;
-  output: { id: number; count: number };
-};
+type ItemStack = { id: number; count: number };
+type InvState = { slots: ItemStack[]; cursor: ItemStack };
 
-const RECIPES: Recipe[] = [
-  { id: "planks_from_log", name: "Planks", inputs: [{ id: ITEMS.WOOD_LOG, count: 1 }], output: { id: ITEMS.PLANK, count: 4 } },
-  { id: "sticks_from_planks", name: "Sticks", inputs: [{ id: ITEMS.PLANK, count: 2 }], output: { id: ITEMS.STICK, count: 4 } },
-  { id: "wood_pick", name: "Wood Pick", inputs: [{ id: ITEMS.PLANK, count: 3 }, { id: ITEMS.STICK, count: 2 }], output: { id: ITEMS.WOOD_PICK, count: 1 } },
-];
-
-// Inventory layout must match server
 const HOTBAR_SLOTS = 5;
 const BACKPACK_SLOTS = 20;
 const INV_SLOTS = HOTBAR_SLOTS + BACKPACK_SLOTS;
 
-let invSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
-let invCursor: ItemStack = { id: 0, count: 0 };
+let invOpen = false;
+let invState: InvState = {
+  slots: Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 })),
+  cursor: { id: 0, count: 0 },
+};
 
-let selectedSlot = 0;
-
-// Viewmodel + remote toggles
+let selectedHotbar = 0;
 let viewModelEnabled = true;
+
+// Remote overlay toggles
 let remotePlayersEnabled = true;
 let remoteXray = true; // always visible by default (debug)
 
@@ -406,27 +425,179 @@ let lastSnapshotAt = 0;
 let lastTransformAt = 0;
 
 /* ===============================
-   6.3 Drops (server authoritative)
+   6.3 Drops state (server authoritative)
 ================================ */
-type Drop = {
-  dropId: string;
-  itemId: number;
-  count: number;
-  x: number;
-  y: number;
-  z: number;
-  createdAt?: number;
-};
-
+type Drop = { dropId: string; itemId: number; count: number; x: number; y: number; z: number; createdAt: number };
 const drops = new Map<string, Drop>();
-const dropMeshes = new Map<string, BABYLON.AbstractMesh>();
-let dropMat: BABYLON.StandardMaterial | null = null;
 
-// render offset for world-space meshes that we draw in NOA scene
-let worldRenderOffset = new BABYLON.Vector3(0, 0, 0);
+// Visual meshes for drops
+const dropMeshes = new Map<string, BABYLON.AbstractMesh>();
+let dropSceneUid: string | number | null = null;
+
+// Pickup throttling
+let lastPickupScanAt = 0;
+let lastPickupSentAt = 0;
+const pickupSentRecently = new Map<string, number>();
 
 /* ===============================
-   6.4 Overlay
+   6.4 Inventory UI rendering + events
+================================ */
+const slotEls: HTMLDivElement[] = [];
+const backpackEls: HTMLDivElement[] = [];
+
+function stackLabel(s: ItemStack): string {
+  if (!s || s.id <= 0 || s.count <= 0) return "";
+  const def = ITEM_DEFS[s.id];
+  const nm = def ? def.name : `Item ${s.id}`;
+  return `${nm}\n×${s.count}`;
+}
+
+function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
+  el.innerHTML = "";
+  el.style.width = "64px";
+  el.style.height = "64px";
+  el.style.borderRadius = "8px";
+  el.style.border = isSelected ? "2px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.18)";
+  el.style.background = "rgba(0,0,0,0.35)";
+  el.style.display = "flex";
+  el.style.flexDirection = "column";
+  el.style.alignItems = "center";
+  el.style.justifyContent = "center";
+  el.style.position = "relative";
+  el.style.cursor = "pointer";
+
+  if (stack && stack.id > 0 && stack.count > 0) {
+    const def = ITEM_DEFS[stack.id];
+    const nm = def ? def.name : `Item ${stack.id}`;
+    const name = document.createElement("div");
+    name.textContent = nm;
+    name.style.fontSize = "11px";
+    name.style.textAlign = "center";
+    name.style.padding = "0 6px";
+    name.style.opacity = "0.95";
+    name.style.wordBreak = "break-word";
+
+    const count = document.createElement("div");
+    count.textContent = `×${stack.count}`;
+    count.style.position = "absolute";
+    count.style.right = "6px";
+    count.style.bottom = "4px";
+    count.style.fontSize = "12px";
+    count.style.opacity = "0.95";
+
+    el.appendChild(name);
+    el.appendChild(count);
+  }
+}
+
+function renderInventoryUI() {
+  // Cursor
+  renderSlot(cursorSlotEl, invState.cursor, false);
+  cursorNameEl.textContent = invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
+
+  // Hotbar
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
+  }
+
+  // Backpack
+  for (let i = 0; i < BACKPACK_SLOTS; i++) {
+    renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
+  }
+
+  // Craft buttons enable/disable purely cosmetic (server is authoritative anyway)
+  const canCraft = (recipeId: string) => {
+    // naive client-side: count inputs in inv slots (not cursor), good enough for UI hints
+    const countItem = (id: number) => {
+      let n = 0;
+      for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
+      return n;
+    };
+
+    if (recipeId === "planks_from_log") return countItem(Items.WOOD_LOG) >= 1;
+    if (recipeId === "sticks_from_planks") return countItem(Items.PLANK) >= 2;
+    if (recipeId === "wood_pick") return countItem(Items.PLANK) >= 3 && countItem(Items.STICK) >= 2;
+    return true;
+  };
+
+  for (const child of Array.from(craftList.children)) {
+    const el = child as HTMLButtonElement;
+    const rid = (el as any).__recipeId as string | undefined;
+    if (!rid) continue;
+    const ok = canCraft(rid);
+    el.style.opacity = ok ? "1" : "0.5";
+  }
+}
+
+function sendInvClick(slot: number, button: "L" | "R", shift: boolean) {
+  if (!room) return;
+  room.send("invClick", { slot, button, shift });
+}
+
+function setupInventorySlots() {
+  // Hotbar slots
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    const el = document.createElement("div");
+    (el as any).__slotIndex = i;
+    el.onmousedown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const btn = e.button === 2 ? "R" : "L";
+      sendInvClick(i, btn, e.shiftKey);
+    };
+    slotEls.push(el);
+    hotbarGrid.appendChild(el);
+  }
+
+  // Backpack slots
+  for (let i = 0; i < BACKPACK_SLOTS; i++) {
+    const idx = HOTBAR_SLOTS + i;
+    const el = document.createElement("div");
+    (el as any).__slotIndex = idx;
+    el.onmousedown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const btn = e.button === 2 ? "R" : "L";
+      sendInvClick(idx, btn, e.shiftKey);
+    };
+    backpackEls.push(el);
+    backpackGrid.appendChild(el);
+  }
+}
+setupInventorySlots();
+
+// Craft buttons
+function addCraftButton(title: string, recipeId: string) {
+  const b = mkButton(title);
+  (b as any).__recipeId = recipeId;
+  b.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!room) return;
+    room.send("craft", { recipeId, max: false, times: 1 });
+  };
+  b.oncontextmenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!room) return;
+    // right click craft max
+    room.send("craft", { recipeId, max: true });
+  };
+  craftList.appendChild(b);
+}
+addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_log");
+addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
+addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
+
+function setInvOpen(open: boolean) {
+  invOpen = open;
+  invRoot.style.display = invOpen ? "block" : "none";
+  craftStatus.textContent = invOpen ? "RMB a recipe to craft MAX." : "";
+  renderInventoryUI();
+}
+
+/* ===============================
+   6.5 Overlay
 ================================ */
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
@@ -445,20 +616,11 @@ function getClosestRemoteDistance(): number | null {
   return best;
 }
 
-function itemName(id: number): string {
-  const d = ITEM_DEFS[id];
-  return d ? d.name : id === 0 ? "Empty" : `Item#${id}`;
-}
-
-function hotbarLabel(slotIndex: number): string {
-  const s = invSlots[slotIndex] ?? { id: 0, count: 0 };
-  if (!s.id || s.count <= 0) return "(empty)";
-  return `${itemName(s.id)} x${s.count}`;
-}
-
-function formatCursor(): string {
-  if (!invCursor.id || invCursor.count <= 0) return "(empty)";
-  return `${itemName(invCursor.id)} x${invCursor.count}`;
+function getHotbarHeldName(): string {
+  const s = invState.slots[selectedHotbar];
+  if (!s || s.id <= 0 || s.count <= 0) return "(empty)";
+  const def = ITEM_DEFS[s.id];
+  return def ? def.name : `Item ${s.id}`;
 }
 
 function updateOverlay(extraLine = "") {
@@ -475,12 +637,12 @@ function updateOverlay(extraLine = "") {
   const closest = getClosestRemoteDistance();
   const closestStr = closest == null ? "n/a" : `${closest.toFixed(2)}m`;
 
+  const heldName = getHotbarHeldName();
+
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
-    <strong>UserId:</strong> ${userId}<br>
-    <strong>Hotbar:</strong> [${selectedSlot + 1}] ${hotbarLabel(selectedSlot)}<br>
-    <strong>Cursor:</strong> ${formatCursor()}<br>
-    <strong>UI:</strong> Inv=${uiInventoryOpen ? "OPEN" : "closed"} Craft=${uiCraftOpen ? "OPEN" : "closed"}<br>
+    <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
+    <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
     <strong>Remote Players:</strong> ${remotePlayersEnabled ? "ON" : "OFF"} |
     <strong>Xray:</strong> ${remoteXray ? "ON" : "OFF"}<br>
@@ -491,11 +653,10 @@ function updateOverlay(extraLine = "") {
     [L-Click] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
     [WASD] Move  |  [Space] Jump<br>
+    [I] Inventory<br>
     [V] Toggle Viewmodel<br>
     [P] Toggle Remote Players<br>
     [O] Toggle Remote Xray<br>
-    [E] Toggle Inventory UI<br>
-    [C] Toggle Crafting UI<br>
     [B] Toggle VM Debug (axes/frame)<br>
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
@@ -507,204 +668,25 @@ function updateOverlay(extraLine = "") {
     ${extraLine ? `<span style="opacity:.85">${extraLine}</span>` : ""}
   `;
 }
-
 updateOverlay();
-
-/* ===============================
-   6.5 Inventory UI rendering + input
-================================ */
-const slotEls: HTMLDivElement[] = [];
-function buildInventoryGrid() {
-  invGrid.innerHTML = "";
-  slotEls.length = 0;
-
-  const makeSlotEl = (slotIndex: number) => {
-    const el = document.createElement("div");
-    el.style.height = "56px";
-    el.style.borderRadius = "10px";
-    el.style.border = "1px solid rgba(255,255,255,0.18)";
-    el.style.background = "rgba(0,0,0,0.25)";
-    el.style.display = "flex";
-    el.style.alignItems = "center";
-    el.style.justifyContent = "center";
-    el.style.position = "relative";
-    el.style.cursor = "pointer";
-    el.style.pointerEvents = "auto";
-
-    const label = document.createElement("div");
-    label.style.color = "white";
-    label.style.fontSize = "11px";
-    label.style.textAlign = "center";
-    label.style.padding = "0 4px";
-    label.style.lineHeight = "1.05";
-    label.style.opacity = "0.95";
-    el.appendChild(label);
-
-    const count = document.createElement("div");
-    count.style.position = "absolute";
-    count.style.right = "6px";
-    count.style.bottom = "4px";
-    count.style.color = "white";
-    count.style.fontSize = "12px";
-    count.style.fontWeight = "700";
-    count.style.textShadow = "0 1px 2px rgba(0,0,0,0.6)";
-    el.appendChild(count);
-
-    const tag = document.createElement("div");
-    tag.style.position = "absolute";
-    tag.style.left = "6px";
-    tag.style.top = "4px";
-    tag.style.color = "rgba(255,255,255,0.8)";
-    tag.style.fontSize = "10px";
-    tag.style.opacity = "0.9";
-    tag.textContent = slotIndex < HOTBAR_SLOTS ? `${slotIndex + 1}` : `${slotIndex - HOTBAR_SLOTS + 1}`;
-    el.appendChild(tag);
-
-    const updateSlotEl = () => {
-      const s = invSlots[slotIndex] ?? { id: 0, count: 0 };
-      const isSel = slotIndex === selectedSlot && slotIndex < HOTBAR_SLOTS;
-
-      el.style.outline = isSel ? "2px solid rgba(120,220,255,0.9)" : "none";
-      el.style.boxShadow = isSel ? "0 0 0 2px rgba(120,220,255,0.25)" : "none";
-
-      if (!s.id || s.count <= 0) {
-        label.textContent = "";
-        count.textContent = "";
-        el.style.background = "rgba(0,0,0,0.25)";
-      } else {
-        label.textContent = itemName(s.id);
-        count.textContent = s.count > 1 ? String(s.count) : "";
-        el.style.background = "rgba(255,255,255,0.06)";
-      }
-    };
-
-    el.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (!room) return;
-
-      const button = e.button === 2 ? "R" : "L";
-      const shift = !!e.shiftKey;
-
-      // If hotbar slot clicked, also select it for quick place
-      if (slotIndex < HOTBAR_SLOTS && button === "L" && !shift) {
-        selectedSlot = slotIndex;
-      }
-
-      room.send("invClick", { slot: slotIndex, button, shift });
-      updateOverlay();
-    });
-
-    (el as any).__update = updateSlotEl;
-
-    slotEls.push(el);
-    invGrid.appendChild(el);
-  };
-
-  // Build 5x5 layout: first row is hotbar (5), next 4 rows are backpack (20)
-  for (let i = 0; i < INV_SLOTS; i++) makeSlotEl(i);
-}
-
-buildInventoryGrid();
-
-function updateInventoryUI() {
-  invCursorLine.textContent = `Cursor: ${formatCursor()}`;
-  for (const el of slotEls) {
-    const u = (el as any).__update as (() => void) | undefined;
-    u?.();
-  }
-}
-
-function countInInventory(itemId: number): number {
-  let n = 0;
-  for (const s of invSlots) if (s.id === itemId && s.count > 0) n += s.count;
-  return n;
-}
-
-function renderCraftList() {
-  craftList.innerHTML = "";
-  for (const r of RECIPES) {
-    const row = document.createElement("div");
-    row.style.display = "flex";
-    row.style.alignItems = "center";
-    row.style.justifyContent = "space-between";
-    row.style.gap = "10px";
-    row.style.padding = "10px";
-    row.style.borderRadius = "10px";
-    row.style.border = "1px solid rgba(255,255,255,0.16)";
-    row.style.background = "rgba(0,0,0,0.25)";
-    row.style.cursor = "pointer";
-
-    const left = document.createElement("div");
-    left.style.display = "flex";
-    left.style.flexDirection = "column";
-    left.style.gap = "4px";
-
-    const name = document.createElement("div");
-    name.textContent = r.name;
-    name.style.color = "white";
-    name.style.fontWeight = "700";
-    name.style.fontSize = "14px";
-    left.appendChild(name);
-
-    const io = document.createElement("div");
-    io.style.color = "rgba(255,255,255,0.9)";
-    io.style.fontSize = "12px";
-
-    const ins = r.inputs
-      .map((x) => {
-        const have = countInInventory(x.id);
-        const ok = have >= x.count;
-        return `${itemName(x.id)} ${have}/${x.count}${ok ? " ✓" : ""}`;
-      })
-      .join("  •  ");
-
-    io.textContent = `${ins}  →  ${itemName(r.output.id)} x${r.output.count}`;
-    left.appendChild(io);
-
-    const right = document.createElement("div");
-    right.style.color = "rgba(255,255,255,0.9)";
-    right.style.fontSize = "12px";
-    right.style.opacity = "0.95";
-    right.textContent = "Craft";
-    row.appendChild(left);
-    row.appendChild(right);
-
-    row.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!room) return;
-
-      const max = !!e.shiftKey;
-      room.send("craft", { recipeId: r.id, max, times: 1 });
-      craftResultLine.textContent = max ? `Crafting max: ${r.name}...` : `Crafting: ${r.name}...`;
-    });
-
-    craftList.appendChild(row);
-  }
-}
-
-renderCraftList();
 
 /* ===============================
    6.6 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
-  // If VM tuning is enabled, we still allow toggles here,
-  // but tuning movement keys are captured in capture-phase handler below.
-  // If UI is open, we want E/C to close, but avoid movement/hotbar changes while typing UI.
-  const uiOpen = uiInventoryOpen || uiCraftOpen;
+  // Hotbar 1-5
+  const key = Number.parseInt(e.key, 10);
+  if (Number.isFinite(key) && key >= 1 && key <= HOTBAR_SLOTS) {
+    selectedHotbar = key - 1;
+    renderInventoryUI();
+    updateOverlay();
+    return;
+  }
 
-  // Hotbar 1-5 (disabled if UI open)
-  if (!uiOpen) {
-    const key = Number.parseInt(e.key, 10);
-    if (Number.isFinite(key) && key >= 1 && key <= HOTBAR_SLOTS) {
-      selectedSlot = key - 1;
-      updateOverlay();
-      updateInventoryUI();
-      return;
-    }
+  if (e.key === "i" || e.key === "I") {
+    setInvOpen(!invOpen);
+    updateOverlay(invOpen ? "Inventory opened" : "Inventory closed");
+    return;
   }
 
   if (e.key === "v" || e.key === "V") {
@@ -740,28 +722,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "m" || e.key === "M") {
     vmMirrorX = !vmMirrorX;
     updateOverlay(vmMirrorX ? "VM Mirror: ON" : "VM Mirror: OFF");
-    return;
-  }
-
-  if (e.key === "e" || e.key === "E") {
-    uiInventoryOpen = !uiInventoryOpen;
-    // if opening inv, close craft (optional)
-    if (uiInventoryOpen) uiCraftOpen = false;
-    showUIIfNeeded();
-    updateInventoryUI();
-    renderCraftList();
-    updateOverlay(uiInventoryOpen ? "Inventory: OPEN" : "Inventory: closed");
-    return;
-  }
-
-  if (e.key === "c" || e.key === "C") {
-    uiCraftOpen = !uiCraftOpen;
-    // if opening craft, close inv (optional)
-    if (uiCraftOpen) uiInventoryOpen = false;
-    showUIIfNeeded();
-    updateInventoryUI();
-    renderCraftList();
-    updateOverlay(uiCraftOpen ? "Crafting: OPEN" : "Crafting: closed");
     return;
   }
 });
@@ -933,21 +893,9 @@ function triggerPunch() {
   punchT = 0;
 }
 
-function selectedHotbarStack(): ItemStack {
-  const s = invSlots[selectedSlot] ?? { id: 0, count: 0 };
-  return { id: s.id | 0, count: s.count | 0 };
-}
-
-function itemPlacesBlock(itemId: number): number | null {
-  const def = ITEM_DEFS[itemId];
-  if (!def) return null;
-  const b = def.placeBlockId;
-  return typeof b === "number" ? b : null;
-}
-
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
-  if (uiInventoryOpen || uiCraftOpen) return;
+  if (invOpen) return;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -955,15 +903,13 @@ noa.inputs.down.on("fire", () => {
   triggerPunch();
 
   const { x, y, z } = target.pos;
-
-  // local prediction (server will confirm via blockUpdate)
   noa.world.setBlockID(AIR_ID, x, y, z);
   room?.send("mineBlock", { x, y, z });
 });
 
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
-  if (uiInventoryOpen || uiCraftOpen) return;
+  if (invOpen) return;
 
   const target = getTargetInfo();
   if (!target) return;
@@ -972,25 +918,25 @@ noa.inputs.down.on("alt-fire", () => {
 
   const { x, y, z } = target.adj;
 
-  // Don't place inside yourself (client-side best-effort)
+  // Determine placeable from selected hotbar slot
+  const stack = invState.slots[selectedHotbar];
+  if (!stack || stack.id <= 0 || stack.count <= 0) return;
+
+  const def = ITEM_DEFS[stack.id];
+  if (!def || typeof def.placeBlockId !== "number") return;
+
+  const blockToPlace = def.placeBlockId;
+
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
+
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  // Determine placeable block from selected hotbar item
-  const s = selectedHotbarStack();
-  if (!s.id || s.count <= 0) return;
-
-  const blockId = itemPlacesBlock(s.id);
-  if (blockId == null) return;
-
-  // local prediction
-  noa.world.setBlockID(blockId, x, y, z);
-
-  // authoritative place: consumes 1 from selectedSlot on server
-  room?.send("placeBlock", { x, y, z, id: blockId, fromSlot: selectedSlot });
+  // client-side optimistic place (server authoritative will confirm/correct)
+  noa.world.setBlockID(blockToPlace, x, y, z);
+  room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
 });
 
 /* ===============================
@@ -1020,97 +966,123 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   9.1 Drops rendering in NOA scene
+   9.1 Drop visuals in NOA world scene
 ================================ */
-function ensureDropMaterial(scene: BABYLON.Scene) {
-  if (dropMat && dropMat.getScene() === scene) return;
-
-  dropMat = new BABYLON.StandardMaterial("dropMat", scene);
-  dropMat.disableLighting = true;
-  dropMat.emissiveColor = new BABYLON.Color3(1, 1, 0.2);
-  dropMat.diffuseColor = dropMat.emissiveColor.clone();
-  dropMat.specularColor = new BABYLON.Color3(0, 0, 0);
-  dropMat.backFaceCulling = false;
-  (dropMat as any).fogEnabled = false;
-}
-
-function ensureDropMesh(drop: Drop, scene: BABYLON.Scene) {
-  const existing = dropMeshes.get(drop.dropId);
-  if (existing && existing.getScene() === scene) return;
-
-  // If existing from old scene, dispose
-  if (existing && existing.getScene() !== scene) {
-    try {
-      existing.dispose();
-    } catch {}
-    dropMeshes.delete(drop.dropId);
-  }
-
-  ensureDropMaterial(scene);
-
-  const mesh = BABYLON.MeshBuilder.CreateSphere(`drop:${drop.dropId}`, { diameter: 0.25, segments: 10 }, scene);
-  mesh.isPickable = false;
-  mesh.material = dropMat!;
-  mesh.renderingGroupId = 2;
-
-  (mesh as any).isInFrustum = () => true;
-
-  dropMeshes.set(drop.dropId, mesh);
-}
-
-function removeDropMesh(dropId: string) {
-  const m = dropMeshes.get(dropId);
-  if (m) {
+function disposeAllDropMeshes() {
+  for (const m of dropMeshes.values()) {
     try {
       m.dispose();
     } catch {}
-    dropMeshes.delete(dropId);
+  }
+  dropMeshes.clear();
+}
+
+function ensureDropVisuals(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  if (dropSceneUid == null) dropSceneUid = uid ?? null;
+
+  if (dropSceneUid !== (uid ?? null)) {
+    // scene swapped: rebuild visuals
+    disposeAllDropMeshes();
+    dropSceneUid = uid ?? null;
+  }
+
+  // Ensure every known drop has a mesh
+  for (const d of drops.values()) {
+    if (dropMeshes.has(d.dropId)) continue;
+
+    const box = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.28 }, scene);
+    box.isPickable = false;
+    (box as any).isInFrustum = () => true;
+
+    const mat = new BABYLON.StandardMaterial(`dropMat:${d.dropId}`, scene);
+    mat.disableLighting = true;
+    // Color by item category (simple)
+    const c = (() => {
+      if (d.itemId === Items.DIAMOND) return new BABYLON.Color3(0.2, 0.9, 0.9);
+      if (d.itemId === Items.RAW_GOLD) return new BABYLON.Color3(0.9, 0.8, 0.2);
+      if (d.itemId === Items.RAW_IRON) return new BABYLON.Color3(0.75, 0.55, 0.35);
+      if (d.itemId === Items.COAL) return new BABYLON.Color3(0.2, 0.2, 0.2);
+      if (d.itemId === Items.WOOD_LOG) return new BABYLON.Color3(0.45, 0.28, 0.12);
+      if (d.itemId === Items.STONE) return new BABYLON.Color3(0.6, 0.6, 0.6);
+      return new BABYLON.Color3(0.85, 0.85, 0.85);
+    })();
+    mat.emissiveColor = c;
+    mat.diffuseColor = c.clone();
+    mat.specularColor = new BABYLON.Color3(0, 0, 0);
+    mat.backFaceCulling = false;
+    (mat as any).fogEnabled = false;
+
+    box.material = mat;
+
+    box.position.set(d.x, d.y, d.z);
+    dropMeshes.set(d.dropId, box);
+  }
+
+  // Remove meshes for despawned drops
+  for (const id of Array.from(dropMeshes.keys())) {
+    if (!drops.has(id)) {
+      const m = dropMeshes.get(id);
+      try {
+        m?.dispose();
+      } catch {}
+      dropMeshes.delete(id);
+    }
   }
 }
 
-function updateDropMeshes(dtSec: number) {
-  const scene = getStableScene();
-  if (!scene) return;
-
-  // Create meshes for known drops
-  for (const d of drops.values()) ensureDropMesh(d, scene);
-
-  const time = performance.now() / 1000;
-
+function updateDropVisuals(dtSec: number) {
+  // float + spin
+  const t = performance.now() / 1000;
   for (const d of drops.values()) {
     const m = dropMeshes.get(d.dropId);
     if (!m) continue;
-
-    // Floating-origin correction: render offset computed from camera - player
-    const bob = Math.sin(time * 3.2 + (d.x + d.z) * 0.3) * 0.06;
-    m.position.set(
-      d.x + worldRenderOffset.x,
-      d.y + worldRenderOffset.y + bob,
-      d.z + worldRenderOffset.z
-    );
-
-    m.rotation.y += dtSec * 1.6;
+    const bob = Math.sin(t * 3.0 + (d.createdAt % 1000) * 0.01) * 0.08;
+    m.position.x = d.x;
+    m.position.y = d.y + 0.15 + bob;
+    m.position.z = d.z;
+    m.rotation.y += dtSec * 1.4;
   }
 }
 
-function tryAutoPickupDrops() {
+function tryAutoPickup() {
   if (!room) return;
-  if (!hasPointerLock()) return; // only auto-pickup during active play
+  if (!hasPointerLock()) return; // keep pickup aligned with gameplay mode
+  if (drops.size <= 0) return;
+
+  const now = performance.now();
+  if (now - lastPickupScanAt < 120) return;
+  lastPickupScanAt = now;
+
+  // throttle sending to server
+  if (now - lastPickupSentAt < 90) return;
 
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
   if (!p) return;
 
-  // small radius; server validates anyway
-  const r2 = 2.25 * 2.25;
+  let bestId: string | null = null;
+  let bestD2 = Infinity;
 
   for (const d of drops.values()) {
+    const last = pickupSentRecently.get(d.dropId) ?? 0;
+    if (now - last < 600) continue;
+
     const dx = d.x - p[0];
     const dy = d.y - p[1];
     const dz = d.z - p[2];
-    const dist2 = dx * dx + dy * dy + dz * dz;
-    if (dist2 <= r2) {
-      room.send("pickupDrop", { dropId: d.dropId });
+    const d2 = dx * dx + dy * dy + dz * dz;
+
+    // pickup radius
+    if (d2 <= 2.3 * 2.3 && d2 < bestD2) {
+      bestD2 = d2;
+      bestId = d.dropId;
     }
+  }
+
+  if (bestId) {
+    lastPickupSentAt = now;
+    pickupSentRecently.set(bestId, now);
+    room.send("pickupDrop", { dropId: bestId });
   }
 }
 
@@ -1398,6 +1370,9 @@ function updateViewmodel(dtSec: number) {
 
 /* ===============================
    11. Remote Players Overlay Scene (rpScene)
+   - TRUE 3D scene rendered after NOA
+   - Camera is synced to NOA world camera each tick
+   - Remote meshes live here so they cannot be culled/hidden by NOA pipeline
 ================================ */
 let rpReady = false;
 let rpScene: BABYLON.Scene | null = null;
@@ -1428,6 +1403,10 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   console.log("[RP] ensureRpScene", { useRightHandedSystem: rpScene.useRightHandedSystem });
 
+  // DO NOT clear color (keep world).
+  // Depth/stencil behavior:
+  // - If xray ON: we clear depth and force ALWAYS so remotes draw on top.
+  // - If xray OFF: we keep depth so remotes can be occluded by blocks (best-effort).
   rpScene.autoClear = false;
   rpScene.autoClearDepthAndStencil = false;
 
@@ -1435,6 +1414,7 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpCam.minZ = 0.05;
   rpCam.maxZ = 10000;
 
+  // IMPORTANT: set rotationQuaternion so we can copy from world camera safely
   rpCam.rotationQuaternion = new BABYLON.Quaternion();
 
   rpScene.activeCamera = rpCam;
@@ -1459,8 +1439,10 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
+  // Root pivot at FEET (so y=0 means standing on ground)
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
 
+  // Minecraft-ish proportions
   const BODY_W = 0.65;
   const BODY_H = 0.95;
   const BODY_D = 0.32;
@@ -1475,14 +1457,17 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const LEG_H = 0.90;
   const LEG_D = 0.22;
 
+  // Vertical layout: feet at 0
   const legTopY = LEG_H;
   const bodyBottomY = legTopY;
   const bodyCenterY = bodyBottomY + BODY_H * 0.5;
   const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
 
+  // Materials
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
+  // Body
   const body = BABYLON.MeshBuilder.CreateBox(
     `remoteBody:${id}`,
     { width: BODY_W, height: BODY_H, depth: BODY_D },
@@ -1493,6 +1478,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   body.material = mat;
   body.isPickable = false;
 
+  // Head
   const head = BABYLON.MeshBuilder.CreateBox(
     `remoteHead:${id}`,
     { width: HEAD, height: HEAD, depth: HEAD },
@@ -1503,6 +1489,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   head.material = mat;
   head.isPickable = false;
 
+  // Arms (left/right)
   const armL = BABYLON.MeshBuilder.CreateBox(
     `remoteArmL:${id}`,
     { width: ARM_W, height: ARM_H, depth: ARM_D },
@@ -1523,6 +1510,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   armR.material = mat;
   armR.isPickable = false;
 
+  // Legs (left/right)
   const legL = BABYLON.MeshBuilder.CreateBox(
     `remoteLegL:${id}`,
     { width: LEG_W, height: LEG_H, depth: LEG_D },
@@ -1543,6 +1531,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   legR.material = mat;
   legR.isPickable = false;
 
+  // Always renderable
   (body as any).isInFrustum = () => true;
   (head as any).isInFrustum = () => true;
   (armL as any).isInFrustum = () => true;
@@ -1550,11 +1539,13 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   (legL as any).isInFrustum = () => true;
   (legR as any).isInFrustum = () => true;
 
+  // Store references for animation
   (root as any).__parts = { armL, armR, legL, legR };
   (root as any).__walkPhase = 0;
 
   remoteMeshes.set(id, root);
 
+  // Initialize tracking maps
   remotePrevPos.set(id, new BABYLON.Vector3(0, 0, 0));
   remotePrevAt.set(id, performance.now());
   remoteTargetPos.set(id, new BABYLON.Vector3(0, 0, 0));
@@ -1589,14 +1580,18 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   const worldCam = worldScene.activeCamera as any;
   if (!worldCam) return;
 
+  // Copy viewport & camera params
   rpCam.viewport = worldCam.viewport?.clone?.() ?? rpCam.viewport;
 
+  // Copy FOV + mode if present
   if (typeof worldCam.fov === "number") (rpCam as any).fov = worldCam.fov;
   if (typeof worldCam.fovMode === "number") (rpCam as any).fovMode = worldCam.fovMode;
 
+  // Copy clipping
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
+  // ABSOLUTE camera sync
   const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
   if (wm) {
     const absPos = new BABYLON.Vector3();
@@ -1623,12 +1618,13 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
+  // Compute render offset: NOA shifts render space relative to voxel/world coords
   const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
   if (p) {
     rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
-    worldRenderOffset.copyFrom(rpRenderOffset);
   }
 
+  // X-ray depth behavior
   if (remoteXray) {
     rpScene.autoClearDepthAndStencil = true;
     for (const mat of remoteMats.values()) {
@@ -1643,6 +1639,7 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
+  // Console debug log (throttled)
   const now = performance.now();
   if (now - lastRpOffsetLogAt > 1500) {
     lastRpOffsetLogAt = now;
@@ -1673,6 +1670,7 @@ function updateRemoteMeshes() {
   if (!rpReady || !rpScene) return;
   if (!room) return;
 
+  // Remove meshes for players no longer present
   for (const id of Array.from(remoteMeshes.keys())) {
     if (!netTransforms.has(id)) removeRemoteMesh(id);
   }
@@ -1685,6 +1683,7 @@ function updateRemoteMeshes() {
     const root = ensureRemoteMesh(id);
     if (!root) continue;
 
+    // Target render-space position (floating-origin corrected) + visual feet adjustment
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
     target.set(
       t.x + rpRenderOffset.x,
@@ -1693,20 +1692,23 @@ function updateRemoteMeshes() {
     );
     remoteTargetPos.set(id, target);
 
+    // Smooth toward target to reduce jitter
     const lerp = 0.35;
     root.position.x += (target.x - root.position.x) * lerp;
     root.position.y += (target.y - root.position.y) * lerp;
     root.position.z += (target.z - root.position.z) * lerp;
 
+    // yaw rotation around Y (if you later need handedness fix, we can negate here)
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
+    // Movement-based walk animation
     const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
     const dx = root.position.x - prev.x;
     const dz = root.position.z - prev.z;
-    const speed = Math.sqrt(dx * dx + dz * dz) / dt;
+    const speed = Math.sqrt(dx * dx + dz * dz) / dt; // units per sec
 
     prev.copyFrom(root.position);
     remotePrevPos.set(id, prev);
@@ -1723,7 +1725,7 @@ function updateRemoteMeshes() {
       let phase = (root as any).__walkPhase as number;
       if (!Number.isFinite(phase)) phase = 0;
 
-      phase += moving ? phaseSpeed : 0.02;
+      phase += moving ? phaseSpeed : 0.02; // tiny idle sway
       (root as any).__walkPhase = phase;
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
@@ -1747,13 +1749,29 @@ function normId(p: any): string | null {
   return null;
 }
 
+function ensureUserId(): string {
+  const key = "noa_user_id";
+  let id = "";
+  try {
+    id = String(localStorage.getItem(key) ?? "");
+  } catch {}
+  if (id && id.length >= 3) return id;
+
+  const rand = Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+  id = `u_${Date.now().toString(16)}_${rand.slice(0, 10)}`;
+  try {
+    localStorage.setItem(key, id);
+  } catch {}
+  return id;
+}
+
 let canSendMoves = false;
 
 async function connect() {
   try {
     updateOverlay();
 
-    // Pass userId for persistence
+    const userId = ensureUserId();
     room = await colyseus.joinOrCreate("my_room", { userId });
     (globalThis as any).room = room;
 
@@ -1774,71 +1792,78 @@ async function connect() {
       }
     });
 
-    // Inventory snapshot
+    // Inventory state from server
     room.onMessage("invState", (msg: any) => {
-      try {
-        const slots = Array.isArray(msg?.slots) ? msg.slots : null;
-        const cursor = msg?.cursor ?? null;
+      if (!msg || typeof msg !== "object") return;
+      const slots = Array.isArray(msg.slots) ? msg.slots : null;
+      const cursor = msg.cursor ?? null;
+      if (!slots) return;
 
-        if (slots) {
-          const next: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
-          for (let i = 0; i < Math.min(INV_SLOTS, slots.length); i++) {
-            const s = slots[i];
-            const id = Number(s?.id ?? 0) | 0;
-            const count = Number(s?.count ?? 0) | 0;
-            next[i] = id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
-          }
-          invSlots = next;
-        }
-
-        const cId = Number(cursor?.id ?? 0) | 0;
-        const cCount = Number(cursor?.count ?? 0) | 0;
-        invCursor = cId > 0 && cCount > 0 ? { id: cId, count: cCount } : { id: 0, count: 0 };
-
-        updateInventoryUI();
-        renderCraftList();
-        updateOverlay("invState received");
-      } catch {}
-    });
-
-    room.onMessage("craftResult", (msg: any) => {
-      const ok = !!msg?.ok;
-      const recipeId = String(msg?.recipeId ?? "");
-      const crafted = Number(msg?.crafted ?? 0) | 0;
-      const reason = String(msg?.reason ?? "");
-
-      if (ok) {
-        craftResultLine.textContent = `Crafted ${crafted} × ${recipeId}`;
-        updateOverlay(`Crafted ${crafted} × ${recipeId}`);
-      } else {
-        craftResultLine.textContent = `Craft failed: ${recipeId} (${reason || "unknown"})`;
-        updateOverlay(`Craft failed: ${recipeId} (${reason || "unknown"})`);
+      const outSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
+      for (let i = 0; i < Math.min(INV_SLOTS, slots.length); i++) {
+        const s = slots[i];
+        const id = Number(s?.id ?? 0);
+        const count = Number(s?.count ?? 0);
+        outSlots[i] = Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
       }
+
+      const cId = Number((cursor as any)?.id ?? 0);
+      const cCount = Number((cursor as any)?.count ?? 0);
+      const outCursor: ItemStack =
+        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0 ? { id: cId, count: cCount } : { id: 0, count: 0 };
+
+      invState = { slots: outSlots, cursor: outCursor };
+      renderInventoryUI();
+      updateOverlay();
     });
 
     // Drops
     room.onMessage("dropSpawn", (d: any) => {
       if (!d || typeof d.dropId !== "string") return;
-      const drop: Drop = {
-        dropId: String(d.dropId),
-        itemId: Number(d.itemId ?? 0) | 0,
-        count: Number(d.count ?? 1) | 0,
+      const dd: Drop = {
+        dropId: d.dropId,
+        itemId: Number(d.itemId ?? 0),
+        count: Number(d.count ?? 0),
         x: Number(d.x ?? 0),
         y: Number(d.y ?? 0),
         z: Number(d.z ?? 0),
-        createdAt: typeof d.createdAt === "number" ? d.createdAt : undefined,
+        createdAt: Number(d.createdAt ?? Date.now()),
       };
-      if (!Number.isFinite(drop.x) || !Number.isFinite(drop.y) || !Number.isFinite(drop.z)) return;
-      drops.set(drop.dropId, drop);
+      if (!Number.isFinite(dd.itemId) || !Number.isFinite(dd.count)) return;
+      drops.set(dd.dropId, dd);
+      updateOverlay();
     });
 
-    room.onMessage("dropDespawn", (d: any) => {
-      const id = String(d?.dropId ?? "");
+    room.onMessage("dropDespawn", (m: any) => {
+      const id = typeof m?.dropId === "string" ? m.dropId : "";
       if (!id) return;
       drops.delete(id);
-      removeDropMesh(id);
+      const mesh = dropMeshes.get(id);
+      if (mesh) {
+        try {
+          mesh.dispose();
+        } catch {}
+        dropMeshes.delete(id);
+      }
+      updateOverlay();
     });
 
+    // Craft result
+    room.onMessage("craftResult", (m: any) => {
+      const ok = !!m?.ok;
+      const recipeId = typeof m?.recipeId === "string" ? m.recipeId : "";
+      const crafted = Number(m?.crafted ?? 0);
+      const reason = typeof m?.reason === "string" ? m.reason : "";
+      craftStatus.textContent = ok
+        ? `Crafted ${crafted} × (${recipeId})`
+        : `Craft failed (${recipeId}) ${reason ? `- ${reason}` : ""}`;
+      setTimeout(() => {
+        if (!invOpen) return;
+        craftStatus.textContent = "RMB a recipe to craft MAX.";
+      }, 2000);
+    });
+
+    // Players
     room.onMessage("existingPlayers", (players: any) => {
       if (!Array.isArray(players)) return;
 
@@ -1946,7 +1971,7 @@ async function connect() {
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + rp sync)
+   13. Tick loop (drive vm updates + networking + rp sync + drops)
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -1963,6 +1988,9 @@ let lastTickMs = performance.now();
     ensureVmScene(scene);
     ensureRpScene(scene);
 
+    // Drop visuals live in world scene
+    ensureDropVisuals(scene);
+
     // Sync rp camera from NOA camera every tick (critical)
     syncRpCameraFromWorld(scene);
   }
@@ -1972,9 +2000,11 @@ let lastTickMs = performance.now();
   // Update remote meshes every tick (cheap; few boxes)
   updateRemoteMeshes();
 
-  // Drops
-  updateDropMeshes(dtSec);
-  if (tickCount % 2 === 0) tryAutoPickupDrops();
+  // Drop bob/spin
+  updateDropVisuals(dtSec);
+
+  // Auto pickup
+  tryAutoPickup();
 
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
@@ -1983,12 +2013,6 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Keep overlay + UI fresh
-  if (tickCount % 10 === 0) {
-    updateOverlay();
-    if (uiInventoryOpen || uiCraftOpen) {
-      updateInventoryUI();
-      renderCraftList();
-    }
-  }
+  // Keep overlay fresh
+  if (tickCount % 10 === 0) updateOverlay();
 });
