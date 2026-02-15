@@ -36,6 +36,12 @@
  * IMPORTANT FIX:
  * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
  * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
+ *
+ * IMPORTANT FIX (TDZ):
+ * ✅ Declare mining state BEFORE updateOverlay() is first called.
+ *
+ * IMPORTANT FIX (Pointer Lock):
+ * ✅ Use document.pointerLockElement instead of noa.container.hasPointerLock.
  */
 
 import { Engine } from "noa-engine";
@@ -287,8 +293,9 @@ appEl.addEventListener("click", () => {
   if (!invOpen) requestPointerLock();
 });
 
+// ✅ FIX: reliable pointer lock check
 function hasPointerLock(): boolean {
-  return !!(noa.container as any)?.hasPointerLock;
+  return document.pointerLockElement != null;
 }
 
 /* ===============================
@@ -541,7 +548,30 @@ let lastPickupSentAt = 0;
 const pickupSentRecently = new Map<string, number>();
 
 /* ===============================
-   6.4 Inventory UI rendering + events
+   6.4 Mining progress (Option A)  ✅ MOVED UP to avoid TDZ
+================================ */
+type MineProgressMsg = {
+  x: number;
+  y: number;
+  z: number;
+  progress: number; // 0..1
+  stage: number; // 0..9
+  done?: boolean;
+  reason?: string;
+};
+
+let miningHeld = false;
+let miningTarget: { x: number; y: number; z: number } | null = null;
+let miningProgress: MineProgressMsg | null = null;
+let lastMineSentKey = "";
+let lastMineSendAt = 0;
+
+let crackMesh: BABYLON.Mesh | null = null;
+let crackMat: BABYLON.StandardMaterial | null = null;
+let crackSceneUid: string | number | null = null;
+
+/* ===============================
+   6.5 Inventory UI rendering + events
 ================================ */
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
@@ -710,7 +740,7 @@ function setInvOpen(open: boolean) {
 }
 
 /* ===============================
-   6.5 Overlay
+   6.6 Overlay
 ================================ */
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
@@ -790,7 +820,7 @@ function updateOverlay(extraLine = "") {
 updateOverlay();
 
 /* ===============================
-   6.6 Key handling
+   6.7 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
   // Hotbar 1-5
@@ -1011,29 +1041,6 @@ let punchT = 1; // 0..1
 function triggerPunch() {
   punchT = 0;
 }
-
-/* ===============================
-   8.1 Mining progress (Option A)
-================================ */
-type MineProgressMsg = {
-  x: number;
-  y: number;
-  z: number;
-  progress: number; // 0..1
-  stage: number; // 0..9
-  done?: boolean;
-  reason?: string;
-};
-
-let miningHeld = false;
-let miningTarget: { x: number; y: number; z: number } | null = null;
-let miningProgress: MineProgressMsg | null = null;
-let lastMineSentKey = "";
-let lastMineSendAt = 0;
-
-let crackMesh: BABYLON.Mesh | null = null;
-let crackMat: BABYLON.StandardMaterial | null = null;
-let crackSceneUid: string | number | null = null;
 
 function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
