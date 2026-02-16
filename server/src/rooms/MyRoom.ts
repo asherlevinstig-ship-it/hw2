@@ -37,10 +37,22 @@
 // Also:
 // - autoDispose = false so room isn't destroyed when last client disconnects
 // - loud logs for saves/loads/requests
+//
+// IMPORTANT:
+// - This file imports Items/defs/recipes from shared/items.ts
+// - Adjust the relative import path below if your repo layout differs.
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+// ✅ Shared items (single source of truth)
+import {
+  Items,
+  ITEM_DEFS,
+  RECIPES,
+  type ItemStack as SharedItemStack,
+} from "../shared/items.js";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -73,7 +85,8 @@ type PlayerInfo = {
   joinedAt: number;
 };
 
-type ItemStack = { id: number; count: number };
+type ItemStack = SharedItemStack;
+
 type InvState = {
   slots: ItemStack[]; // length = HOTBAR_SLOTS + BACKPACK_SLOTS
   cursor: ItemStack;
@@ -189,51 +202,6 @@ export class MyRoom extends Room {
   private readonly IRON_ORE_ID = 8;
   private readonly GOLD_ORE_ID = 9;
   private readonly DIAMOND_ORE_ID = 10;
-
-  // Item IDs (MUST match client)
-  private readonly Items = {
-    GRASS: 1,
-    DIRT: 2,
-    STONE: 3,
-    WOOD_LOG: 4,
-    LEAVES: 5,
-
-    PLANK: 10,
-    STICK: 11,
-    WOOD_PICK: 20,
-
-    COAL: 30,
-    RAW_IRON: 31,
-    RAW_GOLD: 32,
-    DIAMOND: 33,
-  } as const;
-
-  private readonly ItemDefs: Record<number, { id: number; name: string; maxStack: number; placeBlockId?: number }> = {
-    1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: 1 },
-    2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: 2 },
-    3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: 3 },
-    4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: 4 },
-    5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: 5 },
-
-    10: { id: 10, name: "Planks", maxStack: 64 },
-    11: { id: 11, name: "Stick", maxStack: 64 },
-    20: { id: 20, name: "Wood Pick", maxStack: 1 },
-
-    30: { id: 30, name: "Coal", maxStack: 64 },
-    31: { id: 31, name: "Raw Iron", maxStack: 64 },
-    32: { id: 32, name: "Raw Gold", maxStack: 64 },
-    33: { id: 33, name: "Diamond", maxStack: 64 },
-  };
-
-  private readonly Recipes: Array<{
-    id: string;
-    inputs: Array<{ id: number; count: number }>;
-    output: { id: number; count: number };
-  }> = [
-    { id: "planks_from_log", inputs: [{ id: this.Items.WOOD_LOG, count: 1 }], output: { id: this.Items.PLANK, count: 4 } },
-    { id: "sticks_from_planks", inputs: [{ id: this.Items.PLANK, count: 2 }], output: { id: this.Items.STICK, count: 4 } },
-    { id: "wood_pick", inputs: [{ id: this.Items.PLANK, count: 3 }, { id: this.Items.STICK, count: 2 }], output: { id: this.Items.WOOD_PICK, count: 1 } },
-  ];
 
   // =========================
   // Players
@@ -412,9 +380,9 @@ export class MyRoom extends Room {
       if (!pl) return;
 
       // reach check
-      const dx = (x + 0.5) - pl.x;
-      const dy = (y + 0.5) - pl.y;
-      const dz = (z + 0.5) - pl.z;
+      const dx = x + 0.5 - pl.x;
+      const dy = y + 0.5 - pl.y;
+      const dz = z + 0.5 - pl.z;
       const dist2 = dx * dx + dy * dy + dz * dz;
       if (dist2 > this.mineReach * this.mineReach) {
         this.cancelMiningFor(client, "too_far");
@@ -481,12 +449,15 @@ export class MyRoom extends Room {
         z,
         blockId,
         breakTimeMs,
-        hasWoodPick: this.inventoryHas(inv, this.Items.WOOD_PICK),
+        hasWoodPick: this.inventoryHasAny(inv, Items.WOOD_PICK),
       });
     });
 
     this.onMessage("cancelMine", (client: Client, payload: unknown) => {
-      const reason = typeof (payload as any)?.reason === "string" ? String((payload as any).reason).slice(0, 60) : "client_cancel";
+      const reason =
+        typeof (payload as any)?.reason === "string"
+          ? String((payload as any).reason).slice(0, 60)
+          : "client_cancel";
       this.cancelMiningFor(client, reason);
     });
 
@@ -507,7 +478,7 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
 
-      const canDrop = inv ? this.canBlockDropWithTool(oldId, inv) : this.canBlockDropWithTool(oldId, null);
+      const canDrop = this.canBlockDropWithTool(oldId, inv);
 
       console.log("[EDIT mineBlock legacy]", { by: client.sessionId, x, y, z, oldId, canDrop });
 
@@ -553,11 +524,19 @@ export class MyRoom extends Room {
       if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
       // item must be placeable and match blockId
-      const def = this.ItemDefs[stack.id];
+      const def = ITEM_DEFS[stack.id];
       if (!def || typeof def.placeBlockId !== "number") return;
       if (def.placeBlockId !== blockId) return;
 
-      console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, blockId, fromSlot, itemId: stack.id });
+      console.log("[EDIT placeBlock]", {
+        by: client.sessionId,
+        x,
+        y,
+        z,
+        blockId,
+        fromSlot,
+        itemId: stack.id,
+      });
 
       // consume 1
       stack.count -= 1;
@@ -650,7 +629,7 @@ export class MyRoom extends Room {
 
       const inv = this.getOrLoadInventory(pl.userId);
 
-      const recipe = this.Recipes.find((r) => r.id === recipeId);
+      const recipe = RECIPES.find((r: (typeof RECIPES)[number]) => r.id === recipeId);
       if (!recipe) {
         client.send("craftResult", { ok: false, recipeId, crafted: 0, reason: "unknown_recipe" });
         return;
@@ -659,24 +638,26 @@ export class MyRoom extends Room {
       const wantMax = !!p.max;
       const timesReq = isFiniteNumber(p.times) ? clamp(toInt(p.times), 1, 999) : 1;
 
+      // ✅ IMPORTANT: crafting should use SLOTS ONLY (not cursor),
+      // otherwise cursor becomes an unintended ingredient source/sink.
       const craftableByInputs = () => {
         for (const req of recipe.inputs) {
-          if (this.inventoryCount(inv, req.id) < req.count) return false;
+          if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
         }
         return true;
       };
 
       const tryCraftOnce = (): boolean => {
-        // check inputs
+        // check inputs (SLOTS ONLY)
         for (const req of recipe.inputs) {
-          if (this.inventoryCount(inv, req.id) < req.count) return false;
+          if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
         }
         // check output space
         const canFit = this.inventoryCanFit(inv, recipe.output.id, recipe.output.count);
         if (!canFit) return false;
 
-        // consume inputs
-        for (const req of recipe.inputs) this.inventoryRemove(inv, req.id, req.count);
+        // consume inputs (SLOTS ONLY)
+        for (const req of recipe.inputs) this.inventoryRemoveSlots(inv, req.id, req.count);
 
         // add output
         this.inventoryAdd(inv, { id: recipe.output.id, count: recipe.output.count });
@@ -828,7 +809,11 @@ export class MyRoom extends Room {
   // =========================
   // Chunk coord normalization (THE FIX)
   // =========================
-  private normalizeChunkRequestToIndex(rx: number, ry: number, rz: number): { cx: number; cy: number; cz: number } {
+  private normalizeChunkRequestToIndex(
+    rx: number,
+    ry: number,
+    rz: number
+  ): { cx: number; cy: number; cz: number } {
     const CS = this.chunkSize;
 
     // If NOA provides origins (multiples of CS), convert to index.
@@ -963,7 +948,7 @@ export class MyRoom extends Room {
     };
 
     // Starter kit (tweak as you like)
-    inv.slots[0] = { id: this.Items.WOOD_LOG, count: 4 };
+    inv.slots[0] = { id: Items.WOOD_LOG, count: 4 };
 
     this.inventories.set(userId, inv);
     this.saveInventory(userId, inv);
@@ -1139,16 +1124,16 @@ export class MyRoom extends Room {
   }
 
   private blockIdToDropItemId(blockId: number): number {
-    if (blockId === this.GRASS_ID) return this.Items.GRASS;
-    if (blockId === this.DIRT_ID) return this.Items.DIRT;
-    if (blockId === this.STONE_ID) return this.Items.STONE;
-    if (blockId === this.WOOD_ID) return this.Items.WOOD_LOG;
-    if (blockId === this.LEAVES_ID) return this.Items.LEAVES;
+    if (blockId === this.GRASS_ID) return Items.GRASS;
+    if (blockId === this.DIRT_ID) return Items.DIRT;
+    if (blockId === this.STONE_ID) return Items.STONE;
+    if (blockId === this.WOOD_ID) return Items.WOOD_LOG;
+    if (blockId === this.LEAVES_ID) return Items.LEAVES;
 
-    if (blockId === this.COAL_ORE_ID) return this.Items.COAL;
-    if (blockId === this.IRON_ORE_ID) return this.Items.RAW_IRON;
-    if (blockId === this.GOLD_ORE_ID) return this.Items.RAW_GOLD;
-    if (blockId === this.DIAMOND_ORE_ID) return this.Items.DIAMOND;
+    if (blockId === this.COAL_ORE_ID) return Items.COAL;
+    if (blockId === this.IRON_ORE_ID) return Items.RAW_IRON;
+    if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
+    if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
 
     // bedrock + unknowns drop nothing
     return 0;
@@ -1174,7 +1159,7 @@ export class MyRoom extends Room {
 
     const needsPick = this.isStoneLike(blockId);
 
-    const hasWoodPick = inv ? this.inventoryHas(inv, this.Items.WOOD_PICK) : false;
+    const hasWoodPick = inv ? this.inventoryHasAny(inv, Items.WOOD_PICK) : false;
 
     // Starter rules:
     // - Without wood pick: can break, but stone/ores drop nothing.
@@ -1203,7 +1188,7 @@ export class MyRoom extends Room {
     else if (blockId === this.DIAMOND_ORE_ID) base = 2850;
     else if (blockId === this.BEDROCK_ID) return 999999999;
 
-    const hasWoodPick = this.inventoryHas(inv, this.Items.WOOD_PICK);
+    const hasWoodPick = this.inventoryHasAny(inv, Items.WOOD_PICK);
 
     // Tool multipliers:
     // - Pick speeds up stone-like blocks; other blocks mostly unchanged
@@ -1226,8 +1211,12 @@ export class MyRoom extends Room {
     this.mining.delete(client.sessionId);
     client.send("mineCancelled", { reason });
 
-    // Also send a last progress reset-ish message if you want; client already clears on cancelMine local.
-    console.log("[MINE cancel]", { by: client.sessionId, reason, target: { x: st.x, y: st.y, z: st.z }, blockId: st.lastBlockId });
+    console.log("[MINE cancel]", {
+      by: client.sessionId,
+      reason,
+      target: { x: st.x, y: st.y, z: st.z },
+      blockId: st.lastBlockId,
+    });
   }
 
   private tickMining(): void {
@@ -1253,9 +1242,9 @@ export class MyRoom extends Room {
       }
 
       // reach check
-      const dx = (st.x + 0.5) - pl.x;
-      const dy = (st.y + 0.5) - pl.y;
-      const dz = (st.z + 0.5) - pl.z;
+      const dx = st.x + 0.5 - pl.x;
+      const dy = st.y + 0.5 - pl.y;
+      const dz = st.z + 0.5 - pl.z;
       const dist2 = dx * dx + dy * dy + dz * dz;
       if (dist2 > this.mineReach * this.mineReach) {
         this.cancelMiningFor(client, "too_far");
@@ -1346,25 +1335,33 @@ export class MyRoom extends Room {
   // Inventory helpers
   // =========================
   private normalizeStack(s: ItemStack): ItemStack {
-    const id = toInt(clamp(Number(s?.id ?? 0), 0, 999999));
-    const count = toInt(clamp(Number(s?.count ?? 0), 0, 999999));
+    const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999));
+    const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999));
     return id > 0 && count > 0 ? { id, count } : { id: 0, count: 0 };
   }
 
   private maxStackFor(itemId: number): number {
-    const def = this.ItemDefs[itemId];
+    const def = ITEM_DEFS[itemId];
     return def ? clamp(toInt(def.maxStack), 1, 999999) : 64;
   }
 
-  private inventoryCount(inv: InvState, itemId: number): number {
+  // Count in slots + cursor (useful for "has tool anywhere" rules)
+  private inventoryCountAny(inv: InvState, itemId: number): number {
     let n = 0;
     for (const s of inv.slots) if (s.id === itemId && s.count > 0) n += s.count;
     if (inv.cursor.id === itemId && inv.cursor.count > 0) n += inv.cursor.count;
     return n;
   }
 
-  private inventoryHas(inv: InvState, itemId: number): boolean {
-    return this.inventoryCount(inv, itemId) > 0;
+  private inventoryHasAny(inv: InvState, itemId: number): boolean {
+    return this.inventoryCountAny(inv, itemId) > 0;
+  }
+
+  // ✅ SLOTS ONLY (used for crafting inputs)
+  private inventoryCountSlots(inv: InvState, itemId: number): number {
+    let n = 0;
+    for (const s of inv.slots) if (s.id === itemId && s.count > 0) n += s.count;
+    return n;
   }
 
   private inventoryCanFit(inv: InvState, itemId: number, count: number): boolean {
@@ -1436,8 +1433,8 @@ export class MyRoom extends Room {
     return accepted;
   }
 
-  // remove up to count; returns removed
-  private inventoryRemove(inv: InvState, itemId: number, count: number): number {
+  // remove up to count; returns removed (slots first, then cursor)
+  private inventoryRemoveAny(inv: InvState, itemId: number, count: number): number {
     const want = clamp(toInt(count), 1, 999999);
     let remaining = want;
     let removed = 0;
@@ -1462,6 +1459,27 @@ export class MyRoom extends Room {
       remaining -= take;
       removed += take;
       if (inv.cursor.count <= 0) inv.cursor = { id: 0, count: 0 };
+    }
+
+    return removed;
+  }
+
+  // ✅ remove up to count; SLOTS ONLY; returns removed
+  private inventoryRemoveSlots(inv: InvState, itemId: number, count: number): number {
+    const want = clamp(toInt(count), 1, 999999);
+    let remaining = want;
+    let removed = 0;
+
+    for (let i = 0; i < inv.slots.length; i++) {
+      const s = inv.slots[i];
+      if (s.id === itemId && s.count > 0) {
+        const take = Math.min(s.count, remaining);
+        s.count -= take;
+        remaining -= take;
+        removed += take;
+        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 };
+        if (remaining <= 0) break;
+      }
     }
 
     return removed;
