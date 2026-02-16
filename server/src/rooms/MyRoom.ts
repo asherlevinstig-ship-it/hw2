@@ -38,11 +38,14 @@
 // - Drops expire after DROP_TTL_MS to prevent world clutter
 // - Periodic cleanup broadcasts dropDespawn
 //
-// ✅ Inventory durability correctness (FIXED):
-// - Cursor/slot moves preserve dur for tools (right-click, left-click, swaps, quick-move)
-// - Tools never "split" (RMB half/place-one logic special-cased)
-// - Quick-move (Shift+LMB) preserves tool stack + dur
-// - Any tool stack missing dur is repaired to maxDurability automatically
+// ✅ Deterministic world seed (NEW):
+// - Loads/creates world/meta.json { seed: number }
+// - hash2i/hash3i include worldSeed so biomes/POIs/ores are repeatable per event seed
+//
+// ✅ Hazard 2 fix (NEW): tool durability + cursor/right-click handling mismatch
+// - Cursor/slot move/copy rules now PRESERVE dur for tools
+// - Right-click never "splits" tools; tools (maxStack=1) move as whole items
+// - Shift-move preserves dur for tools
 //
 // Persistence:
 // - Saves chunk files keyed by CHUNK INDEX: c_<cx>_<cy>_<cz>.bin
@@ -264,6 +267,12 @@ export class MyRoom extends Room {
   private readonly chunksDir = path.join(this.worldDir, "chunks");
   private readonly invDir = path.join(this.worldDir, "inventories");
 
+  // NEW: world meta (seed lives here)
+  private readonly metaPath = path.join(this.worldDir, "meta.json");
+
+  // NEW: deterministic seed
+  private worldSeed = 0;
+
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
 
@@ -273,7 +282,9 @@ export class MyRoom extends Room {
     this.autoDispose = false;
 
     this.ensureDirs();
+    this.worldSeed = this.loadOrCreateWorldSeed(options);
     console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: this.invDir });
+    console.log("[WORLD] seed:", this.worldSeed);
 
     // Periodic snapshot
     this.clock.setInterval(() => {
@@ -793,7 +804,7 @@ export class MyRoom extends Room {
 
     this.players.set(client.sessionId, spawn);
 
-    // Ensure inventory exists (repairs any broken tool durability too)
+    // Ensure inventory exists
     const inv = this.getOrLoadInventory(userId);
 
     // Send inv state to joining client
@@ -879,6 +890,68 @@ export class MyRoom extends Room {
   }
 
   // =========================
+  // Persistence: meta (seed)
+  // =========================
+  private loadOrCreateWorldSeed(options: any): number {
+    // 1) explicit seed passed in room options (optional)
+    const optSeed =
+      typeof options?.worldSeed === "number" && Number.isFinite(options.worldSeed) ? (options.worldSeed | 0) : null;
+
+    // 2) env var override (optional)
+    const envSeedRaw = process.env.WORLD_SEED;
+    const envSeed = envSeedRaw != null && envSeedRaw !== "" ? Number.parseInt(String(envSeedRaw), 10) : NaN;
+
+    // Priority: options > env > meta.json > generate new
+    const preferred = optSeed != null ? optSeed : Number.isFinite(envSeed) ? (envSeed | 0) : null;
+
+    if (preferred != null) {
+      this.writeMeta({ seed: preferred, updatedAt: Date.now() });
+      return preferred | 0;
+    }
+
+    // meta.json
+    try {
+      if (fs.existsSync(this.metaPath)) {
+        const raw = fs.readFileSync(this.metaPath, "utf8");
+        const j = JSON.parse(raw);
+        const s = Number(j?.seed);
+        if (Number.isFinite(s)) return (s | 0);
+      }
+    } catch (e) {
+      console.warn("[WORLD] meta read failed:", this.metaPath, e);
+    }
+
+    const seed = this.generateSeed32();
+    this.writeMeta({ seed, createdAt: Date.now() });
+    return seed;
+  }
+
+  private writeMeta(patch: any): void {
+    try {
+      let existing: any = {};
+      if (fs.existsSync(this.metaPath)) {
+        try {
+          existing = JSON.parse(fs.readFileSync(this.metaPath, "utf8"));
+        } catch {
+          existing = {};
+        }
+      }
+      const next = { ...existing, ...patch };
+      const tmp = this.metaPath + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+      fs.renameSync(tmp, this.metaPath);
+    } catch (e) {
+      console.warn("[WORLD] meta write failed:", this.metaPath, e);
+    }
+  }
+
+  private generateSeed32(): number {
+    const t = Date.now() | 0;
+    const r = (Math.random() * 0xffffffff) | 0;
+    return (t ^ r) | 0;
+  }
+
+  // =========================
   // Persistence: chunks
   // =========================
   private chunkKey(cx: number, cy: number, cz: number): string {
@@ -945,7 +1018,6 @@ export class MyRoom extends Room {
           const durRaw = Number(s?.dur ?? 0);
           const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
 
-          // NOTE: do not "trust" dur blindly; normalizeStack will repair missing tool durability
           slots[i] =
             id > 0 && count > 0
               ? dur > 0
@@ -967,12 +1039,8 @@ export class MyRoom extends Room {
             : ({ id: cId, count: cCount } as any)
           : ({ id: 0, count: 0 } as any);
 
-      // ✅ Repair any tool durability issues on load
-      const inv: InvState = { slots, cursor };
-      this.repairToolDurability(inv);
-
       console.log("[INV] loaded", { userId, fp });
-      return inv;
+      return { slots, cursor };
     } catch (e) {
       console.warn("[INV] read failed", { userId, fp, e });
       return null;
@@ -1003,11 +1071,7 @@ export class MyRoom extends Room {
 
   private getOrLoadInventory(userId: string): InvState {
     const cached = this.inventories.get(userId);
-    if (cached) {
-      // in case older state got introduced, keep it repaired
-      this.repairToolDurability(cached);
-      return cached;
-    }
+    if (cached) return cached;
 
     const fromDisk = this.readInvFromDisk(userId);
     if (fromDisk) {
@@ -1024,18 +1088,12 @@ export class MyRoom extends Room {
     // Starter kit (tweak as you like)
     inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
 
-    // ✅ ensure any tool stacks are correct
-    this.repairToolDurability(inv);
-
     this.inventories.set(userId, inv);
     this.saveInventory(userId, inv);
     return inv;
   }
 
   private saveInventory(userId: string, inv: InvState): void {
-    // ✅ repair before save to prevent persisting broken tool stacks
-    this.repairToolDurability(inv);
-
     this.inventories.set(userId, inv);
     try {
       this.writeInvToDisk(userId, inv);
@@ -1061,9 +1119,22 @@ export class MyRoom extends Room {
     return this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
   }
 
-  // deterministic hash -> [0,1)
+  // deterministic hash -> [0,1) (SEEDED)
   private hash3i(x: number, y: number, z: number): number {
-    let h = x * 374761393 + y * 668265263 + z * 2147483647;
+    const seed = this.worldSeed | 0;
+
+    // include seed with a large odd constant
+    let h = x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1597334677;
+    h = (h ^ (h >>> 13)) * 1274126177;
+    h = h ^ (h >>> 16);
+    return (h >>> 0) / 4294967296;
+  }
+
+  // deterministic 2D hash -> [0,1) (SEEDED) for future biomes/POIs
+  private hash2i(x: number, z: number): number {
+    const seed = this.worldSeed | 0;
+
+    let h = x * 374761393 + z * 668265263 + seed * 1597334677;
     h = (h ^ (h >>> 13)) * 1274126177;
     h = h ^ (h >>> 16);
     return (h >>> 0) / 4294967296;
@@ -1256,50 +1327,6 @@ export class MyRoom extends Room {
   private getToolDef(itemId: number) {
     const def = ITEM_DEFS[itemId];
     return def?.tool ?? null;
-  }
-
-  private isToolItem(itemId: number): boolean {
-    const def = ITEM_DEFS[itemId];
-    return !!def?.tool;
-  }
-
-  private toolMaxDur(itemId: number): number {
-    const def = ITEM_DEFS[itemId];
-    const max = def?.tool?.maxDurability;
-    return typeof max === "number" && Number.isFinite(max) ? toInt(clamp(max, 1, 999999)) : 0;
-  }
-
-  // ✅ Repair: ensure any tool stack has dur present and within range
-  private repairToolDurability(inv: InvState): void {
-    for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i] as any;
-      if (!s || typeof s.id !== "number" || typeof s.count !== "number") continue;
-      if (s.id <= 0 || s.count <= 0) continue;
-      if (!this.isToolItem(s.id)) continue;
-
-      // tools are maxStack=1; enforce
-      s.count = 1;
-
-      const maxD = this.toolMaxDur(s.id);
-      const dur = Number(s.dur ?? 0);
-      const fixed =
-        Number.isFinite(dur) && dur > 0 ? toInt(clamp(dur, 1, maxD > 0 ? maxD : 999999)) : maxD;
-
-      s.dur = fixed > 0 ? fixed : 1;
-      inv.slots[i] = s as any;
-    }
-
-    // cursor too
-    const c = inv.cursor as any;
-    if (c && typeof c.id === "number" && typeof c.count === "number" && c.id > 0 && c.count > 0 && this.isToolItem(c.id)) {
-      c.count = 1;
-      const maxD = this.toolMaxDur(c.id);
-      const dur = Number(c.dur ?? 0);
-      const fixed =
-        Number.isFinite(dur) && dur > 0 ? toInt(clamp(dur, 1, maxD > 0 ? maxD : 999999)) : maxD;
-      c.dur = fixed > 0 ? fixed : 1;
-      inv.cursor = c as any;
-    }
   }
 
   // Choose the tool stack we actually use for mining:
@@ -1568,18 +1595,33 @@ export class MyRoom extends Room {
     const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
 
     if (id > 0 && count > 0) {
-      // ✅ If this is a tool, dur must exist and count must be 1
-      const def = ITEM_DEFS[id];
-      if (def?.tool) {
-        const maxD = toInt(clamp(def.tool.maxDurability, 1, 999999));
-        const fixedDur = dur > 0 ? toInt(clamp(dur, 1, maxD)) : maxD;
-        return { id, count: 1, dur: fixedDur } as any;
-      }
-
-      // non-tool: keep dur only if present (>0)
+      // keep dur if present (>0)
       return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
     }
     return { id: 0, count: 0 } as any;
+  }
+
+  private isToolItem(itemId: number): boolean {
+    const def = ITEM_DEFS[itemId];
+    return !!def?.tool;
+  }
+
+  private cloneStackPreserveDur(s: ItemStack): ItemStack {
+    const ns = this.normalizeStack(s) as any;
+    if (ns.id <= 0 || ns.count <= 0) return { id: 0, count: 0 } as any;
+
+    // Ensure tools always carry dur if present; normalizeStack already keeps dur>0.
+    // We also allow carrying dur=0 through moves for safety (shouldn't happen unless corrupted).
+    const def = ITEM_DEFS[ns.id];
+    const isTool = !!def?.tool;
+
+    if (isTool) {
+      const dRaw = Number((s as any)?.dur ?? (ns as any)?.dur ?? def!.tool!.maxDurability);
+      const d = Number.isFinite(dRaw) ? toInt(clamp(dRaw, 0, 999999)) : def!.tool!.maxDurability;
+      return { id: ns.id, count: 1, dur: d } as any;
+    }
+
+    return { id: ns.id, count: ns.count } as any;
   }
 
   private maxStackFor(itemId: number): number {
@@ -1609,14 +1651,6 @@ export class MyRoom extends Room {
   private inventoryCanFit(inv: InvState, itemId: number, count: number): boolean {
     const want = clamp(toInt(count), 1, 999999);
     const maxS = this.maxStackFor(itemId);
-
-    // tools: need at least one empty slot for each tool
-    if (this.isToolItem(itemId)) {
-      const needed = want; // tools are count==1 normally; still handle generically
-      let empty = 0;
-      for (const s of inv.slots) if ((s as any).id === 0 || (s as any).count <= 0) empty++;
-      return empty >= needed;
-    }
 
     let remaining = want;
 
@@ -1651,25 +1685,9 @@ export class MyRoom extends Room {
     if ((s as any).id <= 0 || (s as any).count <= 0) return 0;
 
     const id = (s as any).id | 0;
-    const def = ITEM_DEFS[id];
-    const isTool = !!def?.tool;
-
     const maxS = this.maxStackFor(id);
     let remaining = (s as any).count | 0;
     let accepted = 0;
-
-    // tools: only place into empty slots; never stack
-    if (isTool) {
-      for (let i = 0; i < inv.slots.length && remaining > 0; i++) {
-        const slot = inv.slots[i] as any;
-        if (slot.id === 0 || slot.count <= 0) {
-          inv.slots[i] = { id, count: 1, dur: def!.tool!.maxDurability } as any;
-          remaining -= 1;
-          accepted += 1;
-        }
-      }
-      return accepted;
-    }
 
     // fill existing stacks first (only meaningful for stackables)
     for (let i = 0; i < inv.slots.length; i++) {
@@ -1691,9 +1709,21 @@ export class MyRoom extends Room {
       const slot = inv.slots[i] as any;
       if (slot.id === 0 || slot.count <= 0) {
         const take = Math.min(maxS, remaining);
-        inv.slots[i] = { id, count: take } as any;
-        remaining -= take;
-        accepted += take;
+
+        const def = ITEM_DEFS[id];
+        const isTool = !!def?.tool;
+
+        // tools: initialize durability at max
+        if (isTool) {
+          inv.slots[i] = { id, count: 1, dur: def!.tool!.maxDurability } as any;
+          remaining -= 1;
+          accepted += 1;
+        } else {
+          inv.slots[i] = { id, count: take } as any;
+          remaining -= take;
+          accepted += take;
+        }
+
         if (remaining <= 0) return accepted;
       }
     }
@@ -1755,18 +1785,18 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Inventory click logic
+  // Inventory click logic (Hazard 2 fix: preserve dur)
   // =========================
   private applyInvClick(inv: InvState, slotIndex: number, button: "L" | "R", shift: boolean): void {
-    // normalize state (also repairs tool durability)
+    // normalize state (keeps dur>0)
     inv.cursor = this.normalizeStack(inv.cursor);
     inv.slots[slotIndex] = this.normalizeStack(inv.slots[slotIndex]);
 
     const cursor = inv.cursor as any;
     const slot = inv.slots[slotIndex] as any;
 
-    const cursorIsTool = cursor.id > 0 && cursor.count > 0 && this.isToolItem(cursor.id);
-    const slotIsTool = slot.id > 0 && slot.count > 0 && this.isToolItem(slot.id);
+    const cursorIsTool = cursor.id > 0 && this.isToolItem(cursor.id);
+    const slotIsTool = slot.id > 0 && this.isToolItem(slot.id);
 
     // Quick move: Shift + Left (move between hotbar/backpack)
     if (shift && button === "L") {
@@ -1780,7 +1810,6 @@ export class MyRoom extends Room {
       const moved = this.moveStackBetweenRanges(inv, slotIndex, targetStart, targetEnd);
       if (moved) return;
 
-      // if can't move, do nothing
       return;
     }
 
@@ -1788,26 +1817,27 @@ export class MyRoom extends Room {
       // LEFT CLICK:
       // - if cursor empty: pick up slot
       // - else if slot empty: place cursor
-      // - else if same id: stack into slot
-      // - else: swap
+      // - else if same id: stack into slot (no tool stacking)
+      // - else: swap (preserve dur)
       if (cursor.id <= 0 || cursor.count <= 0) {
-        inv.cursor = { ...slot } as any; // preserves dur
+        // pick up slot (preserve dur if tool)
+        inv.cursor = this.cloneStackPreserveDur(slot) as any;
         inv.slots[slotIndex] = { id: 0, count: 0 } as any;
         return;
       }
 
       if (slot.id <= 0 || slot.count <= 0) {
-        inv.slots[slotIndex] = { ...cursor } as any; // preserves dur for tools
+        // place cursor (preserve dur if tool)
+        inv.slots[slotIndex] = this.cloneStackPreserveDur(cursor) as any;
         inv.cursor = { id: 0, count: 0 } as any;
         return;
       }
 
       if (slot.id === cursor.id) {
+        // tools can't stack
+        if (cursorIsTool || slotIsTool) return;
+
         const maxS = this.maxStackFor(slot.id);
-
-        // tools (maxStack=1) cannot stack
-        if (maxS <= 1 || slotIsTool || cursorIsTool) return;
-
         const space = maxS - slot.count;
         if (space <= 0) return;
 
@@ -1820,28 +1850,27 @@ export class MyRoom extends Room {
       }
 
       // swap (preserve dur)
-      inv.slots[slotIndex] = { ...cursor } as any;
-      inv.cursor = { ...slot } as any;
+      const newSlot = this.cloneStackPreserveDur(cursor);
+      const newCursor = this.cloneStackPreserveDur(slot);
+      inv.slots[slotIndex] = newSlot as any;
+      inv.cursor = newCursor as any;
       return;
     }
 
     // RIGHT CLICK:
     // - if cursor empty and slot not empty: take half (ceil)
+    //   - tools: take whole tool (dur preserved)
     // - else if cursor not empty:
-    //   - if slot empty: place one
-    //   - else if same id and slot not full: place one
+    //   - if slot empty: place one (stackables) / place whole tool (dur preserved)
+    //   - else if same id and slot not full: place one (stackables only)
     //   - else: do nothing
-    //
-    // ✅ Special-case tools:
-    // - Tools never split/half.
-    // - RMB behaves like "pick up whole tool" or "place whole tool".
 
     if (cursor.id <= 0 || cursor.count <= 0) {
       if (slot.id <= 0 || slot.count <= 0) return;
 
-      // tools: pick up whole item (preserve dur)
-      if (slotIsTool || this.maxStackFor(slot.id) <= 1) {
-        inv.cursor = { ...slot } as any;
+      if (slotIsTool) {
+        // tools: take whole with dur
+        inv.cursor = this.cloneStackPreserveDur(slot) as any; // count=1, dur preserved
         inv.slots[slotIndex] = { id: 0, count: 0 } as any;
         return;
       }
@@ -1854,15 +1883,18 @@ export class MyRoom extends Room {
     }
 
     // cursor has items
-    if (slot.id <= 0 || slot.count <= 0) {
-      // tools: place whole tool with dur
-      if (cursorIsTool || this.maxStackFor(cursor.id) <= 1) {
-        inv.slots[slotIndex] = { ...cursor } as any;
+    if (cursorIsTool) {
+      // place whole tool only into empty slot (preserve dur)
+      if (slot.id <= 0 || slot.count <= 0) {
+        inv.slots[slotIndex] = this.cloneStackPreserveDur(cursor) as any; // count=1 + dur
         inv.cursor = { id: 0, count: 0 } as any;
-        return;
       }
+      // else: do nothing (can't stack / overwrite with RMB)
+      return;
+    }
 
-      // normal: place one
+    // cursor stackable
+    if (slot.id <= 0 || slot.count <= 0) {
       inv.slots[slotIndex] = { id: cursor.id, count: 1 } as any;
       cursor.count -= 1;
       inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
@@ -1870,11 +1902,10 @@ export class MyRoom extends Room {
     }
 
     if (slot.id === cursor.id) {
+      // stacking only for non-tools
+      if (slotIsTool) return;
+
       const maxS = this.maxStackFor(slot.id);
-
-      // tools can't stack
-      if (maxS <= 1 || slotIsTool || cursorIsTool) return;
-
       if (slot.count >= maxS) return;
 
       slot.count += 1;
@@ -1892,19 +1923,23 @@ export class MyRoom extends Room {
     const from = inv.slots[fromIndex] as any;
     if (from.id <= 0 || from.count <= 0) return false;
 
-    const fromIsTool = this.isToolItem(from.id) || this.maxStackFor(from.id) <= 1;
+    const isTool = this.isToolItem(from.id);
 
-    // ✅ Tools: move whole stack (count=1) into first empty slot in target range, preserving dur.
-    if (fromIsTool) {
+    // Tools (maxStack=1): move whole item preserving dur into first empty target slot
+    if (isTool) {
+      let empty = -1;
       for (let i = toStart; i < toEnd; i++) {
         const s = this.normalizeStack(inv.slots[i]) as any;
         if (s.id <= 0 || s.count <= 0) {
-          inv.slots[i] = { ...from } as any; // preserves dur
-          inv.slots[fromIndex] = { id: 0, count: 0 } as any;
-          return true;
+          empty = i;
+          break;
         }
       }
-      return false;
+      if (empty < 0) return false;
+
+      inv.slots[empty] = this.cloneStackPreserveDur(from) as any;
+      inv.slots[fromIndex] = { id: 0, count: 0 } as any;
+      return true;
     }
 
     const maxS = this.maxStackFor(from.id);
