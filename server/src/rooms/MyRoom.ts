@@ -29,12 +29,20 @@
 // - When done, server edits the world (persistent) and broadcasts blockUpdate.
 // - Server also sends mineCancelled when mining is interrupted.
 //
-// ✅ Better mining rules (UPDATED):
+// ✅ Better mining rules (NEW):
 // - Proper tool tiers (wood/stone/iron picks) from shared/items.ts
-// - Correct “needs pick” per ore for BREAK + DROPS:
-//   - Stone/Coal/Iron require tier >= 1 (wood+)
-//   - Gold/Diamond require tier >= 3 (iron+)
+// - Correct “needs pick” per ore for DROPS (coal/iron require >=1; gold/diamond require >=3)
 // - Optional tool durability: damage 1 on successful stone-like break; break tool at 0
+//
+// ✅ Drops cleanup (NEW):
+// - Drops expire after DROP_TTL_MS to prevent world clutter
+// - Periodic cleanup broadcasts dropDespawn
+//
+// ✅ Inventory durability correctness (FIXED):
+// - Cursor/slot moves preserve dur for tools (right-click, left-click, swaps, quick-move)
+// - Tools never "split" (RMB half/place-one logic special-cased)
+// - Quick-move (Shift+LMB) preserves tool stack + dur
+// - Any tool stack missing dur is repaired to maxDurability automatically
 //
 // Persistence:
 // - Saves chunk files keyed by CHUNK INDEX: c_<cx>_<cy>_<cz>.bin
@@ -211,6 +219,10 @@ export class MyRoom extends Room {
   private readonly GOLD_ORE_ID = 9;
   private readonly DIAMOND_ORE_ID = 10;
 
+  // Drops cleanup (NEW)
+  private readonly DROP_TTL_MS = 3 * 60 * 1000; // 3 minutes
+  private readonly DROP_CLEANUP_EVERY_MS = 5000;
+
   // =========================
   // Players
   // =========================
@@ -286,6 +298,11 @@ export class MyRoom extends Room {
     this.clock.setInterval(() => {
       this.tickMining();
     }, this.mineTickMs);
+
+    // Drops cleanup loop (NEW)
+    this.clock.setInterval(() => {
+      this.cleanupDrops();
+    }, this.DROP_CLEANUP_EVERY_MS);
 
     // =========================
     // Chunk streaming
@@ -384,6 +401,7 @@ export class MyRoom extends Room {
       const y = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
+      // ✅ IMPORTANT: heldSlot comes from client selected hotbar slot
       const heldSlot = isFiniteNumber((p as any).heldSlot) ? toInt((p as any).heldSlot) : -1;
 
       const pl = this.players.get(client.sessionId);
@@ -417,12 +435,6 @@ export class MyRoom extends Room {
       const now = Date.now();
 
       if (cur && cur.x === x && cur.y === y && cur.z === z) {
-        // If they no longer meet tool requirement (tool changed), cancel.
-        if (!this.canBlockBeBrokenWithTool(blockId, inv, heldSlot)) {
-          this.cancelMiningFor(client, "needs_pick");
-          return;
-        }
-
         cur.lastHeartbeatAt = now;
         cur.heldSlot = heldSlot;
 
@@ -437,12 +449,6 @@ export class MyRoom extends Room {
 
       // starting a new target: cancel any previous
       if (cur) this.cancelMiningFor(client, "retarget");
-
-      // ✅ BREAK GATING: if block requires pick tier, deny starting
-      if (!this.canBlockBeBrokenWithTool(blockId, inv, heldSlot)) {
-        this.cancelMiningFor(client, "needs_pick");
-        return;
-      }
 
       const breakTimeMs = this.computeBreakTimeMs(blockId, inv, heldSlot);
 
@@ -463,7 +469,7 @@ export class MyRoom extends Room {
 
       this.mining.set(client.sessionId, st);
 
-      // send immediate first progress update (0%).
+      // send immediate first progress update (0%)
       const msg: MineProgressMsg = { x, y, z, progress: 0, stage: 0 };
       client.send("mineProgress", msg);
 
@@ -508,23 +514,11 @@ export class MyRoom extends Room {
       const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
 
       // legacy has no heldSlot; we’ll just pick best tool anywhere
-      const canBreak = inv ? this.canBlockBeBrokenWithTool(oldId, inv, -1) : false;
-      if (!canBreak) return;
-
       const canDrop = this.canBlockDropWithTool(oldId, inv, -1);
 
       console.log("[EDIT mineBlock legacy]", { by: client.sessionId, x, y, z, oldId, canDrop });
 
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
-
-      if (inv && this.isStoneLike(oldId)) {
-        const picked = this.choosePickStack(inv, -1);
-        if (picked) {
-          this.damageTool(inv, picked.slotIndex);
-          this.saveInventory(pl!.userId, inv);
-          this.sendInvStateToClient(client, inv);
-        }
-      }
 
       if (canDrop) {
         const dropItem = this.blockIdToDropItemId(oldId);
@@ -582,7 +576,7 @@ export class MyRoom extends Room {
 
       // consume 1
       stack.count -= 1;
-      if (stack.count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 };
+      if (stack.count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
 
       this.saveInventory(pl.userId, inv);
       this.sendInvStateToClient(client, inv);
@@ -608,6 +602,13 @@ export class MyRoom extends Room {
 
       const drop = this.drops.get(dropId);
       if (!drop) return;
+
+      // expiry check (NEW)
+      if (Date.now() - drop.createdAt > this.DROP_TTL_MS) {
+        this.drops.delete(dropId);
+        this.broadcast("dropDespawn", { dropId });
+        return;
+      }
 
       // distance check (server authoritative)
       const dx = drop.x - pl.x;
@@ -792,7 +793,7 @@ export class MyRoom extends Room {
 
     this.players.set(client.sessionId, spawn);
 
-    // Ensure inventory exists
+    // Ensure inventory exists (repairs any broken tool durability too)
     const inv = this.getOrLoadInventory(userId);
 
     // Send inv state to joining client
@@ -800,6 +801,8 @@ export class MyRoom extends Room {
 
     // Send existing drops to joining client
     for (const d of this.drops.values()) {
+      // skip expired (NEW)
+      if (Date.now() - d.createdAt > this.DROP_TTL_MS) continue;
       client.send("dropSpawn", d);
     }
 
@@ -933,7 +936,7 @@ export class MyRoom extends Room {
       const slotsIn = Array.isArray(j?.slots) ? j.slots : null;
       const cursorIn = typeof j?.cursor === "object" && j?.cursor ? j.cursor : null;
 
-      const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 }));
+      const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 } as any));
       if (slotsIn) {
         for (let i = 0; i < Math.min(this.INV_SLOTS, slotsIn.length); i++) {
           const s = slotsIn[i];
@@ -942,12 +945,13 @@ export class MyRoom extends Room {
           const durRaw = Number(s?.dur ?? 0);
           const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
 
+          // NOTE: do not "trust" dur blindly; normalizeStack will repair missing tool durability
           slots[i] =
             id > 0 && count > 0
               ? dur > 0
-                ? { id, count, dur }
-                : { id, count }
-              : { id: 0, count: 0 };
+                ? ({ id, count, dur } as any)
+                : ({ id, count } as any)
+              : ({ id: 0, count: 0 } as any);
         }
       }
 
@@ -959,12 +963,16 @@ export class MyRoom extends Room {
       const cursor: ItemStack =
         cId > 0 && cCount > 0
           ? cDur > 0
-            ? { id: cId, count: cCount, dur: cDur }
-            : { id: cId, count: cCount }
-          : { id: 0, count: 0 };
+            ? ({ id: cId, count: cCount, dur: cDur } as any)
+            : ({ id: cId, count: cCount } as any)
+          : ({ id: 0, count: 0 } as any);
+
+      // ✅ Repair any tool durability issues on load
+      const inv: InvState = { slots, cursor };
+      this.repairToolDurability(inv);
 
       console.log("[INV] loaded", { userId, fp });
-      return { slots, cursor };
+      return inv;
     } catch (e) {
       console.warn("[INV] read failed", { userId, fp, e });
       return null;
@@ -976,13 +984,13 @@ export class MyRoom extends Room {
     const tmp = fp + ".tmp";
     const safe = {
       slots: inv.slots.map((s) => ({
-        id: toInt(s.id || 0),
-        count: toInt(s.count || 0),
+        id: toInt((s as any).id || 0),
+        count: toInt((s as any).count || 0),
         dur: toInt((s as any).dur || 0),
       })),
       cursor: {
-        id: toInt(inv.cursor.id || 0),
-        count: toInt(inv.cursor.count || 0),
+        id: toInt((inv.cursor as any).id || 0),
+        count: toInt((inv.cursor as any).count || 0),
         dur: toInt((inv.cursor as any).dur || 0),
       },
     };
@@ -995,7 +1003,11 @@ export class MyRoom extends Room {
 
   private getOrLoadInventory(userId: string): InvState {
     const cached = this.inventories.get(userId);
-    if (cached) return cached;
+    if (cached) {
+      // in case older state got introduced, keep it repaired
+      this.repairToolDurability(cached);
+      return cached;
+    }
 
     const fromDisk = this.readInvFromDisk(userId);
     if (fromDisk) {
@@ -1005,12 +1017,15 @@ export class MyRoom extends Room {
 
     // new inventory: give starter wood (optional)
     const inv: InvState = {
-      slots: Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 })),
-      cursor: { id: 0, count: 0 },
+      slots: Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 } as any)),
+      cursor: { id: 0, count: 0 } as any,
     };
 
     // Starter kit (tweak as you like)
-    inv.slots[0] = { id: Items.WOOD_LOG, count: 4 };
+    inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
+
+    // ✅ ensure any tool stacks are correct
+    this.repairToolDurability(inv);
 
     this.inventories.set(userId, inv);
     this.saveInventory(userId, inv);
@@ -1018,6 +1033,9 @@ export class MyRoom extends Room {
   }
 
   private saveInventory(userId: string, inv: InvState): void {
+    // ✅ repair before save to prevent persisting broken tool stacks
+    this.repairToolDurability(inv);
+
     this.inventories.set(userId, inv);
     try {
       this.writeInvToDisk(userId, inv);
@@ -1027,6 +1045,7 @@ export class MyRoom extends Room {
   }
 
   private sendInvStateToClient(client: Client, inv: InvState): void {
+    // ✅ includes dur fields when present
     client.send("invState", { slots: inv.slots, cursor: inv.cursor });
   }
 
@@ -1169,6 +1188,26 @@ export class MyRoom extends Room {
   // =========================
   // Drops internals
   // =========================
+  private cleanupDrops(): void {
+    if (this.drops.size <= 0) return;
+
+    const now = Date.now();
+    const expired: string[] = [];
+
+    for (const [id, d] of this.drops.entries()) {
+      if (now - d.createdAt > this.DROP_TTL_MS) expired.push(id);
+    }
+
+    if (expired.length <= 0) return;
+
+    for (const id of expired) {
+      this.drops.delete(id);
+      this.broadcast("dropDespawn", { dropId: id });
+    }
+
+    console.log("[DROP] cleanup", { expired: expired.length, remaining: this.drops.size });
+  }
+
   private spawnDrop(itemId: number, count: number, x: number, y: number, z: number): void {
     const id = `d_${Date.now().toString(16)}_${(this.nextDropSeq++).toString(16)}`;
     const drop: Drop = {
@@ -1219,6 +1258,50 @@ export class MyRoom extends Room {
     return def?.tool ?? null;
   }
 
+  private isToolItem(itemId: number): boolean {
+    const def = ITEM_DEFS[itemId];
+    return !!def?.tool;
+  }
+
+  private toolMaxDur(itemId: number): number {
+    const def = ITEM_DEFS[itemId];
+    const max = def?.tool?.maxDurability;
+    return typeof max === "number" && Number.isFinite(max) ? toInt(clamp(max, 1, 999999)) : 0;
+  }
+
+  // ✅ Repair: ensure any tool stack has dur present and within range
+  private repairToolDurability(inv: InvState): void {
+    for (let i = 0; i < inv.slots.length; i++) {
+      const s = inv.slots[i] as any;
+      if (!s || typeof s.id !== "number" || typeof s.count !== "number") continue;
+      if (s.id <= 0 || s.count <= 0) continue;
+      if (!this.isToolItem(s.id)) continue;
+
+      // tools are maxStack=1; enforce
+      s.count = 1;
+
+      const maxD = this.toolMaxDur(s.id);
+      const dur = Number(s.dur ?? 0);
+      const fixed =
+        Number.isFinite(dur) && dur > 0 ? toInt(clamp(dur, 1, maxD > 0 ? maxD : 999999)) : maxD;
+
+      s.dur = fixed > 0 ? fixed : 1;
+      inv.slots[i] = s as any;
+    }
+
+    // cursor too
+    const c = inv.cursor as any;
+    if (c && typeof c.id === "number" && typeof c.count === "number" && c.id > 0 && c.count > 0 && this.isToolItem(c.id)) {
+      c.count = 1;
+      const maxD = this.toolMaxDur(c.id);
+      const dur = Number(c.dur ?? 0);
+      const fixed =
+        Number.isFinite(dur) && dur > 0 ? toInt(clamp(dur, 1, maxD > 0 ? maxD : 999999)) : maxD;
+      c.dur = fixed > 0 ? fixed : 1;
+      inv.cursor = c as any;
+    }
+  }
+
   // Choose the tool stack we actually use for mining:
   // 1) held hotbar slot if it's a pick
   // 2) otherwise best pick found in inventory slots (anywhere)
@@ -1229,8 +1312,8 @@ export class MyRoom extends Room {
     // held slot priority
     if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
       const s = inv.slots[heldSlot];
-      if (s && s.id > 0 && s.count > 0) {
-        const tool = this.getToolDef(s.id);
+      if (s && (s as any).id > 0 && (s as any).count > 0) {
+        const tool = this.getToolDef((s as any).id);
         if (tool?.kind === "pick") return { slotIndex: heldSlot, stack: s, tool };
       }
     }
@@ -1242,18 +1325,19 @@ export class MyRoom extends Room {
 
     for (let i = 0; i < inv.slots.length; i++) {
       const s = inv.slots[i];
-      if (!s || s.id <= 0 || s.count <= 0) continue;
-      const tool = this.getToolDef(s.id);
+      if (!s || (s as any).id <= 0 || (s as any).count <= 0) continue;
+      const tool = this.getToolDef((s as any).id);
       if (!tool || tool.kind !== "pick") continue;
       if (!best || tool.tier > best.tool.tier) best = { slotIndex: i, stack: s, tool };
     }
     return best;
   }
 
-  // Minecraft-ish tier requirements (for BREAK + DROPS on stone-like):
-  // - Stone/Coal/Iron require tier >= 1 (wood+)
-  // - Gold/Diamond require tier >= 3 (iron+)
-  private requiredPickTier(blockId: number): number {
+  // Ore/tool gating rules (Minecraft-ish):
+  // - Stone-like blocks: require pick to DROP anything.
+  // - Coal/Iron/Stone: need tier >= 1 (wood+)
+  // - Gold/Diamond: need tier >= 3 (iron+)
+  private requiredPickTierForDrops(blockId: number): number {
     if (blockId === this.STONE_ID) return 1;
     if (blockId === this.COAL_ORE_ID) return 1;
     if (blockId === this.IRON_ORE_ID) return 1;
@@ -1262,24 +1346,14 @@ export class MyRoom extends Room {
     return 0; // grass/dirt/wood/leaves etc
   }
 
-  // ✅ BREAK gating: if reqTier > 0 you MUST have a pick >= tier to break
-  private canBlockBeBrokenWithTool(blockId: number, inv: InvState, heldSlot = -1): boolean {
-    if (blockId === this.BEDROCK_ID) return false;
-
-    const reqTier = this.requiredPickTier(blockId);
-    if (reqTier <= 0) return true;
-
-    const picked = this.choosePickStack(inv, heldSlot);
-    if (!picked) return false;
-
-    return picked.tool.tier >= reqTier;
-  }
-
-  // ✅ DROP gating: same rule set as breaking in this implementation
+  // Tool gating + drops rule
   private canBlockDropWithTool(blockId: number, inv: InvState | null, heldSlot = -1): boolean {
+    // bedrock never drops
     if (blockId === this.BEDROCK_ID) return false;
-    const reqTier = this.requiredPickTier(blockId);
+
+    const reqTier = this.requiredPickTierForDrops(blockId);
     if (reqTier <= 0) return true;
+
     if (!inv) return false;
 
     const picked = this.choosePickStack(inv, heldSlot);
@@ -1310,7 +1384,7 @@ export class MyRoom extends Room {
     // - Pick speeds up stone-like blocks; other blocks mostly unchanged
     if (this.isStoneLike(blockId)) {
       if (picked) base = Math.floor(base * picked.tool.speedMul);
-      else base = Math.floor(base * 2.8); // painful by hand (shouldn't happen now for reqTier>0)
+      else base = Math.floor(base * 2.8); // painful by hand
     } else {
       // small bonus with pick on wood (optional)
       if (blockId === this.WOOD_ID && picked) base = Math.floor(base * 0.92);
@@ -1323,9 +1397,9 @@ export class MyRoom extends Room {
   // Optional durability: damage chosen tool by 1 on successful stone-like break
   private damageTool(inv: InvState, slotIndex: number): void {
     const s = inv.slots[slotIndex];
-    if (!s || s.id <= 0 || s.count <= 0) return;
+    if (!s || (s as any).id <= 0 || (s as any).count <= 0) return;
 
-    const tool = this.getToolDef(s.id);
+    const tool = this.getToolDef((s as any).id);
     if (!tool) return;
 
     const cur = toInt(clamp(Number((s as any).dur ?? tool.maxDurability), 0, 999999));
@@ -1333,7 +1407,7 @@ export class MyRoom extends Room {
 
     if (next <= 0) {
       // break tool
-      inv.slots[slotIndex] = { id: 0, count: 0 };
+      inv.slots[slotIndex] = { id: 0, count: 0 } as any;
     } else {
       (s as any).dur = next;
     }
@@ -1401,15 +1475,8 @@ export class MyRoom extends Room {
         continue;
       }
 
-      const inv = this.getOrLoadInventory(st.userId);
-
-      // ✅ if they no longer meet break requirement mid-mine (tool moved/broke), cancel
-      if (!this.canBlockBeBrokenWithTool(currentId, inv, st.heldSlot)) {
-        this.cancelMiningFor(client, "needs_pick");
-        continue;
-      }
-
       // recompute break time occasionally (tool could have changed mid-mine)
+      const inv = this.getOrLoadInventory(st.userId);
       const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
       if (newBreak !== st.breakTimeMs) {
         // keep progress proportionally similar
@@ -1474,7 +1541,7 @@ export class MyRoom extends Room {
             canDrop,
             tool: picked
               ? {
-                  id: picked.stack.id,
+                  id: (picked.stack as any).id,
                   tier: picked.tool.tier,
                   slot: picked.slotIndex,
                   dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0,
@@ -1501,10 +1568,18 @@ export class MyRoom extends Room {
     const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
 
     if (id > 0 && count > 0) {
-      // keep dur if present (>0)
+      // ✅ If this is a tool, dur must exist and count must be 1
+      const def = ITEM_DEFS[id];
+      if (def?.tool) {
+        const maxD = toInt(clamp(def.tool.maxDurability, 1, 999999));
+        const fixedDur = dur > 0 ? toInt(clamp(dur, 1, maxD)) : maxD;
+        return { id, count: 1, dur: fixedDur } as any;
+      }
+
+      // non-tool: keep dur only if present (>0)
       return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
     }
-    return { id: 0, count: 0 };
+    return { id: 0, count: 0 } as any;
   }
 
   private maxStackFor(itemId: number): number {
@@ -1512,10 +1587,22 @@ export class MyRoom extends Room {
     return def ? clamp(toInt(def.maxStack), 1, 999999) : 64;
   }
 
+  // Count in slots + cursor (useful for "has tool anywhere" rules)
+  private inventoryCountAny(inv: InvState, itemId: number): number {
+    let n = 0;
+    for (const s of inv.slots) if ((s as any).id === itemId && (s as any).count > 0) n += (s as any).count;
+    if ((inv.cursor as any).id === itemId && (inv.cursor as any).count > 0) n += (inv.cursor as any).count;
+    return n;
+  }
+
+  private inventoryHasAny(inv: InvState, itemId: number): boolean {
+    return this.inventoryCountAny(inv, itemId) > 0;
+  }
+
   // ✅ SLOTS ONLY (used for crafting inputs)
   private inventoryCountSlots(inv: InvState, itemId: number): number {
     let n = 0;
-    for (const s of inv.slots) if (s.id === itemId && s.count > 0) n += s.count;
+    for (const s of inv.slots) if ((s as any).id === itemId && (s as any).count > 0) n += (s as any).count;
     return n;
   }
 
@@ -1523,12 +1610,20 @@ export class MyRoom extends Room {
     const want = clamp(toInt(count), 1, 999999);
     const maxS = this.maxStackFor(itemId);
 
+    // tools: need at least one empty slot for each tool
+    if (this.isToolItem(itemId)) {
+      const needed = want; // tools are count==1 normally; still handle generically
+      let empty = 0;
+      for (const s of inv.slots) if ((s as any).id === 0 || (s as any).count <= 0) empty++;
+      return empty >= needed;
+    }
+
     let remaining = want;
 
     // fill existing stacks
     for (const s of inv.slots) {
-      if (s.id === itemId && s.count > 0) {
-        const space = maxS - s.count;
+      if ((s as any).id === itemId && (s as any).count > 0) {
+        const space = maxS - (s as any).count;
         if (space > 0) {
           const take = Math.min(space, remaining);
           remaining -= take;
@@ -1539,7 +1634,7 @@ export class MyRoom extends Room {
 
     // use empty slots
     for (const s of inv.slots) {
-      if (s.id === 0 || s.count <= 0) {
+      if ((s as any).id === 0 || (s as any).count <= 0) {
         const take = Math.min(maxS, remaining);
         remaining -= take;
         if (remaining <= 0) return true;
@@ -1553,16 +1648,33 @@ export class MyRoom extends Room {
   // NOTE: tools (maxStack=1) get initialized durability when placed into a slot
   private inventoryAdd(inv: InvState, stack: ItemStack): number {
     const s = this.normalizeStack(stack);
-    if (s.id <= 0 || s.count <= 0) return 0;
+    if ((s as any).id <= 0 || (s as any).count <= 0) return 0;
 
-    const maxS = this.maxStackFor(s.id);
-    let remaining = s.count;
+    const id = (s as any).id | 0;
+    const def = ITEM_DEFS[id];
+    const isTool = !!def?.tool;
+
+    const maxS = this.maxStackFor(id);
+    let remaining = (s as any).count | 0;
     let accepted = 0;
+
+    // tools: only place into empty slots; never stack
+    if (isTool) {
+      for (let i = 0; i < inv.slots.length && remaining > 0; i++) {
+        const slot = inv.slots[i] as any;
+        if (slot.id === 0 || slot.count <= 0) {
+          inv.slots[i] = { id, count: 1, dur: def!.tool!.maxDurability } as any;
+          remaining -= 1;
+          accepted += 1;
+        }
+      }
+      return accepted;
+    }
 
     // fill existing stacks first (only meaningful for stackables)
     for (let i = 0; i < inv.slots.length; i++) {
-      const slot = inv.slots[i];
-      if (slot.id === s.id && slot.count > 0) {
+      const slot = inv.slots[i] as any;
+      if (slot.id === id && slot.count > 0) {
         const space = maxS - slot.count;
         if (space > 0) {
           const take = Math.min(space, remaining);
@@ -1576,29 +1688,49 @@ export class MyRoom extends Room {
 
     // then fill empty slots
     for (let i = 0; i < inv.slots.length; i++) {
-      const slot = inv.slots[i];
+      const slot = inv.slots[i] as any;
       if (slot.id === 0 || slot.count <= 0) {
         const take = Math.min(maxS, remaining);
-
-        const def = ITEM_DEFS[s.id];
-        const isTool = !!def?.tool;
-
-        // tools: initialize durability at max
-        if (isTool) {
-          inv.slots[i] = { id: s.id, count: 1, dur: def!.tool!.maxDurability } as any;
-          remaining -= 1;
-          accepted += 1;
-        } else {
-          inv.slots[i] = { id: s.id, count: take } as any;
-          remaining -= take;
-          accepted += take;
-        }
-
+        inv.slots[i] = { id, count: take } as any;
+        remaining -= take;
+        accepted += take;
         if (remaining <= 0) return accepted;
       }
     }
 
     return accepted;
+  }
+
+  // remove up to count; returns removed (slots first, then cursor)
+  private inventoryRemoveAny(inv: InvState, itemId: number, count: number): number {
+    const want = clamp(toInt(count), 1, 999999);
+    let remaining = want;
+    let removed = 0;
+
+    // remove from slots first
+    for (let i = 0; i < inv.slots.length; i++) {
+      const s = inv.slots[i] as any;
+      if (s.id === itemId && s.count > 0) {
+        const take = Math.min(s.count, remaining);
+        s.count -= take;
+        remaining -= take;
+        removed += take;
+        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 } as any;
+        if (remaining <= 0) return removed;
+      }
+    }
+
+    // then cursor
+    const cur = inv.cursor as any;
+    if (cur.id === itemId && cur.count > 0 && remaining > 0) {
+      const take = Math.min(cur.count, remaining);
+      cur.count -= take;
+      remaining -= take;
+      removed += take;
+      if (cur.count <= 0) inv.cursor = { id: 0, count: 0 } as any;
+    }
+
+    return removed;
   }
 
   // ✅ remove up to count; SLOTS ONLY; returns removed
@@ -1608,13 +1740,13 @@ export class MyRoom extends Room {
     let removed = 0;
 
     for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i];
+      const s = inv.slots[i] as any;
       if (s.id === itemId && s.count > 0) {
         const take = Math.min(s.count, remaining);
         s.count -= take;
         remaining -= take;
         removed += take;
-        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 };
+        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 } as any;
         if (remaining <= 0) break;
       }
     }
@@ -1626,12 +1758,15 @@ export class MyRoom extends Room {
   // Inventory click logic
   // =========================
   private applyInvClick(inv: InvState, slotIndex: number, button: "L" | "R", shift: boolean): void {
-    // normalize state
+    // normalize state (also repairs tool durability)
     inv.cursor = this.normalizeStack(inv.cursor);
     inv.slots[slotIndex] = this.normalizeStack(inv.slots[slotIndex]);
 
     const cursor = inv.cursor as any;
     const slot = inv.slots[slotIndex] as any;
+
+    const cursorIsTool = cursor.id > 0 && cursor.count > 0 && this.isToolItem(cursor.id);
+    const slotIsTool = slot.id > 0 && slot.count > 0 && this.isToolItem(slot.id);
 
     // Quick move: Shift + Left (move between hotbar/backpack)
     if (shift && button === "L") {
@@ -1645,6 +1780,7 @@ export class MyRoom extends Room {
       const moved = this.moveStackBetweenRanges(inv, slotIndex, targetStart, targetEnd);
       if (moved) return;
 
+      // if can't move, do nothing
       return;
     }
 
@@ -1655,19 +1791,23 @@ export class MyRoom extends Room {
       // - else if same id: stack into slot
       // - else: swap
       if (cursor.id <= 0 || cursor.count <= 0) {
-        inv.cursor = { ...slot } as any;
-        inv.slots[slotIndex] = { id: 0, count: 0 };
+        inv.cursor = { ...slot } as any; // preserves dur
+        inv.slots[slotIndex] = { id: 0, count: 0 } as any;
         return;
       }
 
       if (slot.id <= 0 || slot.count <= 0) {
-        inv.slots[slotIndex] = { ...cursor } as any;
-        inv.cursor = { id: 0, count: 0 };
+        inv.slots[slotIndex] = { ...cursor } as any; // preserves dur for tools
+        inv.cursor = { id: 0, count: 0 } as any;
         return;
       }
 
       if (slot.id === cursor.id) {
         const maxS = this.maxStackFor(slot.id);
+
+        // tools (maxStack=1) cannot stack
+        if (maxS <= 1 || slotIsTool || cursorIsTool) return;
+
         const space = maxS - slot.count;
         if (space <= 0) return;
 
@@ -1675,11 +1815,11 @@ export class MyRoom extends Room {
         slot.count += take;
         cursor.count -= take;
         inv.slots[slotIndex] = slot as any;
-        inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
+        inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
         return;
       }
 
-      // swap
+      // swap (preserve dur)
       inv.slots[slotIndex] = { ...cursor } as any;
       inv.cursor = { ...slot } as any;
       return;
@@ -1691,49 +1831,56 @@ export class MyRoom extends Room {
     //   - if slot empty: place one
     //   - else if same id and slot not full: place one
     //   - else: do nothing
+    //
+    // ✅ Special-case tools:
+    // - Tools never split/half.
+    // - RMB behaves like "pick up whole tool" or "place whole tool".
+
     if (cursor.id <= 0 || cursor.count <= 0) {
       if (slot.id <= 0 || slot.count <= 0) return;
 
-      // tools are maxStack=1 → take whole stack so durability stays intact
-      const isTool = !!ITEM_DEFS[slot.id]?.tool;
-      if (isTool) {
+      // tools: pick up whole item (preserve dur)
+      if (slotIsTool || this.maxStackFor(slot.id) <= 1) {
         inv.cursor = { ...slot } as any;
-        inv.slots[slotIndex] = { id: 0, count: 0 };
+        inv.slots[slotIndex] = { id: 0, count: 0 } as any;
         return;
       }
 
       const take = Math.ceil(slot.count / 2);
       inv.cursor = { id: slot.id, count: take } as any;
       slot.count -= take;
-      inv.slots[slotIndex] = slot.count > 0 ? (slot as any) : { id: 0, count: 0 };
+      inv.slots[slotIndex] = slot.count > 0 ? (slot as any) : ({ id: 0, count: 0 } as any);
       return;
     }
 
     // cursor has items
     if (slot.id <= 0 || slot.count <= 0) {
-      // placing from cursor: if tool, carry durability too
-      const isTool = !!ITEM_DEFS[cursor.id]?.tool;
-      if (isTool) {
-        inv.slots[slotIndex] = { id: cursor.id, count: 1, dur: cursor.dur ?? ITEM_DEFS[cursor.id]!.tool!.maxDurability } as any;
-        cursor.count -= 1;
-        inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
+      // tools: place whole tool with dur
+      if (cursorIsTool || this.maxStackFor(cursor.id) <= 1) {
+        inv.slots[slotIndex] = { ...cursor } as any;
+        inv.cursor = { id: 0, count: 0 } as any;
         return;
       }
 
+      // normal: place one
       inv.slots[slotIndex] = { id: cursor.id, count: 1 } as any;
       cursor.count -= 1;
-      inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
+      inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
       return;
     }
 
     if (slot.id === cursor.id) {
       const maxS = this.maxStackFor(slot.id);
+
+      // tools can't stack
+      if (maxS <= 1 || slotIsTool || cursorIsTool) return;
+
       if (slot.count >= maxS) return;
 
       slot.count += 1;
       cursor.count -= 1;
       inv.slots[slotIndex] = slot as any;
-      inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
+      inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
       return;
     }
 
@@ -1744,6 +1891,21 @@ export class MyRoom extends Room {
     inv.slots[fromIndex] = this.normalizeStack(inv.slots[fromIndex]);
     const from = inv.slots[fromIndex] as any;
     if (from.id <= 0 || from.count <= 0) return false;
+
+    const fromIsTool = this.isToolItem(from.id) || this.maxStackFor(from.id) <= 1;
+
+    // ✅ Tools: move whole stack (count=1) into first empty slot in target range, preserving dur.
+    if (fromIsTool) {
+      for (let i = toStart; i < toEnd; i++) {
+        const s = this.normalizeStack(inv.slots[i]) as any;
+        if (s.id <= 0 || s.count <= 0) {
+          inv.slots[i] = { ...from } as any; // preserves dur
+          inv.slots[fromIndex] = { id: 0, count: 0 } as any;
+          return true;
+        }
+      }
+      return false;
+    }
 
     const maxS = this.maxStackFor(from.id);
     let remaining = from.count;
@@ -1768,15 +1930,8 @@ export class MyRoom extends Room {
       const s = this.normalizeStack(inv.slots[i]) as any;
       if (s.id <= 0 || s.count <= 0) {
         const take = Math.min(maxS, remaining);
-
-        const isTool = !!ITEM_DEFS[from.id]?.tool;
-        if (isTool) {
-          inv.slots[i] = { id: from.id, count: 1, dur: from.dur ?? ITEM_DEFS[from.id]!.tool!.maxDurability } as any;
-          remaining -= 1;
-        } else {
-          inv.slots[i] = { id: from.id, count: take } as any;
-          remaining -= take;
-        }
+        inv.slots[i] = { id: from.id, count: take } as any;
+        remaining -= take;
       }
     }
 
@@ -1785,13 +1940,7 @@ export class MyRoom extends Room {
 
     // update from slot
     const newCount = from.count - moved;
-    if (newCount > 0) {
-      // keep durability if it's a tool
-      const isTool = !!ITEM_DEFS[from.id]?.tool;
-      inv.slots[fromIndex] = isTool ? ({ id: from.id, count: 1, dur: from.dur ?? ITEM_DEFS[from.id]!.tool!.maxDurability } as any) : ({ id: from.id, count: newCount } as any);
-    } else {
-      inv.slots[fromIndex] = { id: 0, count: 0 };
-    }
+    inv.slots[fromIndex] = newCount > 0 ? ({ id: from.id, count: newCount } as any) : ({ id: 0, count: 0 } as any);
     return true;
   }
 }
