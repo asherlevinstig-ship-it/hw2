@@ -1,108 +1,137 @@
-// shared/items.ts
-// Copy into BOTH projects for now (client + server)
+// server/src/shared/items.ts
+// FULL FILE - paste exactly as-is
 //
-// Single source of truth for:
-// - Item ids
-// - Stack sizes
-// - Which items place which block ids
-// - Simple recipe list (shapeless for now)
-//
-// IMPORTANT:
-// - Block IDs must match your NOA registry (client) + server constants.
-// - Item IDs must match any drop mappings you use on the server.
-//
-// id=0 means "empty"
-
-export type ItemId = number;
+// Shared items/defs/recipes (single source of truth for server).
+// Client can mirror these IDs/defs (or you can import them if you share across packages).
 
 export const Items = {
-  // Block-like items (placeable)
+  // Blocks as items
   GRASS: 1,
   DIRT: 2,
   STONE: 3,
   WOOD_LOG: 4,
   LEAVES: 5,
 
-  // Crafted
+  // Basic crafted
   PLANK: 10,
   STICK: 11,
-  WOOD_PICK: 20,
 
-  // Minerals (drops from ores)
+  // Tools
+  WOOD_PICK: 20,
+  STONE_PICK: 21,
+  IRON_PICK: 22,
+
+  // Minerals
   COAL: 30,
   RAW_IRON: 31,
   RAW_GOLD: 32,
   DIAMOND: 33,
 } as const;
 
+export type ItemStack = { id: number; count: number; dur?: number };
+
+export type ToolKind = "pick";
+
+export type ToolDef = {
+  kind: ToolKind;
+  tier: number;          // 1 wood, 2 stone, 3 iron...
+  maxDurability: number; // durability points
+  speedMul: number;      // lower break time multiplier
+};
+
 export type ItemDef = {
-  id: ItemId;
+  id: number;
   name: string;
   maxStack: number;
-  placeBlockId?: number; // if this item places a block
+  placeBlockId?: number;
+
+  // If present => tool behavior
+  tool?: ToolDef;
 };
 
-// Block IDs (must match client/server block registry)
-const BLOCK = {
-  AIR: 0,
-  GRASS: 1,
-  DIRT: 2,
-  STONE: 3,
-  WOOD: 4,
-  LEAVES: 5,
-} as const;
+// Server uses placeBlockId rules; these IDs must match your client block IDs.
+const GRASS_ID = 1;
+const DIRT_ID = 2;
+const STONE_ID = 3;
+const WOOD_ID = 4;
+const LEAVES_ID = 5;
 
-export const ITEM_DEFS: Record<ItemId, ItemDef> = {
-  // Placeable blocks
-  [Items.GRASS]: { id: Items.GRASS, name: "Grass", maxStack: 64, placeBlockId: BLOCK.GRASS },
-  [Items.DIRT]: { id: Items.DIRT, name: "Dirt", maxStack: 64, placeBlockId: BLOCK.DIRT },
-  [Items.STONE]: { id: Items.STONE, name: "Stone", maxStack: 64, placeBlockId: BLOCK.STONE },
-  [Items.WOOD_LOG]: { id: Items.WOOD_LOG, name: "Wood", maxStack: 64, placeBlockId: BLOCK.WOOD },
-  [Items.LEAVES]: { id: Items.LEAVES, name: "Leaves", maxStack: 64, placeBlockId: BLOCK.LEAVES },
+export const ITEM_DEFS: Record<number, ItemDef> = {
+  // Blocks
+  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
+  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: DIRT_ID },
+  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
+  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
+  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
 
   // Crafted
-  [Items.PLANK]: { id: Items.PLANK, name: "Planks", maxStack: 64 },
-  [Items.STICK]: { id: Items.STICK, name: "Stick", maxStack: 64 },
-  [Items.WOOD_PICK]: { id: Items.WOOD_PICK, name: "Wood Pick", maxStack: 1 },
+  10: { id: 10, name: "Planks", maxStack: 64 },
+  11: { id: 11, name: "Stick", maxStack: 64 },
+
+  // Tools (maxStack=1)
+  20: {
+    id: 20,
+    name: "Wood Pick",
+    maxStack: 1,
+    tool: { kind: "pick", tier: 1, maxDurability: 60, speedMul: 0.65 },
+  },
+  21: {
+    id: 21,
+    name: "Stone Pick",
+    maxStack: 1,
+    tool: { kind: "pick", tier: 2, maxDurability: 132, speedMul: 0.48 },
+  },
+  22: {
+    id: 22,
+    name: "Iron Pick",
+    maxStack: 1,
+    tool: { kind: "pick", tier: 3, maxDurability: 251, speedMul: 0.34 },
+  },
 
   // Minerals
-  [Items.COAL]: { id: Items.COAL, name: "Coal", maxStack: 64 },
-  [Items.RAW_IRON]: { id: Items.RAW_IRON, name: "Raw Iron", maxStack: 64 },
-  [Items.RAW_GOLD]: { id: Items.RAW_GOLD, name: "Raw Gold", maxStack: 64 },
-  [Items.DIAMOND]: { id: Items.DIAMOND, name: "Diamond", maxStack: 64 },
+  30: { id: 30, name: "Coal", maxStack: 64 },
+  31: { id: 31, name: "Raw Iron", maxStack: 64 },
+  32: { id: 32, name: "Raw Gold", maxStack: 64 },
+  33: { id: 33, name: "Diamond", maxStack: 64 },
 };
 
-export type ItemStack = { id: ItemId; count: number }; // id=0 means empty
-export const EMPTY: ItemStack = { id: 0, count: 0 };
-
-// Simple recipe list (shapeless to start)
 export type Recipe = {
   id: string;
-  name: string;
-  inputs: Array<{ id: ItemId; count: number }>;
-  output: { id: ItemId; count: number };
+  inputs: Array<{ id: number; count: number }>;
+  output: { id: number; count: number };
 };
 
 export const RECIPES: Recipe[] = [
-  {
-    id: "planks_from_log",
-    name: "Planks",
-    inputs: [{ id: Items.WOOD_LOG, count: 1 }],
-    output: { id: Items.PLANK, count: 4 },
-  },
-  {
-    id: "sticks_from_planks",
-    name: "Sticks",
-    inputs: [{ id: Items.PLANK, count: 2 }],
-    output: { id: Items.STICK, count: 4 },
-  },
+  { id: "planks_from_log", inputs: [{ id: Items.WOOD_LOG, count: 1 }], output: { id: Items.PLANK, count: 4 } },
+  { id: "sticks_from_planks", inputs: [{ id: Items.PLANK, count: 2 }], output: { id: Items.STICK, count: 4 } },
+
+  // Wood pick
   {
     id: "wood_pick",
-    name: "Wood Pick",
     inputs: [
       { id: Items.PLANK, count: 3 },
       { id: Items.STICK, count: 2 },
     ],
     output: { id: Items.WOOD_PICK, count: 1 },
+  },
+
+  // Stone pick (uses STONE item as "cobble" for now)
+  {
+    id: "stone_pick",
+    inputs: [
+      { id: Items.STONE, count: 3 },
+      { id: Items.STICK, count: 2 },
+    ],
+    output: { id: Items.STONE_PICK, count: 1 },
+  },
+
+  // Iron pick (uses RAW_IRON as ingot substitute until smelting exists)
+  {
+    id: "iron_pick",
+    inputs: [
+      { id: Items.RAW_IRON, count: 3 },
+      { id: Items.STICK, count: 2 },
+    ],
+    output: { id: Items.IRON_PICK, count: 1 },
   },
 ];
