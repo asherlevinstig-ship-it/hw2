@@ -29,9 +29,11 @@
 // - When done, server edits the world (persistent) and broadcasts blockUpdate.
 // - Server also sends mineCancelled when mining is interrupted.
 //
-// ✅ Better mining rules (NEW):
+// ✅ Better mining rules (UPDATED):
 // - Proper tool tiers (wood/stone/iron picks) from shared/items.ts
-// - Correct “needs pick” per ore for DROPS (coal/iron require >=1; gold/diamond require >=3)
+// - Correct “needs pick” per ore for BREAK + DROPS:
+//   - Stone/Coal/Iron require tier >= 1 (wood+)
+//   - Gold/Diamond require tier >= 3 (iron+)
 // - Optional tool durability: damage 1 on successful stone-like break; break tool at 0
 //
 // Persistence:
@@ -415,6 +417,12 @@ export class MyRoom extends Room {
       const now = Date.now();
 
       if (cur && cur.x === x && cur.y === y && cur.z === z) {
+        // If they no longer meet tool requirement (tool changed), cancel.
+        if (!this.canBlockBeBrokenWithTool(blockId, inv, heldSlot)) {
+          this.cancelMiningFor(client, "needs_pick");
+          return;
+        }
+
         cur.lastHeartbeatAt = now;
         cur.heldSlot = heldSlot;
 
@@ -429,6 +437,12 @@ export class MyRoom extends Room {
 
       // starting a new target: cancel any previous
       if (cur) this.cancelMiningFor(client, "retarget");
+
+      // ✅ BREAK GATING: if block requires pick tier, deny starting
+      if (!this.canBlockBeBrokenWithTool(blockId, inv, heldSlot)) {
+        this.cancelMiningFor(client, "needs_pick");
+        return;
+      }
 
       const breakTimeMs = this.computeBreakTimeMs(blockId, inv, heldSlot);
 
@@ -449,7 +463,7 @@ export class MyRoom extends Room {
 
       this.mining.set(client.sessionId, st);
 
-      // send immediate first progress update (0%)
+      // send immediate first progress update (0%).
       const msg: MineProgressMsg = { x, y, z, progress: 0, stage: 0 };
       client.send("mineProgress", msg);
 
@@ -494,11 +508,23 @@ export class MyRoom extends Room {
       const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
 
       // legacy has no heldSlot; we’ll just pick best tool anywhere
+      const canBreak = inv ? this.canBlockBeBrokenWithTool(oldId, inv, -1) : false;
+      if (!canBreak) return;
+
       const canDrop = this.canBlockDropWithTool(oldId, inv, -1);
 
       console.log("[EDIT mineBlock legacy]", { by: client.sessionId, x, y, z, oldId, canDrop });
 
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
+
+      if (inv && this.isStoneLike(oldId)) {
+        const picked = this.choosePickStack(inv, -1);
+        if (picked) {
+          this.damageTool(inv, picked.slotIndex);
+          this.saveInventory(pl!.userId, inv);
+          this.sendInvStateToClient(client, inv);
+        }
+      }
 
       if (canDrop) {
         const dropItem = this.blockIdToDropItemId(oldId);
@@ -1224,11 +1250,10 @@ export class MyRoom extends Room {
     return best;
   }
 
-  // Ore/tool gating rules (Minecraft-ish):
-  // - Stone-like blocks: require pick to DROP anything.
-  // - Coal/Iron/Stone: need tier >= 1 (wood+)
-  // - Gold/Diamond: need tier >= 3 (iron+)
-  private requiredPickTierForDrops(blockId: number): number {
+  // Minecraft-ish tier requirements (for BREAK + DROPS on stone-like):
+  // - Stone/Coal/Iron require tier >= 1 (wood+)
+  // - Gold/Diamond require tier >= 3 (iron+)
+  private requiredPickTier(blockId: number): number {
     if (blockId === this.STONE_ID) return 1;
     if (blockId === this.COAL_ORE_ID) return 1;
     if (blockId === this.IRON_ORE_ID) return 1;
@@ -1237,14 +1262,24 @@ export class MyRoom extends Room {
     return 0; // grass/dirt/wood/leaves etc
   }
 
-  // Tool gating + drops rule
-  private canBlockDropWithTool(blockId: number, inv: InvState | null, heldSlot = -1): boolean {
-    // bedrock never drops
+  // ✅ BREAK gating: if reqTier > 0 you MUST have a pick >= tier to break
+  private canBlockBeBrokenWithTool(blockId: number, inv: InvState, heldSlot = -1): boolean {
     if (blockId === this.BEDROCK_ID) return false;
 
-    const reqTier = this.requiredPickTierForDrops(blockId);
+    const reqTier = this.requiredPickTier(blockId);
     if (reqTier <= 0) return true;
 
+    const picked = this.choosePickStack(inv, heldSlot);
+    if (!picked) return false;
+
+    return picked.tool.tier >= reqTier;
+  }
+
+  // ✅ DROP gating: same rule set as breaking in this implementation
+  private canBlockDropWithTool(blockId: number, inv: InvState | null, heldSlot = -1): boolean {
+    if (blockId === this.BEDROCK_ID) return false;
+    const reqTier = this.requiredPickTier(blockId);
+    if (reqTier <= 0) return true;
     if (!inv) return false;
 
     const picked = this.choosePickStack(inv, heldSlot);
@@ -1275,7 +1310,7 @@ export class MyRoom extends Room {
     // - Pick speeds up stone-like blocks; other blocks mostly unchanged
     if (this.isStoneLike(blockId)) {
       if (picked) base = Math.floor(base * picked.tool.speedMul);
-      else base = Math.floor(base * 2.8); // painful by hand
+      else base = Math.floor(base * 2.8); // painful by hand (shouldn't happen now for reqTier>0)
     } else {
       // small bonus with pick on wood (optional)
       if (blockId === this.WOOD_ID && picked) base = Math.floor(base * 0.92);
@@ -1366,8 +1401,15 @@ export class MyRoom extends Room {
         continue;
       }
 
-      // recompute break time occasionally (tool could have changed mid-mine)
       const inv = this.getOrLoadInventory(st.userId);
+
+      // ✅ if they no longer meet break requirement mid-mine (tool moved/broke), cancel
+      if (!this.canBlockBeBrokenWithTool(currentId, inv, st.heldSlot)) {
+        this.cancelMiningFor(client, "needs_pick");
+        continue;
+      }
+
+      // recompute break time occasionally (tool could have changed mid-mine)
       const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
       if (newBreak !== st.breakTimeMs) {
         // keep progress proportionally similar
@@ -1470,18 +1512,6 @@ export class MyRoom extends Room {
     return def ? clamp(toInt(def.maxStack), 1, 999999) : 64;
   }
 
-  // Count in slots + cursor (useful for "has tool anywhere" rules)
-  private inventoryCountAny(inv: InvState, itemId: number): number {
-    let n = 0;
-    for (const s of inv.slots) if (s.id === itemId && s.count > 0) n += s.count;
-    if (inv.cursor.id === itemId && inv.cursor.count > 0) n += inv.cursor.count;
-    return n;
-  }
-
-  private inventoryHasAny(inv: InvState, itemId: number): boolean {
-    return this.inventoryCountAny(inv, itemId) > 0;
-  }
-
   // ✅ SLOTS ONLY (used for crafting inputs)
   private inventoryCountSlots(inv: InvState, itemId: number): number {
     let n = 0;
@@ -1571,37 +1601,6 @@ export class MyRoom extends Room {
     return accepted;
   }
 
-  // remove up to count; returns removed (slots first, then cursor)
-  private inventoryRemoveAny(inv: InvState, itemId: number, count: number): number {
-    const want = clamp(toInt(count), 1, 999999);
-    let remaining = want;
-    let removed = 0;
-
-    // remove from slots first
-    for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i];
-      if (s.id === itemId && s.count > 0) {
-        const take = Math.min(s.count, remaining);
-        s.count -= take;
-        remaining -= take;
-        removed += take;
-        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 };
-        if (remaining <= 0) return removed;
-      }
-    }
-
-    // then cursor
-    if (inv.cursor.id === itemId && inv.cursor.count > 0 && remaining > 0) {
-      const take = Math.min(inv.cursor.count, remaining);
-      inv.cursor.count -= take;
-      remaining -= take;
-      removed += take;
-      if (inv.cursor.count <= 0) inv.cursor = { id: 0, count: 0 };
-    }
-
-    return removed;
-  }
-
   // ✅ remove up to count; SLOTS ONLY; returns removed
   private inventoryRemoveSlots(inv: InvState, itemId: number, count: number): number {
     const want = clamp(toInt(count), 1, 999999);
@@ -1631,8 +1630,8 @@ export class MyRoom extends Room {
     inv.cursor = this.normalizeStack(inv.cursor);
     inv.slots[slotIndex] = this.normalizeStack(inv.slots[slotIndex]);
 
-    const cursor = inv.cursor;
-    const slot = inv.slots[slotIndex];
+    const cursor = inv.cursor as any;
+    const slot = inv.slots[slotIndex] as any;
 
     // Quick move: Shift + Left (move between hotbar/backpack)
     if (shift && button === "L") {
@@ -1646,7 +1645,6 @@ export class MyRoom extends Room {
       const moved = this.moveStackBetweenRanges(inv, slotIndex, targetStart, targetEnd);
       if (moved) return;
 
-      // if can't move, do nothing
       return;
     }
 
@@ -1696,8 +1694,15 @@ export class MyRoom extends Room {
     if (cursor.id <= 0 || cursor.count <= 0) {
       if (slot.id <= 0 || slot.count <= 0) return;
 
+      // tools are maxStack=1 → take whole stack so durability stays intact
+      const isTool = !!ITEM_DEFS[slot.id]?.tool;
+      if (isTool) {
+        inv.cursor = { ...slot } as any;
+        inv.slots[slotIndex] = { id: 0, count: 0 };
+        return;
+      }
+
       const take = Math.ceil(slot.count / 2);
-      // NOTE: we DO NOT split durability here; tools are maxStack=1 anyway.
       inv.cursor = { id: slot.id, count: take } as any;
       slot.count -= take;
       inv.slots[slotIndex] = slot.count > 0 ? (slot as any) : { id: 0, count: 0 };
@@ -1706,6 +1711,15 @@ export class MyRoom extends Room {
 
     // cursor has items
     if (slot.id <= 0 || slot.count <= 0) {
+      // placing from cursor: if tool, carry durability too
+      const isTool = !!ITEM_DEFS[cursor.id]?.tool;
+      if (isTool) {
+        inv.slots[slotIndex] = { id: cursor.id, count: 1, dur: cursor.dur ?? ITEM_DEFS[cursor.id]!.tool!.maxDurability } as any;
+        cursor.count -= 1;
+        inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
+        return;
+      }
+
       inv.slots[slotIndex] = { id: cursor.id, count: 1 } as any;
       cursor.count -= 1;
       inv.cursor = cursor.count > 0 ? (cursor as any) : { id: 0, count: 0 };
@@ -1728,7 +1742,7 @@ export class MyRoom extends Room {
 
   private moveStackBetweenRanges(inv: InvState, fromIndex: number, toStart: number, toEnd: number): boolean {
     inv.slots[fromIndex] = this.normalizeStack(inv.slots[fromIndex]);
-    const from = inv.slots[fromIndex];
+    const from = inv.slots[fromIndex] as any;
     if (from.id <= 0 || from.count <= 0) return false;
 
     const maxS = this.maxStackFor(from.id);
@@ -1736,7 +1750,7 @@ export class MyRoom extends Room {
 
     // 1) fill existing stacks in target range
     for (let i = toStart; i < toEnd; i++) {
-      const s = this.normalizeStack(inv.slots[i]);
+      const s = this.normalizeStack(inv.slots[i]) as any;
       if (s.id === from.id && s.count > 0) {
         const space = maxS - s.count;
         if (space > 0) {
@@ -1751,11 +1765,18 @@ export class MyRoom extends Room {
 
     // 2) fill empty slots in target range
     for (let i = toStart; i < toEnd && remaining > 0; i++) {
-      const s = this.normalizeStack(inv.slots[i]);
+      const s = this.normalizeStack(inv.slots[i]) as any;
       if (s.id <= 0 || s.count <= 0) {
         const take = Math.min(maxS, remaining);
-        inv.slots[i] = { id: from.id, count: take } as any;
-        remaining -= take;
+
+        const isTool = !!ITEM_DEFS[from.id]?.tool;
+        if (isTool) {
+          inv.slots[i] = { id: from.id, count: 1, dur: from.dur ?? ITEM_DEFS[from.id]!.tool!.maxDurability } as any;
+          remaining -= 1;
+        } else {
+          inv.slots[i] = { id: from.id, count: take } as any;
+          remaining -= take;
+        }
       }
     }
 
@@ -1764,7 +1785,13 @@ export class MyRoom extends Room {
 
     // update from slot
     const newCount = from.count - moved;
-    inv.slots[fromIndex] = newCount > 0 ? ({ id: from.id, count: newCount } as any) : { id: 0, count: 0 };
+    if (newCount > 0) {
+      // keep durability if it's a tool
+      const isTool = !!ITEM_DEFS[from.id]?.tool;
+      inv.slots[fromIndex] = isTool ? ({ id: from.id, count: 1, dur: from.dur ?? ITEM_DEFS[from.id]!.tool!.maxDurability } as any) : ({ id: from.id, count: newCount } as any);
+    } else {
+      inv.slots[fromIndex] = { id: 0, count: 0 };
+    }
     return true;
   }
 }

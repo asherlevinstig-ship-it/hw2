@@ -54,6 +54,22 @@ import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
+/**
+ * ✅ IMPORTANT:
+ * Fixes TS2307 "Cannot find module '../shared/items'":
+ * Put your shared items file INSIDE client/src so Vite can resolve it:
+ *   client/src/shared/items.ts
+ *
+ * Then this import works:
+ */
+import {
+  Items,
+  ITEM_DEFS,
+  RECIPES,
+  type ItemStack,
+  type ItemDef,
+} from "./shared/items";
+
 /* ===============================
    1. Colyseus Setup
 ================================ */
@@ -122,7 +138,6 @@ invRoot.style.userSelect = "none";
 invRoot.style.boxShadow = "0 10px 30px rgba(0,0,0,0.4)";
 document.body.appendChild(invRoot);
 
-// Prevent RMB menu inside inv (we already do global, but keep it explicit)
 invRoot.addEventListener("contextmenu", (e) => e.preventDefault());
 
 const invHeader = document.createElement("div");
@@ -348,9 +363,6 @@ const ATLAS_TILE_COUNT = 11;
  *   - textureURL (string)
  *   - atlasIndex (number)
  *   - texHasAlpha (boolean)
- *
- * If you pass "texture" instead of "textureURL", NOA will create the material
- * without any diffuseTexture -> your world becomes WHITE.
  */
 function registerAtlasMaterial(
   name: string,
@@ -361,42 +373,20 @@ function registerAtlasMaterial(
 }
 
 registerAtlasMaterial("grass_top", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
-registerAtlasMaterial("grass_side", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_SIDE,
-});
+registerAtlasMaterial("grass_side", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
 registerAtlasMaterial("dirt", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
 registerAtlasMaterial("stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
 registerAtlasMaterial("wood", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
-registerAtlasMaterial("leaves", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.LEAVES,
-  texHasAlpha: true,
-});
+registerAtlasMaterial("leaves", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LEAVES, texHasAlpha: true });
 
 registerAtlasMaterial("bedrock", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
-registerAtlasMaterial("coal_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.COAL_ORE,
-});
-registerAtlasMaterial("iron_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.IRON_ORE,
-});
-registerAtlasMaterial("gold_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GOLD_ORE,
-});
-registerAtlasMaterial("diamond_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIAMOND_ORE,
-});
+registerAtlasMaterial("coal_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
+registerAtlasMaterial("iron_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
+registerAtlasMaterial("gold_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
+registerAtlasMaterial("diamond_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIAMOND_ORE });
 
 // Blocks
-noa.registry.registerBlock(GRASS_ID, {
-  // [top, bottom, sides]
-  material: ["grass_top", "dirt", "grass_side"],
-});
+noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
@@ -409,51 +399,8 @@ noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
 noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
 
 /* ===============================
-   6. Item/Inventory State
+   6. Inventory State
 ================================ */
-// Item IDs (MUST match server)
-const Items = {
-  GRASS: 1,
-  DIRT: 2,
-  STONE: 3,
-  WOOD_LOG: 4,
-  LEAVES: 5,
-
-  PLANK: 10,
-  STICK: 11,
-  WOOD_PICK: 20,
-
-  COAL: 30,
-  RAW_IRON: 31,
-  RAW_GOLD: 32,
-  DIAMOND: 33,
-} as const;
-
-type ItemDef = {
-  id: number;
-  name: string;
-  maxStack: number;
-  placeBlockId?: number;
-};
-
-const ITEM_DEFS: Record<number, ItemDef> = {
-  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
-  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: DIRT_ID },
-  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
-  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
-  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
-
-  10: { id: 10, name: "Planks", maxStack: 64 },
-  11: { id: 11, name: "Stick", maxStack: 64 },
-  20: { id: 20, name: "Wood Pick", maxStack: 1 },
-
-  30: { id: 30, name: "Coal", maxStack: 64 },
-  31: { id: 31, name: "Raw Iron", maxStack: 64 },
-  32: { id: 32, name: "Raw Gold", maxStack: 64 },
-  33: { id: 33, name: "Diamond", maxStack: 64 },
-};
-
-type ItemStack = { id: number; count: number };
 type InvState = { slots: ItemStack[]; cursor: ItemStack };
 
 const HOTBAR_SLOTS = 5;
@@ -538,11 +485,14 @@ const pickupSentRecently = new Map<string, number>();
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
 
+function itemName(id: number): string {
+  const def: ItemDef | undefined = (ITEM_DEFS as any)[id];
+  return def?.name ?? `Item ${id}`;
+}
+
 function stackLabel(s: ItemStack): string {
   if (!s || s.id <= 0 || s.count <= 0) return "";
-  const def = ITEM_DEFS[s.id];
-  const nm = def ? def.name : `Item ${s.id}`;
-  return `${nm}\n×${s.count}`;
+  return `${itemName(s.id)}\n×${s.count}`;
 }
 
 function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
@@ -562,10 +512,8 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.style.cursor = "pointer";
 
   if (stack && stack.id > 0 && stack.count > 0) {
-    const def = ITEM_DEFS[stack.id];
-    const nm = def ? def.name : `Item ${stack.id}`;
     const name = document.createElement("div");
-    name.textContent = nm;
+    name.textContent = itemName(stack.id);
     name.style.fontSize = "11px";
     name.style.textAlign = "center";
     name.style.padding = "0 6px";
@@ -582,6 +530,19 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
 
     el.appendChild(name);
     el.appendChild(count);
+
+    // (optional) show durability if present
+    const dur = Number((stack as any).dur ?? 0);
+    if (Number.isFinite(dur) && dur > 0) {
+      const dEl = document.createElement("div");
+      dEl.textContent = `${dur}`;
+      dEl.style.position = "absolute";
+      dEl.style.left = "6px";
+      dEl.style.bottom = "4px";
+      dEl.style.fontSize = "11px";
+      dEl.style.opacity = "0.85";
+      el.appendChild(dEl);
+    }
   }
 }
 
@@ -599,27 +560,32 @@ function renderInventoryUI() {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
   }
 
-  // Craft buttons enable/disable (client hint only)
-  const canCraft = (recipeId: string) => {
-    const countItem = (id: number) => {
-      let n = 0;
-      for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
-      return n;
-    };
-
-    if (recipeId === "planks_from_log") return countItem(Items.WOOD_LOG) >= 1;
-    if (recipeId === "sticks_from_planks") return countItem(Items.PLANK) >= 2;
-    if (recipeId === "wood_pick")
-      return countItem(Items.PLANK) >= 3 && countItem(Items.STICK) >= 2;
-    return true;
+  // Client hint only: enable/disable craft buttons
+  const countItemSlotsOnly = (id: number): number => {
+    let n = 0;
+    for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
+    return n;
   };
 
   for (const child of Array.from(craftList.children)) {
-    const el = child as HTMLButtonElement;
-    const rid = (el as any).__recipeId as string | undefined;
+    const btn = child as HTMLButtonElement;
+    const rid = (btn as any).__recipeId as string | undefined;
     if (!rid) continue;
-    const ok = canCraft(rid);
-    el.style.opacity = ok ? "1" : "0.5";
+
+    const recipe = RECIPES.find((r) => r.id === rid);
+    if (!recipe) {
+      btn.style.opacity = "0.5";
+      continue;
+    }
+
+    let ok = true;
+    for (const req of recipe.inputs) {
+      if (countItemSlotsOnly(req.id) < req.count) {
+        ok = false;
+        break;
+      }
+    }
+    btn.style.opacity = ok ? "1" : "0.5";
   }
 }
 
@@ -659,22 +625,24 @@ function setupInventorySlots() {
   }
 }
 
-// Craft buttons
 function addCraftButton(title: string, recipeId: string) {
   const b = mkButton(title);
   (b as any).__recipeId = recipeId;
+
   b.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!room) return;
     room.send("craft", { recipeId, max: false, times: 1 });
   };
+
   b.oncontextmenu = (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!room) return;
     room.send("craft", { recipeId, max: true });
   };
+
   craftList.appendChild(b);
 }
 
@@ -686,9 +654,12 @@ function initUI() {
   }
 
   try {
-    addCraftButton("Wood → Planks (1 log → 4 planks) [RMB = max]", "planks_from_log");
-    addCraftButton("Planks → Sticks (2 planks → 4 sticks) [RMB = max]", "sticks_from_planks");
-    addCraftButton("Wood Pick (3 planks + 2 sticks) [RMB = max]", "wood_pick");
+    // Build craft UI from RECIPES (single source of truth)
+    for (const r of RECIPES) {
+      const inStr = r.inputs.map((it) => `${itemName(it.id)}×${it.count}`).join(" + ");
+      const outStr = `${itemName(r.output.id)}×${r.output.count}`;
+      addCraftButton(`${outStr}  ←  ${inStr}   [RMB=max]`, r.id);
+    }
   } catch (e) {
     console.warn("[UI] craft buttons failed", e);
   }
@@ -725,8 +696,7 @@ function getClosestRemoteDistance(): number | null {
 function getHotbarHeldName(): string {
   const s = invState.slots[selectedHotbar];
   if (!s || s.id <= 0 || s.count <= 0) return "(empty)";
-  const def = ITEM_DEFS[s.id];
-  return def ? def.name : `Item ${s.id}`;
+  return itemName(s.id);
 }
 
 function updateOverlay(extraLine = "") {
@@ -855,7 +825,7 @@ document.addEventListener("keydown", (e) => {
 // Capture-phase handler for tuning keys ONLY (so mouse/NOA stays normal)
 window.addEventListener(
   "keydown",
-  (e) => {
+  (e: KeyboardEvent) => {
     if (!vmTuning) return;
 
     const isArrow =
@@ -1032,7 +1002,7 @@ let miningProgress: MineProgressMsg | null = null;
 // Click-to-continue mining (sticky)
 let miningActive = false;
 let miningStickyUntil = 0;
-const MINING_STICKY_MS = 1200; // after click release, keep mining active briefly (then auto-extends if progress arriving)
+const MINING_STICKY_MS = 1200;
 
 // Heartbeat controls: allow same-target resends after a short window
 let lastMineSentKey = "";
@@ -1046,18 +1016,17 @@ const MINE_PUNCH_INTERVAL_MS = 180;
 function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
   const now = performance.now();
-  if (now - lastMineSendAt < 40) return; // tiny throttle
+  if (now - lastMineSendAt < 40) return;
 
   const key = `${x},${y},${z}`;
   const sameTarget = key === lastMineSentKey;
 
-  // IMPORTANT: allow same-target resends after a short window (for heartbeat)
   if (sameTarget && now - lastMineSendAt < MINE_RESEND_SAME_TARGET_MS) return;
 
   lastMineSendAt = now;
   lastMineSentKey = key;
 
-  room.send("startMine", { x, y, z });
+  room.send("startMine", { x, y, z, heldSlot: selectedHotbar });
 }
 
 function cancelMiningLocal(reason = "") {
@@ -1077,7 +1046,6 @@ function setInvOpen(open: boolean) {
   craftStatus.textContent = invOpen ? "RMB a recipe to craft MAX." : "";
   renderInventoryUI();
 
-  // cancel mining when opening UI
   if (invOpen) cancelMiningLocal("inventory_open");
 }
 
@@ -1098,7 +1066,6 @@ noa.inputs.down.on("fire", () => {
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 
   miningTarget = { x, y, z };
-  // keep client visual state (server is authoritative for actual progress)
   miningProgress = {
     x,
     y,
@@ -1113,12 +1080,11 @@ noa.inputs.down.on("fire", () => {
 });
 
 /* Release LMB: keep mining ACTIVE (click-to-continue) */
-window.addEventListener("mouseup", (e) => {
-  if (e.button !== 0) return; // left button only
+window.addEventListener("mouseup", (e: MouseEvent) => {
+  if (e.button !== 0) return;
   if (!miningHeld) return;
   miningHeld = false;
 
-  // do NOT cancel immediately — allow click-to-continue.
   miningActive = true;
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
@@ -1138,17 +1104,16 @@ noa.inputs.down.on("alt-fire", () => {
   const stack = invState.slots[selectedHotbar];
   if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
-  const def = ITEM_DEFS[stack.id];
-  if (!def || typeof def.placeBlockId !== "number") return;
+  const def: ItemDef | undefined = (ITEM_DEFS as any)[stack.id];
+  if (!def || typeof (def as any).placeBlockId !== "number") return;
 
-  const blockToPlace = def.placeBlockId;
+  const blockToPlace = (def as any).placeBlockId as number;
 
   const entPos = noa.ents.getPosition(noa.playerEntity);
   const px = Math.floor(entPos[0]);
   const py = Math.floor(entPos[1]);
   const pz = Math.floor(entPos[2]);
 
-  // don't place into your own body
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
   room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
@@ -1191,7 +1156,6 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
   if (crackSceneUid == null) crackSceneUid = uid ?? null;
 
-  // if scene changed (NOA scene recreated), rebuild
   if (crackSceneUid !== (uid ?? null)) {
     try {
       crackMesh?.dispose();
@@ -1244,11 +1208,9 @@ function updateCrackVisual(scene: BABYLON.Scene) {
   crackMesh.setEnabled(true);
   crackMesh.position.set(x + 0.5, y + 0.5, z + 0.5);
 
-  // opacity ramps up with progress
   const a = BABYLON.Scalar.Clamp(0.15 + progress * 0.65, 0, 0.9);
   crackMat.alpha = a;
 
-  // subtle “pulse” as you mine
   const pulse = 1.02 + Math.sin(performance.now() / 80) * 0.005;
   crackMesh.scaling.set(pulse, pulse, pulse);
 }
@@ -1256,7 +1218,6 @@ function updateCrackVisual(scene: BABYLON.Scene) {
 /* ===============================
    9.2 Drop visuals in NOA world scene (Minecraft-ish mini blocks)
 ================================ */
-
 // Cache per-tile materials per scene
 const dropAtlasMats = new Map<number, BABYLON.StandardMaterial>();
 let dropAtlasMatsSceneUid: string | number | null = null;
@@ -1293,11 +1254,8 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
   tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
   tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
 
-  // Pixel-art nearest sampling
   tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
 
-  // ✅ IMPORTANT: Babylon V origin is bottom-left, but your atlas indices are top->bottom.
-  // So we flip vOffset so index 0 maps to TOP tile.
   const idx = Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0));
   tex.uScale = 1;
   tex.vScale = 1 / ATLAS_TILE_COUNT;
@@ -1313,12 +1271,14 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
 }
 
 function itemIdToAtlasIndex(itemId: number): number {
+  // Blocks
   if (itemId === Items.GRASS) return ATLAS.GRASS_SIDE;
   if (itemId === Items.DIRT) return ATLAS.DIRT;
   if (itemId === Items.STONE) return ATLAS.STONE;
   if (itemId === Items.WOOD_LOG) return ATLAS.WOOD;
   if (itemId === Items.LEAVES) return ATLAS.LEAVES;
 
+  // Ores/items
   if (itemId === Items.COAL) return ATLAS.COAL_ORE;
   if (itemId === Items.RAW_IRON) return ATLAS.IRON_ORE;
   if (itemId === Items.RAW_GOLD) return ATLAS.GOLD_ORE;
@@ -1356,7 +1316,6 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
     const alpha = d.itemId === Items.LEAVES;
     box.material = getDropAtlasMaterial(scene, tile, alpha);
 
-    // make it feel like Minecraft item entity (bob + spin later)
     box.rotation.x = 0.25;
     box.rotation.y = Math.random() * Math.PI * 2;
 
@@ -1439,7 +1398,6 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
   const suid = uid ?? null;
 
-  // rebuild if scene changed
   if (minePSSceneUid !== suid) {
     try {
       minePS?.dispose();
@@ -1454,7 +1412,6 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   if (minePS) return;
 
-  // DynamicTexture dot (no external asset)
   const dt = new BABYLON.DynamicTexture("mineParticleTex", { width: 32, height: 32 }, scene, false);
   const ctx = dt.getContext();
   ctx.clearRect(0, 0, 32, 32);
@@ -1469,7 +1426,6 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   const ps = new BABYLON.ParticleSystem("minePS", 600, scene);
   ps.particleTexture = minePSTex;
 
-  // Make sure it draws even if NOA is using its own groups
   ps.renderingGroupId = 2;
 
   ps.minSize = 0.02;
@@ -1486,11 +1442,9 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   ps.gravity = new BABYLON.Vector3(0, -2.2, 0);
 
-  // Default direction (will be overridden per-face when mining)
   ps.direction1 = new BABYLON.Vector3(-1, 0.7, -1);
   ps.direction2 = new BABYLON.Vector3(1, 1.3, 1);
 
-  // Emitter type (a small box at the block center)
   ps.createBoxEmitter(
     new BABYLON.Vector3(-0.35, -0.35, -0.35),
     new BABYLON.Vector3(0.35, 0.35, 0.35),
@@ -1502,10 +1456,7 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   ps.color2 = new BABYLON.Color4(1, 1, 1, 1);
   ps.colorDead = new BABYLON.Color4(1, 1, 1, 0);
 
-  // Visibility safety: render “over” a lot of stuff (but still looks OK)
-  // (If you prefer full occlusion, set disableDepthWrite=false and depthFunction=LESS)
   ps.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
-
   (ps as any).forceDepthWrite = false;
 
   minePS = ps;
@@ -1521,7 +1472,6 @@ function updateMiningParticles(scene: BABYLON.Scene) {
   ensureMiningParticles(scene);
   if (!minePS) return;
 
-  // Debug mode: always emit near player head to prove the system renders
   if (DEBUG_PARTICLES_ALWAYS) {
     const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
     if (p) {
@@ -1544,10 +1494,8 @@ function updateMiningParticles(scene: BABYLON.Scene) {
 
   const { x, y, z, progress } = miningProgress;
 
-  // Position emitter at block center
   minePS.emitter = new BABYLON.Vector3(x + 0.5, y + 0.5, z + 0.5);
 
-  // Face-biased burst: push chips outward from the face you're "hitting"
   const tgt = getTargetInfo();
   if (tgt && tgt.pos.x === x && tgt.pos.y === y && tgt.pos.z === z) {
     const fx = BABYLON.Scalar.Clamp(tgt.adj.x - tgt.pos.x, -1, 1);
@@ -1556,7 +1504,6 @@ function updateMiningParticles(scene: BABYLON.Scene) {
     const n = new BABYLON.Vector3(fx, fy, fz);
     if (n.lengthSquared() > 0.2) {
       n.normalize();
-      // Direction ranges: mostly along face normal + upward jitter
       minePS.direction1 = new BABYLON.Vector3(n.x * 0.8 - 0.25, 0.35, n.z * 0.8 - 0.25);
       minePS.direction2 = new BABYLON.Vector3(n.x * 1.4 + 0.25, 0.95, n.z * 1.4 + 0.25);
     }
@@ -1634,21 +1581,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox(
-    "vmUpperArm",
-    { width: 0.16, height: 0.44, depth: 0.16 },
-    vmScene
-  );
-  const fore = BABYLON.MeshBuilder.CreateBox(
-    "vmForeArm",
-    { width: 0.16, height: 0.38, depth: 0.16 },
-    vmScene
-  );
-  const hand = BABYLON.MeshBuilder.CreateBox(
-    "vmHand",
-    { width: 0.17, height: 0.18, depth: 0.17 },
-    vmScene
-  );
+  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
+  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
+  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
@@ -1687,11 +1622,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes.parent = vmRoot;
 
       const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(
-          name,
-          { points: [BABYLON.Vector3.Zero(), to] },
-          vmScene!
-        );
+        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -1805,8 +1736,6 @@ function updateViewmodel(dtSec: number) {
   const bob = Math.sin(vmTime * 2.0) * 0.03 * walk;
   const sway = Math.sin(vmTime) * 0.06 * walk;
 
-  // Arm action: punch anim.
-  // - If actively mining, we "re-trigger" punches periodically to look like continuous swing.
   const now = performance.now();
   if (miningActive && hasPointerLock() && !invOpen) {
     if (now - lastMinePunchAt > MINE_PUNCH_INTERVAL_MS) {
@@ -1843,8 +1772,7 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
@@ -1886,7 +1814,6 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpCam.maxZ = 10000;
 
   rpCam.rotationQuaternion = new BABYLON.Quaternion();
-
   rpScene.activeCamera = rpCam;
 
   rpReady = true;
@@ -1933,61 +1860,37 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
-  const body = BABYLON.MeshBuilder.CreateBox(
-    `remoteBody:${id}`,
-    { width: BODY_W, height: BODY_H, depth: BODY_D },
-    rpScene
-  );
+  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
   body.parent = root;
   body.position.set(0, bodyCenterY, 0);
   body.material = mat;
   body.isPickable = false;
 
-  const head = BABYLON.MeshBuilder.CreateBox(
-    `remoteHead:${id}`,
-    { width: HEAD, height: HEAD, depth: HEAD },
-    rpScene
-  );
+  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
   head.parent = root;
   head.position.set(0, headCenterY, 0);
   head.material = mat;
   head.isPickable = false;
 
-  const armL = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmL:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armL.parent = root;
   armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armL.material = mat;
   armL.isPickable = false;
 
-  const armR = BABYLON.MeshBuilder.CreateBox(
-    `remoteArmR:${id}`,
-    { width: ARM_W, height: ARM_H, depth: ARM_D },
-    rpScene
-  );
+  const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
   armR.parent = root;
   armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armR.material = mat;
   armR.isPickable = false;
 
-  const legL = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegL:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legL.parent = root;
   legL.position.set(-0.16, LEG_H * 0.5, 0);
   legL.material = mat;
   legL.isPickable = false;
 
-  const legR = BABYLON.MeshBuilder.CreateBox(
-    `remoteLegR:${id}`,
-    { width: LEG_W, height: LEG_H, depth: LEG_D },
-    rpScene
-  );
+  const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
   legR.parent = root;
   legR.position.set(0.16, LEG_H * 0.5, 0);
   legR.material = mat;
@@ -2107,23 +2010,11 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     console.log("[RP] cam+offset", {
       handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
       xray: remoteXray,
-      worldLocalPos: lp
-        ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) }
-        : null,
-      worldAbsPos: ap
-        ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) }
-        : null,
-      rpCamPos: {
-        x: +rpCam.position.x.toFixed(2),
-        y: +rpCam.position.y.toFixed(2),
-        z: +rpCam.position.z.toFixed(2),
-      },
+      worldLocalPos: lp ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) } : null,
+      worldAbsPos: ap ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) } : null,
+      rpCamPos: { x: +rpCam.position.x.toFixed(2), y: +rpCam.position.y.toFixed(2), z: +rpCam.position.z.toFixed(2) },
       playerPos: p ? { x: +p[0].toFixed(2), y: +p[1].toFixed(2), z: +p[2].toFixed(2) } : null,
-      rpRenderOffset: {
-        x: +rpRenderOffset.x.toFixed(2),
-        y: +rpRenderOffset.y.toFixed(2),
-        z: +rpRenderOffset.z.toFixed(2),
-      },
+      rpRenderOffset: { x: +rpRenderOffset.x.toFixed(2), y: +rpRenderOffset.y.toFixed(2), z: +rpRenderOffset.z.toFixed(2) },
       hasWorldMatrix: typeof worldCam.getWorldMatrix === "function",
     });
   }
@@ -2147,11 +2038,7 @@ function updateRemoteMeshes() {
     if (!root) continue;
 
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
-    target.set(
-      t.x + rpRenderOffset.x,
-      t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET,
-      t.z + rpRenderOffset.z
-    );
+    target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
     remoteTargetPos.set(id, target);
 
     const lerp = 0.35;
@@ -2161,9 +2048,7 @@ function updateRemoteMeshes() {
 
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
-    const prev =
-      remotePrevPos.get(id) ??
-      new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
@@ -2250,13 +2135,7 @@ async function connect() {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
 
-        // if the block we were mining changed, clear cracks
-        if (
-          miningProgress &&
-          msg.x === miningProgress.x &&
-          msg.y === miningProgress.y &&
-          msg.z === miningProgress.z
-        ) {
+        if (miningProgress && msg.x === miningProgress.x && msg.y === miningProgress.y && msg.z === miningProgress.z) {
           miningProgress = null;
         }
       }
@@ -2284,7 +2163,6 @@ async function connect() {
         reason: typeof (m as any).reason === "string" ? (m as any).reason : undefined,
       };
 
-      // Extend sticky mining if progress is arriving
       miningActive = true;
       miningStickyUntil = performance.now() + MINING_STICKY_MS;
 
@@ -2306,7 +2184,7 @@ async function connect() {
       lastMineSendAt = 0;
     });
 
-    // Inventory state from server
+    // Inventory state from server (accept optional dur)
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
       const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
@@ -2318,18 +2196,22 @@ async function connect() {
         const s = slots[i];
         const id = Number((s as any)?.id ?? 0);
         const count = Number((s as any)?.count ?? 0);
+        const dur = Number((s as any)?.dur ?? 0);
+
         outSlots[i] =
           Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0
-            ? { id, count }
-            : { id: 0, count: 0 };
+            ? (Number.isFinite(dur) && dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any))
+            : ({ id: 0, count: 0 } as any);
       }
 
       const cId = Number((cursor as any)?.id ?? 0);
       const cCount = Number((cursor as any)?.count ?? 0);
+      const cDur = Number((cursor as any)?.dur ?? 0);
+
       const outCursor: ItemStack =
         Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0
-          ? { id: cId, count: cCount }
-          : { id: 0, count: 0 };
+          ? (Number.isFinite(cDur) && cDur > 0 ? ({ id: cId, count: cCount, dur: cDur } as any) : ({ id: cId, count: cCount } as any))
+          : ({ id: 0, count: 0 } as any);
 
       invState = { slots: outSlots, cursor: outCursor };
       renderInventoryUI();
@@ -2529,22 +2411,16 @@ let lastTickMs = performance.now();
     ensureRpScene(scene);
     ensureDropVisuals(scene);
 
-    // Sync rp camera from NOA camera every tick (critical)
     syncRpCameraFromWorld(scene);
 
-    // crack overlay updates
     updateCrackVisual(scene);
-
-    // mining particles
     updateMiningParticles(scene);
   }
 
   updateViewmodel(dtSec);
 
-  // Remote meshes every tick
   updateRemoteMeshes();
 
-  // Drop visuals + pickup
   updateDropVisuals(dtSec);
   tryAutoPickup();
 
@@ -2552,7 +2428,6 @@ let lastTickMs = performance.now();
   if (miningActive && hasPointerLock() && !invOpen) {
     const t = getTargetInfo();
 
-    // If no target, stop after sticky time
     if (!t?.pos) {
       if (!miningHeld && performance.now() > miningStickyUntil) {
         cancelMiningLocal("no_target");
@@ -2560,7 +2435,6 @@ let lastTickMs = performance.now();
     } else {
       const { x, y, z } = t.pos;
 
-      // If holding: allow retarget by looking at new block
       if (miningHeld) {
         if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
           miningTarget = { x, y, z };
@@ -2569,11 +2443,9 @@ let lastTickMs = performance.now();
           lastMineSendAt = 0;
           sendStartMine(x, y, z);
         } else {
-          // keep-alive / resync occasionally
           if (tickCount % 20 === 0) sendStartMine(x, y, z);
         }
       } else {
-        // Not holding: click-to-continue mining keeps heartbeating same target until done/cancel/timeout
         if (!miningTarget) {
           miningTarget = { x, y, z };
           miningProgress = { x, y, z, progress: 0, stage: 0 };
@@ -2581,12 +2453,9 @@ let lastTickMs = performance.now();
           lastMineSendAt = 0;
           sendStartMine(x, y, z);
         } else {
-          // Keep mining the existing target (don't retarget unless player clicks/holds again)
           if (tickCount % 6 === 0) sendStartMine(miningTarget.x, miningTarget.y, miningTarget.z);
 
-          // stop if sticky window expires and we aren't receiving progress
           if (performance.now() > miningStickyUntil && !miningHeld) {
-            // If progress exists and not done, extend a little longer; else cancel.
             if (miningProgress && miningProgress.progress < 1) {
               miningStickyUntil = performance.now() + MINING_STICKY_MS;
             } else {
@@ -2597,18 +2466,15 @@ let lastTickMs = performance.now();
       }
     }
   } else {
-    // if pointer lock lost or inventory opened, cancel mining cleanly
     if (miningActive) cancelMiningLocal(invOpen ? "inventory_open" : "no_pointer_lock");
   }
 
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw =
-      typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
+    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  // Keep overlay fresh
   if (tickCount % 10 === 0) updateOverlay();
 });
