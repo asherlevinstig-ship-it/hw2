@@ -27,6 +27,11 @@
  * ✅ Mining particles:
  *    - Small chip particles emit from the mined block while mining (ramps up with progress)
  *
+ * NEW (Cornucopia / Safe Zone):
+ * ✅ Client receives safe zone center+radius from server ("safeZone")
+ * ✅ Client blocks sending mine/place requests if target is inside safe zone
+ * ✅ Client renders a translucent cylinder ring marker for the safe zone
+ *
  * Atlas requirement (NOA):
  * - Atlas is a VERTICAL STRIP: width=16, height=16*N tiles stacked top->bottom.
  * - We select a tile via `atlasIndex`.
@@ -495,6 +500,23 @@ let remoteXray = true; // always visible by default (debug)
 let DEBUG_PARTICLES_ALWAYS = false;
 
 /* ===============================
+   6.0 Safe Zone / Cornucopia state (NEW)
+================================ */
+type SafeZoneMsg = { x: number; z: number; r: number };
+let safeZone: SafeZoneMsg | null = null;
+
+function isFiniteNum(n: any): n is number {
+  return typeof n === "number" && Number.isFinite(n);
+}
+
+function isInSafeZoneXZ(x: number, z: number): boolean {
+  if (!safeZone) return false;
+  const dx = x + 0.5 - safeZone.x;
+  const dz = z + 0.5 - safeZone.z;
+  return dx * dx + dz * dz <= safeZone.r * safeZone.r;
+}
+
+/* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
 let vmDebug = true;
@@ -784,6 +806,17 @@ function getHotbarHeldName(): string {
   return itemName(s.id);
 }
 
+function getSafeZoneLine(): string {
+  if (!safeZone) return "Safe Zone: (unknown)";
+  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  if (!p) return `Safe Zone: center=(${safeZone.x},${safeZone.z}) r=${safeZone.r}`;
+  const dx = (p[0] - safeZone.x);
+  const dz = (p[2] - safeZone.z);
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const inside = dist <= safeZone.r;
+  return `Safe Zone: r=${safeZone.r} dist=${dist.toFixed(1)} ${inside ? "(INSIDE)" : ""}`;
+}
+
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
 
@@ -813,6 +846,8 @@ function updateOverlay(extraLine = "") {
     ? `PS: rate=${minePS.emitRate} alive=${minePS.isStarted() ? "Y" : "N"}`
     : "PS: (none)";
 
+  const safeLine = getSafeZoneLine();
+
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
@@ -828,6 +863,7 @@ function updateOverlay(extraLine = "") {
     <strong>DEBUG_PARTICLES_ALWAYS:</strong> ${
       DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"
     }<br>
+    <strong>${safeLine}</strong><br>
     -------------------------<br>
     [Click/Hold LMB] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
@@ -1005,11 +1041,14 @@ function sendChunkRequest(req: {
   room.send("worldDataNeeded", req);
 }
 
-worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: number) => {
-  const CS = data.shape?.[0] ?? 32;
-  pendingChunks.set(id, { data, chunkSize: CS, x, y, z });
-  sendChunkRequest({ id, chunkSize: CS, x, y, z });
-});
+worldAny.on(
+  "worldDataNeeded",
+  (id: string, data: any, x: number, y: number, z: number) => {
+    const CS = data.shape?.[0] ?? 32;
+    pendingChunks.set(id, { data, chunkSize: CS, x, y, z });
+    sendChunkRequest({ id, chunkSize: CS, x, y, z });
+  }
+);
 
 type TypedArrayLike = {
   buffer: ArrayBufferLike;
@@ -1034,7 +1073,11 @@ function toNumberArrayVoxels(v: unknown): number[] | null {
     return out;
   }
   if (isTypedArrayLike(v)) {
-    const u8 = new Uint8Array(v.buffer as ArrayBuffer, v.byteOffset, v.byteLength);
+    const u8 = new Uint8Array(
+      v.buffer as ArrayBuffer,
+      v.byteOffset,
+      v.byteLength
+    );
     const out = new Array<number>(u8.length);
     for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
     return out;
@@ -1138,6 +1181,13 @@ const MINE_PUNCH_INTERVAL_MS = 180;
 
 function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
+
+  // NEW: client-side safe zone block
+  if (isInSafeZoneXZ(x, z)) {
+    updateOverlay("Safe Zone: mining blocked");
+    return;
+  }
+
   const now = performance.now();
   if (now - lastMineSendAt < 40) return;
 
@@ -1180,9 +1230,15 @@ noa.inputs.down.on("fire", () => {
   const target = getTargetInfo();
   if (!target) return;
 
-  triggerPunch();
-
   const { x, y, z } = target.pos;
+
+  // NEW: client-side safe zone block
+  if (isInSafeZoneXZ(x, z)) {
+    updateOverlay("Safe Zone: mining blocked");
+    return;
+  }
+
+  triggerPunch();
 
   miningHeld = true;
   miningActive = true;
@@ -1224,6 +1280,12 @@ noa.inputs.down.on("alt-fire", () => {
 
   const { x, y, z } = target.adj;
 
+  // NEW: client-side safe zone block
+  if (isInSafeZoneXZ(x, z)) {
+    updateOverlay("Safe Zone: placing blocked");
+    return;
+  }
+
   const stack = invState.slots[selectedHotbar];
   if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
@@ -1239,7 +1301,13 @@ noa.inputs.down.on("alt-fire", () => {
 
   if (x === px && z === pz && (y === py || y === py + 1)) return;
 
-  room?.send("placeBlock", { x, y, z, id: blockToPlace, fromSlot: selectedHotbar });
+  room?.send("placeBlock", {
+    x,
+    y,
+    z,
+    id: blockToPlace,
+    fromSlot: selectedHotbar,
+  });
 });
 
 /* ===============================
@@ -1272,6 +1340,97 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
+   9.0 Safe Zone Visuals (NEW)
+================================ */
+let safeZoneMesh: BABYLON.Mesh | null = null;
+let safeZoneMat: BABYLON.StandardMaterial | null = null;
+let safeZoneSceneUid: string | number | null = null;
+
+function ensureSafeZoneVisual(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  const suid = uid ?? null;
+
+  if (safeZoneSceneUid !== suid) {
+    try {
+      safeZoneMesh?.dispose();
+    } catch {}
+    try {
+      safeZoneMat?.dispose();
+    } catch {}
+    safeZoneMesh = null;
+    safeZoneMat = null;
+    safeZoneSceneUid = suid;
+  }
+
+  if (safeZoneMesh && safeZoneMat) return;
+
+  // A translucent cylinder wall marking the safe zone.
+  // We don't know exact ground Y, so we keep it centered around player height each tick.
+  safeZoneMesh = BABYLON.MeshBuilder.CreateCylinder(
+    "safeZoneCylinder",
+    {
+      height: 120,
+      diameter: 2,
+      tessellation: 72,
+      subdivisions: 1,
+    },
+    scene
+  );
+  safeZoneMesh.isPickable = false;
+  (safeZoneMesh as any).isInFrustum = () => true;
+
+  safeZoneMat = new BABYLON.StandardMaterial("safeZoneMat", scene);
+  safeZoneMat.disableLighting = true;
+  safeZoneMat.emissiveColor = new BABYLON.Color3(0.2, 0.8, 1.0);
+  safeZoneMat.diffuseColor = safeZoneMat.emissiveColor.clone();
+  safeZoneMat.specularColor = new BABYLON.Color3(0, 0, 0);
+  safeZoneMat.alpha = 0.12;
+  safeZoneMat.backFaceCulling = false;
+  safeZoneMat.disableDepthWrite = true;
+  safeZoneMat.depthFunction = BABYLON.Constants.LEQUAL;
+
+  safeZoneMesh.material = safeZoneMat;
+
+  // Make it a "shell" by using a cylinder and scaling XZ; to emulate a wall, we set it to be thin in XZ
+  // with a large diameter and a small thickness via a second inner cylinder subtraction would be heavy,
+  // so we just show a single thin-ish cylinder and rely on translucency.
+}
+
+function updateSafeZoneVisual(scene: BABYLON.Scene) {
+  if (!safeZone) {
+    if (safeZoneMesh) safeZoneMesh.setEnabled(false);
+    return;
+  }
+
+  ensureSafeZoneVisual(scene);
+  if (!safeZoneMesh) return;
+
+  safeZoneMesh.setEnabled(true);
+
+  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  const yCenter = p ? p[1] : 40;
+
+  safeZoneMesh.position.set(safeZone.x, yCenter, safeZone.z);
+
+  const r = Math.max(2, safeZone.r);
+  // diameter scale: base cylinder was diameter=2, so scale = r
+  safeZoneMesh.scaling.x = r;
+  safeZoneMesh.scaling.z = r;
+  safeZoneMesh.scaling.y = 1;
+
+  // subtle pulse when inside
+  if (p) {
+    const dx = p[0] - safeZone.x;
+    const dz = p[2] - safeZone.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const inside = dist <= safeZone.r;
+    const pulse = 1 + (inside ? Math.sin(performance.now() / 180) * 0.015 : 0);
+    safeZoneMesh.scaling.x = r * pulse;
+    safeZoneMesh.scaling.z = r * pulse;
+  }
+}
+
+/* ===============================
    9.1 Mining crack visuals (wireframe overlay)
 ================================ */
 let crackMesh: BABYLON.Mesh | null = null;
@@ -1283,8 +1442,12 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
   if (crackSceneUid == null) crackSceneUid = uid ?? null;
 
   if (crackSceneUid !== (uid ?? null)) {
-    try { crackMesh?.dispose(); } catch {}
-    try { crackMat?.dispose(); } catch {}
+    try {
+      crackMesh?.dispose();
+    } catch {}
+    try {
+      crackMat?.dispose();
+    } catch {}
     crackMesh = null;
     crackMat = null;
     crackSceneUid = uid ?? null;
@@ -1292,7 +1455,11 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
 
   if (crackMesh && crackMat) return;
 
-  crackMesh = BABYLON.MeshBuilder.CreateBox("mineCrackBox", { size: 1.02 }, scene);
+  crackMesh = BABYLON.MeshBuilder.CreateBox(
+    "mineCrackBox",
+    { size: 1.02 },
+    scene
+  );
   crackMesh.isPickable = false;
   crackMesh.setEnabled(false);
   (crackMesh as any).isInFrustum = () => true;
@@ -1349,14 +1516,20 @@ function resetDropAtlasMatsIfSceneChanged(scene: BABYLON.Scene) {
   const suid = uid ?? null;
   if (dropAtlasMatsSceneUid !== suid) {
     for (const m of dropAtlasMats.values()) {
-      try { m.dispose(); } catch {}
+      try {
+        m.dispose();
+      } catch {}
     }
     dropAtlasMats.clear();
     dropAtlasMatsSceneUid = suid;
   }
 }
 
-function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
+function getDropAtlasMaterial(
+  scene: BABYLON.Scene,
+  atlasIndex: number,
+  alpha = false
+) {
   resetDropAtlasMatsIfSceneChanged(scene);
 
   const key = (atlasIndex | 0) + (alpha ? 10000 : 0);
@@ -1413,7 +1586,9 @@ function itemIdToAtlasIndex(itemId: number): number {
 
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
-    try { m.dispose(); } catch {}
+    try {
+      m.dispose();
+    } catch {}
   }
   dropMeshes.clear();
 }
@@ -1430,7 +1605,11 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const d of drops.values()) {
     if (dropMeshes.has(d.dropId)) continue;
 
-    const box = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.32 }, scene);
+    const box = BABYLON.MeshBuilder.CreateBox(
+      `drop:${d.dropId}`,
+      { size: 0.32 },
+      scene
+    );
     box.isPickable = false;
     (box as any).isInFrustum = () => true;
 
@@ -1448,7 +1627,9 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const id of Array.from(dropMeshes.keys())) {
     if (!drops.has(id)) {
       const m = dropMeshes.get(id);
-      try { m?.dispose(); } catch {}
+      try {
+        m?.dispose();
+      } catch {}
       dropMeshes.delete(id);
     }
   }
@@ -1479,7 +1660,9 @@ function tryAutoPickup() {
 
   if (now - lastPickupSentAt < 90) return;
 
-  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  const p = noa.ents.getPosition(noa.playerEntity) as
+    | [number, number, number]
+    | null;
   if (!p) return;
 
   let bestId: string | null = null;
@@ -1519,8 +1702,12 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   const suid = uid ?? null;
 
   if (minePSSceneUid !== suid) {
-    try { minePS?.dispose(); } catch {}
-    try { minePSTex?.dispose(); } catch {}
+    try {
+      minePS?.dispose();
+    } catch {}
+    try {
+      minePSTex?.dispose();
+    } catch {}
     minePS = null;
     minePSTex = null;
     minePSSceneUid = suid;
@@ -1528,7 +1715,12 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   if (minePS) return;
 
-  const dt = new BABYLON.DynamicTexture("mineParticleTex", { width: 32, height: 32 }, scene, false);
+  const dt = new BABYLON.DynamicTexture(
+    "mineParticleTex",
+    { width: 32, height: 32 },
+    scene,
+    false
+  );
   const ctx = dt.getContext();
   ctx.clearRect(0, 0, 32, 32);
   ctx.fillStyle = "rgba(255,255,255,1)";
@@ -1589,7 +1781,9 @@ function updateMiningParticles(scene: BABYLON.Scene) {
   if (!minePS) return;
 
   if (DEBUG_PARTICLES_ALWAYS) {
-    const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+    const p = noa.ents.getPosition(noa.playerEntity) as
+      | [number, number, number]
+      | null;
     if (p) {
       minePS.emitter = new BABYLON.Vector3(p[0], p[1] + 1.4, p[2]);
       minePS.emitRate = 120;
@@ -1602,7 +1796,8 @@ function updateMiningParticles(scene: BABYLON.Scene) {
     return;
   }
 
-  const active = miningHeld || (miningProgress.progress >= 0 && miningProgress.progress < 1);
+  const active =
+    miningHeld || (miningProgress.progress >= 0 && miningProgress.progress < 1);
   if (!active) {
     stopMiningParticles();
     return;
@@ -1620,14 +1815,25 @@ function updateMiningParticles(scene: BABYLON.Scene) {
     const n = new BABYLON.Vector3(fx, fy, fz);
     if (n.lengthSquared() > 0.2) {
       n.normalize();
-      minePS.direction1 = new BABYLON.Vector3(n.x * 0.8 - 0.25, 0.35, n.z * 0.8 - 0.25);
-      minePS.direction2 = new BABYLON.Vector3(n.x * 1.4 + 0.25, 0.95, n.z * 1.4 + 0.25);
+      minePS.direction1 = new BABYLON.Vector3(
+        n.x * 0.8 - 0.25,
+        0.35,
+        n.z * 0.8 - 0.25
+      );
+      minePS.direction2 = new BABYLON.Vector3(
+        n.x * 1.4 + 0.25,
+        0.95,
+        n.z * 1.4 + 0.25
+      );
     }
   }
 
   const base = miningHeld ? 120 : 80;
   const ramp = progress * 220;
-  minePS.emitRate = Math.max(0, Math.floor(base + ramp + Math.sin(performance.now() / 55) * 12));
+  minePS.emitRate = Math.max(
+    0,
+    Math.floor(base + ramp + Math.sin(performance.now() / 55) * 12)
+  );
 }
 
 /* ===============================
@@ -1654,12 +1860,18 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmScene = new BABYLON.Scene(engine);
   vmScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
-  console.log("[VM] ensureVmScene", { useRightHandedSystem: vmScene.useRightHandedSystem });
+  console.log("[VM] ensureVmScene", {
+    useRightHandedSystem: vmScene.useRightHandedSystem,
+  });
 
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
-  vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -10), vmScene);
+  vmCam = new BABYLON.FreeCamera(
+    "vmCam",
+    new BABYLON.Vector3(0, 0, -10),
+    vmScene
+  );
   vmCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
   vmCam.setTarget(BABYLON.Vector3.Zero());
   vmScene.activeCamera = vmCam;
@@ -1683,7 +1895,10 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
         new BABYLON.Vector3(-r, 1, 0),
         new BABYLON.Vector3(-r, -1, 0),
       ];
-      BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts, instance: vmFrame });
+      BABYLON.MeshBuilder.CreateLines("vmFrame", {
+        points: pts,
+        instance: vmFrame,
+      });
     }
   };
 
@@ -1697,9 +1912,21 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  const upper = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
-  const fore = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
-  const hand = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
+  const upper = BABYLON.MeshBuilder.CreateBox(
+    "vmUpperArm",
+    { width: 0.16, height: 0.44, depth: 0.16 },
+    vmScene
+  );
+  const fore = BABYLON.MeshBuilder.CreateBox(
+    "vmForeArm",
+    { width: 0.16, height: 0.38, depth: 0.16 },
+    vmScene
+  );
+  const hand = BABYLON.MeshBuilder.CreateBox(
+    "vmHand",
+    { width: 0.17, height: 0.18, depth: 0.17 },
+    vmScene
+  );
 
   upper.parent = vmArmRoot;
   fore.parent = vmArmRoot;
@@ -1737,8 +1964,16 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
       vmAxes = new BABYLON.TransformNode("vmAxes", vmScene);
       vmAxes.parent = vmRoot;
 
-      const makeAxis = (name: string, to: BABYLON.Vector3, color: BABYLON.Color3) => {
-        const l = BABYLON.MeshBuilder.CreateLines(name, { points: [BABYLON.Vector3.Zero(), to] }, vmScene!);
+      const makeAxis = (
+        name: string,
+        to: BABYLON.Vector3,
+        color: BABYLON.Color3
+      ) => {
+        const l = BABYLON.MeshBuilder.CreateLines(
+          name,
+          { points: [BABYLON.Vector3.Zero(), to] },
+          vmScene!
+        );
         l.color = color;
         l.isPickable = false;
         (l as any).isInFrustum = () => true;
@@ -1941,7 +2176,10 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpReady = true;
 }
 
-function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardMaterial {
+function makeRemoteMaterial(
+  id: string,
+  scene: BABYLON.Scene
+): BABYLON.StandardMaterial {
   const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, scene);
   mat.disableLighting = true;
   mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
@@ -2064,12 +2302,16 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
 function removeRemoteMesh(id: string) {
   const root = remoteMeshes.get(id);
   if (root) {
-    try { root.dispose(); } catch {}
+    try {
+      root.dispose();
+    } catch {}
     remoteMeshes.delete(id);
   }
   const mat = remoteMats.get(id);
   if (mat) {
-    try { mat.dispose(); } catch {}
+    try {
+      mat.dispose();
+    } catch {}
     remoteMats.delete(id);
   }
 
@@ -2092,7 +2334,10 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
-  const wm = typeof worldCam.getWorldMatrix === "function" ? worldCam.getWorldMatrix() : null;
+  const wm =
+    typeof worldCam.getWorldMatrix === "function"
+      ? worldCam.getWorldMatrix()
+      : null;
   if (wm) {
     const absPos = new BABYLON.Vector3();
     wm.decompose(undefined, undefined, absPos);
@@ -2100,7 +2345,8 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
 
     const rotMat = wm.getRotationMatrix();
     const absRotQ = BABYLON.Quaternion.FromRotationMatrix(rotMat);
-    if (!rpCam.rotationQuaternion) rpCam.rotationQuaternion = new BABYLON.Quaternion();
+    if (!rpCam.rotationQuaternion)
+      rpCam.rotationQuaternion = new BABYLON.Quaternion();
     rpCam.rotationQuaternion.copyFrom(absRotQ);
   } else {
     if (typeof worldCam.getAbsolutePosition === "function") {
@@ -2118,9 +2364,15 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     }
   }
 
-  const p = noa.ents.getPosition(noa.playerEntity) as [number, number, number] | null;
+  const p = noa.ents.getPosition(noa.playerEntity) as
+    | [number, number, number]
+    | null;
   if (p) {
-    rpRenderOffset.set(rpCam.position.x - p[0], rpCam.position.y - p[1], rpCam.position.z - p[2]);
+    rpRenderOffset.set(
+      rpCam.position.x - p[0],
+      rpCam.position.y - p[1],
+      rpCam.position.z - p[2]
+    );
   }
 
   if (remoteXray) {
@@ -2141,7 +2393,8 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   if (now - lastRpOffsetLogAt > 1500) {
     lastRpOffsetLogAt = now;
 
-    const lp = worldCam.position instanceof BABYLON.Vector3 ? worldCam.position : null;
+    const lp =
+      worldCam.position instanceof BABYLON.Vector3 ? worldCam.position : null;
     const ap =
       typeof worldCam.getAbsolutePosition === "function"
         ? worldCam.getAbsolutePosition()
@@ -2152,11 +2405,25 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
     console.log("[RP] cam+offset", {
       handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
       xray: remoteXray,
-      worldLocalPos: lp ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) } : null,
-      worldAbsPos: ap ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) } : null,
-      rpCamPos: { x: +rpCam.position.x.toFixed(2), y: +rpCam.position.y.toFixed(2), z: +rpCam.position.z.toFixed(2) },
-      playerPos: p ? { x: +p[0].toFixed(2), y: +p[1].toFixed(2), z: +p[2].toFixed(2) } : null,
-      rpRenderOffset: { x: +rpRenderOffset.x.toFixed(2), y: +rpRenderOffset.y.toFixed(2), z: +rpRenderOffset.z.toFixed(2) },
+      worldLocalPos: lp
+        ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) }
+        : null,
+      worldAbsPos: ap
+        ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) }
+        : null,
+      rpCamPos: {
+        x: +rpCam.position.x.toFixed(2),
+        y: +rpCam.position.y.toFixed(2),
+        z: +rpCam.position.z.toFixed(2),
+      },
+      playerPos: p
+        ? { x: +p[0].toFixed(2), y: +p[1].toFixed(2), z: +p[2].toFixed(2) }
+        : null,
+      rpRenderOffset: {
+        x: +rpRenderOffset.x.toFixed(2),
+        y: +rpRenderOffset.y.toFixed(2),
+        z: +rpRenderOffset.z.toFixed(2),
+      },
       hasWorldMatrix: typeof worldCam.getWorldMatrix === "function",
     });
   }
@@ -2180,7 +2447,11 @@ function updateRemoteMeshes() {
     if (!root) continue;
 
     const target = remoteTargetPos.get(id) ?? new BABYLON.Vector3();
-    target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
+    target.set(
+      t.x + rpRenderOffset.x,
+      t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET,
+      t.z + rpRenderOffset.z
+    );
     remoteTargetPos.set(id, target);
 
     const lerp = 0.35;
@@ -2190,7 +2461,9 @@ function updateRemoteMeshes() {
 
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
-    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prev =
+      remotePrevPos.get(id) ??
+      new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
@@ -2203,7 +2476,12 @@ function updateRemoteMeshes() {
     remotePrevAt.set(id, now);
 
     const parts = (root as any).__parts as
-      | { armL: BABYLON.Mesh; armR: BABYLON.Mesh; legL: BABYLON.Mesh; legR: BABYLON.Mesh }
+      | {
+          armL: BABYLON.Mesh;
+          armR: BABYLON.Mesh;
+          legL: BABYLON.Mesh;
+          legR: BABYLON.Mesh;
+        }
       | undefined;
 
     if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
@@ -2245,7 +2523,8 @@ function ensureUserId(): string {
   } catch {}
   if (id && id.length >= 3) return id;
 
-  const rand = Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+  const rand =
+    Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
   id = `u_${Date.now().toString(16)}_${rand.slice(0, 10)}`;
   try {
     localStorage.setItem(key, id);
@@ -2273,6 +2552,18 @@ async function connect() {
 
     room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
+    // NEW: safe zone settings from server
+    room.onMessage("safeZone", (m: any) => {
+      if (!m || typeof m !== "object") return;
+      const x = Number((m as any).x);
+      const z = Number((m as any).z);
+      const r = Number((m as any).r);
+      if (!isFiniteNum(x) || !isFiniteNum(z) || !isFiniteNum(r)) return;
+      safeZone = { x, z, r };
+      console.log("[SAFE] safeZone received", safeZone);
+      updateOverlay("Safe Zone received");
+    });
+
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
@@ -2297,7 +2588,8 @@ async function connect() {
       const progress = Number((m as any).progress);
       const stage = Number((m as any).stage);
 
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+        return;
       if (!Number.isFinite(progress) || !Number.isFinite(stage)) return;
 
       miningProgress = {
@@ -2307,7 +2599,10 @@ async function connect() {
         progress: Math.max(0, Math.min(1, progress)),
         stage: Math.max(0, Math.min(9, stage | 0)),
         done: !!(m as any).done,
-        reason: typeof (m as any).reason === "string" ? (m as any).reason : undefined,
+        reason:
+          typeof (m as any).reason === "string"
+            ? (m as any).reason
+            : undefined,
       };
 
       miningActive = true;
@@ -2334,11 +2629,16 @@ async function connect() {
     // Inventory state from server (accept optional dur)
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
-      const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
+      const slots = Array.isArray((msg as any).slots)
+        ? (msg as any).slots
+        : null;
       const cursor = (msg as any).cursor ?? null;
       if (!slots) return;
 
-      const outSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
+      const outSlots: ItemStack[] = Array.from(
+        { length: INV_SLOTS },
+        () => ({ id: 0, count: 0 })
+      );
       for (let i = 0; i < Math.min(INV_SLOTS, slots.length); i++) {
         const s = slots[i];
         const id = Number((s as any)?.id ?? 0);
@@ -2347,7 +2647,9 @@ async function connect() {
 
         outSlots[i] =
           Number.isFinite(id) && Number.isFinite(count) && id > 0 && count > 0
-            ? (Number.isFinite(dur) && dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any))
+            ? Number.isFinite(dur) && dur > 0
+              ? ({ id, count, dur } as any)
+              : ({ id, count } as any)
             : ({ id: 0, count: 0 } as any);
       }
 
@@ -2356,8 +2658,13 @@ async function connect() {
       const cDur = Number((cursor as any)?.dur ?? 0);
 
       const outCursor: ItemStack =
-        Number.isFinite(cId) && Number.isFinite(cCount) && cId > 0 && cCount > 0
-          ? (Number.isFinite(cDur) && cDur > 0 ? ({ id: cId, count: cCount, dur: cDur } as any) : ({ id: cId, count: cCount } as any))
+        Number.isFinite(cId) &&
+        Number.isFinite(cCount) &&
+        cId > 0 &&
+        cCount > 0
+          ? Number.isFinite(cDur) && cDur > 0
+            ? ({ id: cId, count: cCount, dur: cDur } as any)
+            : ({ id: cId, count: cCount } as any)
           : ({ id: 0, count: 0 } as any);
 
       invState = { slots: outSlots, cursor: outCursor };
@@ -2383,12 +2690,15 @@ async function connect() {
     });
 
     room.onMessage("dropDespawn", (m: any) => {
-      const id = typeof (m as any)?.dropId === "string" ? (m as any).dropId : "";
+      const id =
+        typeof (m as any)?.dropId === "string" ? (m as any).dropId : "";
       if (!id) return;
       drops.delete(id);
       const mesh = dropMeshes.get(id);
       if (mesh) {
-        try { mesh.dispose(); } catch {}
+        try {
+          mesh.dispose();
+        } catch {}
         dropMeshes.delete(id);
       }
       updateOverlay();
@@ -2397,7 +2707,8 @@ async function connect() {
     // Craft result
     room.onMessage("craftResult", (m: any) => {
       const ok = !!(m as any)?.ok;
-      const recipeId = typeof (m as any)?.recipeId === "string" ? (m as any).recipeId : "";
+      const recipeId =
+        typeof (m as any)?.recipeId === "string" ? (m as any).recipeId : "";
       const crafted = Number((m as any)?.crafted ?? 0);
       const reason = typeof (m as any)?.reason === "string" ? (m as any).reason : "";
       craftStatus.textContent = ok
@@ -2420,7 +2731,8 @@ async function connect() {
         const x = Number((p as any).x ?? 0);
         const y = Number((p as any).y ?? 0);
         const z = Number((p as any).z ?? 0);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+          continue;
 
         netTransforms.set(id, {
           x,
@@ -2442,7 +2754,8 @@ async function connect() {
       const x = Number((p as any).x ?? 0);
       const y = Number((p as any).y ?? 0);
       const z = Number((p as any).z ?? 0);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+        return;
 
       netTransforms.set(id, {
         x,
@@ -2475,7 +2788,8 @@ async function connect() {
       const x = Number((p as any).x);
       const y = Number((p as any).y);
       const z = Number((p as any).z);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+        return;
 
       netTransforms.set(id, {
         x,
@@ -2498,7 +2812,8 @@ async function connect() {
         const x = Number((p as any).x);
         const y = Number((p as any).y);
         const z = Number((p as any).z);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+          continue;
 
         ids.push(id);
         netTransforms.set(id, {
@@ -2518,9 +2833,12 @@ async function connect() {
       const x = Number((p as any).x);
       const y = Number((p as any).y);
       const z = Number((p as any).z);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+        return;
 
-      try { noa.ents.setPosition(noa.playerEntity, [x, y, z]); } catch {}
+      try {
+        noa.ents.setPosition(noa.playerEntity, [x, y, z]);
+      } catch {}
 
       canSendMoves = true;
       console.log("[NET] youJoined spawn", { x, y, z });
@@ -2554,6 +2872,9 @@ let lastTickMs = performance.now();
     ensureRpScene(scene);
     ensureDropVisuals(scene);
 
+    // NEW: safe zone visuals
+    updateSafeZoneVisual(scene);
+
     syncRpCameraFromWorld(scene);
 
     updateCrackVisual(scene);
@@ -2578,8 +2899,16 @@ let lastTickMs = performance.now();
     } else {
       const { x, y, z } = t.pos;
 
-      if (miningHeld) {
-        if (!miningTarget || miningTarget.x !== x || miningTarget.y !== y || miningTarget.z !== z) {
+      // NEW: if the *current* target is inside safe zone, stop mining
+      if (isInSafeZoneXZ(x, z)) {
+        cancelMiningLocal("safe_zone");
+      } else if (miningHeld) {
+        if (
+          !miningTarget ||
+          miningTarget.x !== x ||
+          miningTarget.y !== y ||
+          miningTarget.z !== z
+        ) {
           miningTarget = { x, y, z };
           miningProgress = { x, y, z, progress: 0, stage: 0 };
           lastMineSentKey = "";
@@ -2596,7 +2925,8 @@ let lastTickMs = performance.now();
           lastMineSendAt = 0;
           sendStartMine(x, y, z);
         } else {
-          if (tickCount % 6 === 0) sendStartMine(miningTarget.x, miningTarget.y, miningTarget.z);
+          if (tickCount % 6 === 0)
+            sendStartMine(miningTarget.x, miningTarget.y, miningTarget.z);
 
           if (performance.now() > miningStickyUntil && !miningHeld) {
             if (miningProgress && miningProgress.progress < 1) {
@@ -2615,7 +2945,10 @@ let lastTickMs = performance.now();
   // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
+    const yaw =
+      typeof (noa as any).camera?.heading === "number"
+        ? (noa as any).camera.heading
+        : 0;
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 

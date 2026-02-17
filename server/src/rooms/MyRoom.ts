@@ -2,6 +2,7 @@
 // FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
 // Includes: biomes + biome terrain + biome trees + ores + bedrock + inventory + drops + crafting + hold-to-mine
 // NEW: deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
+// NEW: Cornucopia (central hub) + Safe Zone radius (server authoritative protection + client sync)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -217,6 +218,15 @@ export class MyRoom extends Room {
   private readonly POI_CHANCE = 0.13; // tune
   private readonly POI_EDGE_PAD = 16; // avoid edges inside region
 
+  // Cornucopia (central hub) + Safe Zone
+  private readonly CORNUCOPIA_X = 0;
+  private readonly CORNUCOPIA_Z = 0;
+
+  private readonly SAFE_ZONE_RADIUS = 38; // blocks (tune)
+  private readonly SAFE_ZONE_RADIUS_SQ = this.SAFE_ZONE_RADIUS * this.SAFE_ZONE_RADIUS;
+
+  private readonly SAFE_ZONE_PROTECT_BLOCKS = true;
+
   // =========================
   // World meta / seed
   // =========================
@@ -385,6 +395,12 @@ export class MyRoom extends Room {
         return;
       }
 
+      // Safe zone protection (hub)
+      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) {
+        this.cancelMiningFor(client, "safe_zone");
+        return;
+      }
+
       const blockId = this.getBlockAt(x, y, z);
       if (blockId === this.AIR_ID) { this.cancelMiningFor(client, "air"); return; }
       if (blockId === this.BEDROCK_ID) { this.cancelMiningFor(client, "bedrock"); return; }
@@ -446,6 +462,9 @@ export class MyRoom extends Room {
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
+      // Safe zone protection (hub)
+      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) return;
+
       const oldId = this.getBlockAt(x, y, z);
       if (oldId === this.AIR_ID) return;
       if (oldId === this.BEDROCK_ID) return;
@@ -479,6 +498,9 @@ export class MyRoom extends Room {
       const blockId = toInt(clamp(maybe.id, 0, 255));
 
       if (blockId === this.BEDROCK_ID) return;
+
+      // Safe zone protection (hub)
+      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) return;
 
       const oldId = this.getBlockAt(x, y, z);
       if (oldId !== this.AIR_ID) return;
@@ -691,7 +713,15 @@ export class MyRoom extends Room {
 
     const inv = this.getOrLoadInventory(userId);
     this.sendInvStateToClient(client, inv);
+
     client.send("worldMeta", { worldSeed: this.worldSeed });
+
+    // Safe zone info for client visuals
+    client.send("safeZone", {
+      x: this.CORNUCOPIA_X,
+      z: this.CORNUCOPIA_Z,
+      r: this.SAFE_ZONE_RADIUS,
+    });
 
     for (const d of this.drops.values()) {
       if (Date.now() - d.createdAt > this.DROP_TTL_MS) continue;
@@ -962,6 +992,13 @@ export class MyRoom extends Room {
     return i + CS * (j + CS * k);
   }
 
+  // Safe zone check (XZ)
+  private isInsideSafeZone(x: number, z: number): boolean {
+    const dx = x + 0.5 - this.CORNUCOPIA_X;
+    const dz = z + 0.5 - this.CORNUCOPIA_Z;
+    return (dx * dx + dz * dz) <= this.SAFE_ZONE_RADIUS_SQ;
+  }
+
   // deterministic hash -> [0,1)
   private hash3i(x: number, y: number, z: number): number {
     const seed = this.worldSeed | 0;
@@ -1183,11 +1220,7 @@ export class MyRoom extends Room {
       const roofY = h - 1;
       for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
 
-      // doorway (air carve) - we do by skipping, not carving, so add nothing there
-      // carve: place AIR to override if chunk already has blocks (we don't want that).
-      // So: just avoid placing wood in doorway area:
-      // We'll remove those ops after generation: easiest is "don't place" in walls loop at specific coords.
-      // (Already placed; we can filter cheaply here.)
+      // doorway opening - filter those wall ops
       const doorX = Math.floor(w / 2);
       const filtered = ops.filter((o) => !(o.id === wood && o.dz === 0 && (o.dx === doorX) && (o.dy === 1 || o.dy === 2)));
       return filtered;
@@ -1287,7 +1320,6 @@ export class MyRoom extends Room {
           if (op.id === this.AIR_ID) continue;
           if (vox[idx] === this.BEDROCK_ID) continue;
 
-          // prefer POI blocks over terrain (yes), but don't overwrite trees leaves/wood? (keep simple)
           vox[idx] = clamp(toInt(op.id), 0, 255);
         }
       }
@@ -1295,7 +1327,104 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Chunk generation (biomes + ores + bedrock + trees + POIs)
+  // Cornucopia (stamped per chunk, deterministic at center)
+  // =========================
+  private stampCornucopiaIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+    const CS = this.chunkSize;
+
+    const centerX = this.CORNUCOPIA_X;
+    const centerZ = this.CORNUCOPIA_Z;
+
+    const radius = 8;     // platform radius
+    const wallH = 4;      // short wall height
+
+    // Anchor on terrain height at center (deterministic)
+    const baseY = this.heightAt(centerX, centerZ) + 1;
+
+    const chunkMinX = cx * CS;
+    const chunkMinY = cy * CS;
+    const chunkMinZ = cz * CS;
+    const chunkMaxX = chunkMinX + CS - 1;
+    const chunkMaxY = chunkMinY + CS - 1;
+    const chunkMaxZ = chunkMinZ + CS - 1;
+
+    // Quick AABB reject
+    const minX = centerX - radius - 2;
+    const maxX = centerX + radius + 2;
+    const minZ = centerZ - radius - 2;
+    const maxZ = centerZ + radius + 2;
+    const minY = baseY - 2;
+    const maxY = baseY + wallH + 10;
+
+    if (
+      maxX < chunkMinX || minX > chunkMaxX ||
+      maxY < chunkMinY || minY > chunkMaxY ||
+      maxZ < chunkMinZ || minZ > chunkMaxZ
+    ) return;
+
+    const place = (wx: number, wy: number, wz: number, id: number) => {
+      if (wx < chunkMinX || wx > chunkMaxX) return;
+      if (wy < chunkMinY || wy > chunkMaxY) return;
+      if (wz < chunkMinZ || wz > chunkMaxZ) return;
+
+      const lx = wx - chunkMinX;
+      const ly = wy - chunkMinY;
+      const lz = wz - chunkMinZ;
+      const ii = this.idx(lx, ly, lz);
+
+      if (vox[ii] === this.BEDROCK_ID) return;
+      vox[ii] = clamp(toInt(id), 0, 255);
+    };
+
+    const stone = this.STONE_ID;
+    const wood = this.WOOD_ID;
+    const leaves = this.LEAVES_ID;
+
+    // 1) Stone platform (filled down a bit)
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const d2 = dx * dx + dz * dz;
+        if (d2 > radius * radius) continue;
+
+        const wx = centerX + dx;
+        const wz = centerZ + dz;
+
+        for (let y = baseY - 2; y <= baseY; y++) {
+          place(wx, y, wz, stone);
+        }
+      }
+    }
+
+    // 2) Ring wall
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const d2 = dx * dx + dz * dz;
+        const edge = d2 >= (radius - 1) * (radius - 1) && d2 <= radius * radius;
+        if (!edge) continue;
+
+        const wx = centerX + dx;
+        const wz = centerZ + dz;
+
+        for (let y = baseY + 1; y <= baseY + wallH; y++) place(wx, y, wz, stone);
+      }
+    }
+
+    // 3) Central "horn" marker (pillar + cap)
+    for (let y = baseY + 1; y <= baseY + 7; y++) place(centerX, y, centerZ, wood);
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) place(centerX + dx, baseY + 8, centerZ + dz, leaves);
+
+    // 4) Entrances (carve gaps)
+    const carve = (wx: number, wy: number, wz: number) => place(wx, wy, wz, this.AIR_ID);
+    for (let y = baseY + 1; y <= baseY + 2; y++) {
+      carve(centerX + radius, y, centerZ);
+      carve(centerX - radius, y, centerZ);
+      carve(centerX, y, centerZ + radius);
+      carve(centerX, y, centerZ - radius);
+    }
+  }
+
+  // =========================
+  // Chunk generation (biomes + ores + bedrock + trees + POIs + Cornucopia)
   // =========================
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
@@ -1374,6 +1503,9 @@ export class MyRoom extends Room {
 
     // Stamp POIs LAST so they are seam-safe and deterministic across chunk order.
     this.stampPoiIntoChunk(vox, cx, cy, cz);
+
+    // Stamp Cornucopia even later (always present)
+    this.stampCornucopiaIntoChunk(vox, cx, cy, cz);
 
     console.log("[WORLD] generated chunk:", { cx, cy, cz, seed: this.worldSeed });
     return vox;
@@ -1633,6 +1765,12 @@ export class MyRoom extends Room {
       const dy = st.y + 0.5 - pl.y;
       const dz = st.z + 0.5 - pl.z;
       if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) { this.cancelMiningFor(client, "too_far"); continue; }
+
+      // Safe zone protection (hub)
+      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(st.x, st.z)) {
+        this.cancelMiningFor(client, "safe_zone");
+        continue;
+      }
 
       const currentId = this.getBlockAt(st.x, st.y, st.z);
       if (currentId === this.AIR_ID) { this.cancelMiningFor(client, "air"); continue; }
