@@ -120,6 +120,23 @@ overlay.style.userSelect = "none";
 overlay.style.zIndex = "100";
 document.body.appendChild(overlay);
 
+
+const coordsHUD = document.createElement("div");
+coordsHUD.style.position = "fixed";
+coordsHUD.style.top = "12px";
+coordsHUD.style.right = "12px";
+coordsHUD.style.background = "rgba(0,0,0,0.6)";
+coordsHUD.style.color = "white";
+coordsHUD.style.padding = "8px 10px";
+coordsHUD.style.borderRadius = "6px";
+coordsHUD.style.fontFamily = "monospace";
+coordsHUD.style.fontSize = "14px";
+coordsHUD.style.pointerEvents = "none";
+coordsHUD.style.userSelect = "none";
+coordsHUD.style.zIndex = "150"; // above overlay
+coordsHUD.textContent = "XYZ: ...";
+document.body.appendChild(coordsHUD);
+
 /* ===============================
    3.1 Inventory UI
 ================================ */
@@ -815,6 +832,31 @@ function getSafeZoneLine(): string {
   const dist = Math.sqrt(dx * dx + dz * dz);
   const inside = dist <= safeZone.r;
   return `Safe Zone: r=${safeZone.r} dist=${dist.toFixed(1)} ${inside ? "(INSIDE)" : ""}`;
+}
+
+
+function updateCoordsHUD() {
+  const p = noa.ents.getPosition(noa.playerEntity) as
+    | [number, number, number]
+    | null;
+
+  if (!p) {
+    coordsHUD.textContent = "XYZ: ?";
+    return;
+  }
+
+  const x = Math.floor(p[0]);
+  const y = Math.floor(p[1]);
+  const z = Math.floor(p[2]);
+
+  const chunkSize = 32;
+  const cx = Math.floor(x / chunkSize);
+  const cz = Math.floor(z / chunkSize);
+
+  coordsHUD.innerHTML = `
+    <div><strong>XYZ:</strong> ${x} / ${y} / ${z}</div>
+    <div style="opacity:.85"><strong>Chunk:</strong> ${cx}, ${cz}</div>
+  `;
 }
 
 function updateOverlay(extraLine = "") {
@@ -2952,5 +2994,5 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  if (tickCount % 10 === 0) updateOverlay();
+  if (tickCount % 10 === 0) updateOverlay(); updateCoordsHUD();
 });
