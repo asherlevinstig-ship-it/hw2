@@ -249,8 +249,8 @@ export class MyRoom extends Room {
 
   // Anchor placement in world coords (min corner of schematic)
   // (You can later make this deterministic via region grid like POIs.)
-  private readonly TOWER_X = 200;
-  private readonly TOWER_Z = 200;
+  private readonly TOWER_X = -13;
+  private readonly TOWER_Z = -13;
 
   private schemLoaded = false;
   private towerSchem: any | null = null;
