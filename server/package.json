@@ -38,6 +38,7 @@
     "colyseus": "^0.17.6",
     "express": "^4.18.2",
     "prismarine-nbt": "^2.8.0",
-    "prismarine-schematic": "^1.2.3"
+    "prismarine-schematic": "^1.2.3",
+    "vec3": "^0.1.10"
   }
 }

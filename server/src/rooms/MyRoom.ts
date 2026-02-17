@@ -12,6 +12,7 @@ import * as path from "node:path";
 
 // NEW: schematic loader (server-side)
 import { Schematic } from "prismarine-schematic";
+import { Vec3 } from "vec3";
 
 // Shared items (single source of truth) - NodeNext requires ".js"
 import {
@@ -21,7 +22,7 @@ import {
   type ItemStack as SharedItemStack,
 } from "../shared/items.js";
 
-type Vec3 = { x: number; y: number; z: number };
+type V3 = { x: number; y: number; z: number };
 
 type WorldDataNeededMsg = {
   id: string;
@@ -249,8 +250,8 @@ export class MyRoom extends Room {
 
   // Anchor placement in world coords (min corner of schematic)
   // (You can later make this deterministic via region grid like POIs.)
-  private readonly TOWER_X = -13;
-  private readonly TOWER_Z = -13;
+  private readonly TOWER_X = 200;
+  private readonly TOWER_Z = 200;
 
   private schemLoaded = false;
   private towerSchem: any | null = null;
@@ -396,7 +397,7 @@ export class MyRoom extends Room {
       if (now - pl.lastMoveAt < this.minMoveIntervalMs) return;
 
       if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<Vec3> & { yaw?: unknown };
+      const maybe = payload as Partial<V3> & { yaw?: unknown };
       if (
         !isFiniteNumber(maybe.x) ||
         !isFiniteNumber(maybe.y) ||
@@ -553,7 +554,7 @@ export class MyRoom extends Room {
     // legacy instant mine
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<Vec3>;
+      const maybe = payload as Partial<V3>;
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z))
         return;
 
@@ -1398,7 +1399,9 @@ export class MyRoom extends Room {
           const sy = wy - minY;
           const sz = wz - minZ;
 
-          const block = (this.towerSchem as any).getBlock({ x: sx, y: sy, z: sz });
+          // prismarine-schematic expects a Vec3 (from the "vec3" package). Passing a plain
+          // object causes runtime errors like "pos.minus is not a function".
+          const block = (this.towerSchem as any).getBlock(new Vec3(sx, sy, sz));
           const name = block?.name ?? "minecraft:air";
           const id = this.schemBlockToId(name);
 

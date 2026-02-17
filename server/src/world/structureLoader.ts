@@ -1,11 +1,12 @@
 import fs from "fs";
 import { Schematic } from "prismarine-schematic";
+import { Vec3 } from "vec3";
 
 export type LoadedStructure = {
   width: number;
   height: number;
   length: number;
-  blocks: number[][][]; // your internal numeric IDs
+  blocks: number[][][];
 };
 
 export async function loadSchematic(
@@ -26,7 +27,7 @@ export async function loadSchematic(
     for (let y = 0; y < height; y++) {
       blocks[x][y] = [];
       for (let z = 0; z < length; z++) {
-        const block = schem.getBlock({ x, y, z });
+        const block = schem.getBlock(new Vec3(x, y, z));
         const name = block?.name ?? "minecraft:air";
         blocks[x][y][z] = blockMap[name] ?? 0;
       }
