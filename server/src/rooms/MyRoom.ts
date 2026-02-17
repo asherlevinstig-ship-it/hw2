@@ -242,17 +242,18 @@ export class MyRoom extends Room {
   // =========================
   // NEW: Schematic structures (.schem)
   // =========================
-  // Put your schematic at: server/world/structures/mansion.schem (recommended)
-  private readonly structuresDir = path.join(process.cwd(), "world", "structures");
-  private readonly mansionSchemPath = path.join(this.structuresDir, "mansion.schem");
+  // Put your schematic at: server/world/structures/tower.schem (recommended)
+  private readonly structuresDirPrimary = path.join(process.cwd(), "world", "structures");
+  private readonly structuresDirFallback = path.join(process.cwd(), "src", "world", "structures");
+  private towerSchemPath = this.resolveTowerSchemPath();
 
   // Anchor placement in world coords (min corner of schematic)
   // (You can later make this deterministic via region grid like POIs.)
-  private readonly MANSION_X = 200;
-  private readonly MANSION_Z = 200;
+  private readonly TOWER_X = 200;
+  private readonly TOWER_Z = 200;
 
   private schemLoaded = false;
-  private mansionSchem: Schematic | null = null;
+  private towerSchem: any | null = null;
 
   // =========================
   // World meta / seed
@@ -301,7 +302,7 @@ export class MyRoom extends Room {
     console.log("[WORLD] persistence dirs:", {
       chunks: this.chunksDir,
       inventories: this.invDir,
-      structures: this.structuresDir,
+      structures: this.structuresDirPrimary,
     });
 
     this.worldSeed = this.loadOrCreateWorldSeed(options);
@@ -310,21 +311,21 @@ export class MyRoom extends Room {
     // NEW: load schematic (non-blocking)
     void (async () => {
       try {
-        if (!fs.existsSync(this.structuresDir)) fs.mkdirSync(this.structuresDir, { recursive: true });
-        if (!fs.existsSync(this.mansionSchemPath)) {
-          console.warn("[SCHEM] missing:", this.mansionSchemPath);
+        if (!fs.existsSync(this.structuresDirPrimary)) fs.mkdirSync(this.structuresDirPrimary, { recursive: true });
+        if (!fs.existsSync(this.towerSchemPath)) {
+          console.warn("[SCHEM] missing:", this.towerSchemPath);
           this.schemLoaded = false;
-          this.mansionSchem = null;
+          this.towerSchem = null;
           return;
         }
-        const buf = fs.readFileSync(this.mansionSchemPath);
-        this.mansionSchem = await Schematic.read(buf);
+        const buf = fs.readFileSync(this.towerSchemPath);
+        this.towerSchem = await Schematic.read(buf);
         this.schemLoaded = true;
-        console.log("[SCHEM] loaded", { fp: this.mansionSchemPath, size: (this.mansionSchem as any).size });
+        console.log("[SCHEM] loaded", { fp: this.towerSchemPath, size: (this.towerSchem as any).size });
       } catch (e) {
-        console.warn("[SCHEM] failed to load", { fp: this.mansionSchemPath, e });
+        console.warn("[SCHEM] failed to load", { fp: this.towerSchemPath, e });
         this.schemLoaded = false;
-        this.mansionSchem = null;
+        this.towerSchem = null;
       }
     })();
 
@@ -910,8 +911,20 @@ export class MyRoom extends Room {
     if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
     if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
     if (!fs.existsSync(this.invDir)) fs.mkdirSync(this.invDir, { recursive: true });
-    if (!fs.existsSync(this.structuresDir)) fs.mkdirSync(this.structuresDir, { recursive: true });
+    if (!fs.existsSync(this.structuresDirPrimary)) fs.mkdirSync(this.structuresDirPrimary, { recursive: true });
   }
+
+  // =========================
+  // Structures: resolve schematic path (primary world/structures, fallback src/world/structures)
+  // =========================
+  private resolveTowerSchemPath(): string {
+    const p1 = path.join(this.structuresDirPrimary, "tower.schem");
+    if (fs.existsSync(p1)) return p1;
+    const p2 = path.join(this.structuresDirFallback, "tower.schem");
+    if (fs.existsSync(p2)) return p2;
+    return p1; // default (will log error on load)
+  }
+
 
   // =========================
   // Persistence: world seed
@@ -1322,8 +1335,8 @@ export class MyRoom extends Room {
     }
   }
 
-  private stampMansionIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
-    if (!this.schemLoaded || !this.mansionSchem) return;
+  private stampTowerIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+    if (!this.schemLoaded || !this.towerSchem) return;
 
     const CS = this.chunkSize;
 
@@ -1335,17 +1348,17 @@ export class MyRoom extends Room {
     const chunkMaxY = chunkMinY + CS - 1;
     const chunkMaxZ = chunkMinZ + CS - 1;
 
-    const schem = this.mansionSchem as any;
+    const schem = this.towerSchem as any;
     const w = schem.size.x | 0;
     const h = schem.size.y | 0;
     const d = schem.size.z | 0;
 
-    // anchor at surface at the mansion XZ
-    const baseY = this.heightAt(this.MANSION_X, this.MANSION_Z) + 1;
+    // anchor at surface at the tower XZ
+    const baseY = this.heightAt(this.TOWER_X, this.TOWER_Z) + 1;
 
-    const minX = this.MANSION_X;
+    const minX = this.TOWER_X;
     const minY = baseY;
-    const minZ = this.MANSION_Z;
+    const minZ = this.TOWER_Z;
 
     const maxX = minX + w - 1;
     const maxY = minY + h - 1;
@@ -1385,7 +1398,7 @@ export class MyRoom extends Room {
           const sy = wy - minY;
           const sz = wz - minZ;
 
-          const block = (this.mansionSchem as any).getBlock({ x: sx, y: sy, z: sz });
+          const block = (this.towerSchem as any).getBlock({ x: sx, y: sy, z: sz });
           const name = block?.name ?? "minecraft:air";
           const id = this.schemBlockToId(name);
 
@@ -1956,8 +1969,8 @@ export class MyRoom extends Room {
     // Stamp POIs (seam-safe, deterministic)
     this.stampPoiIntoChunk(vox, cx, cy, cz);
 
-    // NEW: Stamp mansion schematic (seam-safe, deterministic by fixed anchor)
-    this.stampMansionIntoChunk(vox, cx, cy, cz);
+    // NEW: Stamp tower schematic (seam-safe, deterministic by fixed anchor)
+    this.stampTowerIntoChunk(vox, cx, cy, cz);
 
     // Stamp Town of Beginnings LAST so it overrides terrain/trees/POIs/structures near center
     this.stampTownIntoChunk(vox, cx, cy, cz);
