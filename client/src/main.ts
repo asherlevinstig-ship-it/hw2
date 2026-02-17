@@ -156,7 +156,8 @@ invHeader.appendChild(invTitle);
 const invHint = document.createElement("div");
 invHint.style.opacity = "0.85";
 invHint.style.fontSize = "12px";
-invHint.textContent = "LMB: pick/place/stack | RMB: half/place-one | Shift+LMB: quick move";
+invHint.textContent =
+  "LMB: pick/place/stack | RMB: half/place-one | Shift+LMB: quick move";
 invHeader.appendChild(invHint);
 
 const invMain = document.createElement("div");
@@ -302,7 +303,9 @@ function requestPointerLock() {
   try {
     const scene = (noa as any).rendering?.getScene?.();
     const canvas =
-      scene?.getEngine?.()?.getRenderingCanvas?.() ?? (noa as any).container ?? appEl;
+      scene?.getEngine?.()?.getRenderingCanvas?.() ??
+      (noa as any).container ??
+      appEl;
     if (canvas?.requestPointerLock) canvas.requestPointerLock();
   } catch {
     if ((appEl as any).requestPointerLock) (appEl as any).requestPointerLock();
@@ -334,9 +337,16 @@ const IRON_ORE_ID = 8;
 const GOLD_ORE_ID = 9;
 const DIAMOND_ORE_ID = 10;
 
+// ✅ Biome blocks (MUST match server) (NEW)
+const SAND_ID = 11;
+const SNOW_ID = 12;
+
 // Vite-safe asset URL: create client/src/assets/terrain_atlas.png
 // The atlas must be width=16, height=16*N tiles stacked top->bottom.
-const TERRAIN_ATLAS_URL = new URL("./assets/terrain_atlas.png", import.meta.url).href;
+const TERRAIN_ATLAS_URL = new URL(
+  "./assets/terrain_atlas.png",
+  import.meta.url
+).href;
 
 // Atlas indices (tile order top->bottom in your PNG)
 const ATLAS = {
@@ -351,10 +361,14 @@ const ATLAS = {
   IRON_ORE: 8,
   GOLD_ORE: 9,
   DIAMOND_ORE: 10,
+
+  // ✅ Biome tiles (NEW) - ensure your PNG includes these tiles
+  SAND: 11,
+  SNOW: 12,
 } as const;
 
 // Number of tiles in the vertical strip
-const ATLAS_TILE_COUNT = 11;
+const ATLAS_TILE_COUNT = 13;
 
 /**
  * ✅ noa-engine v0.33+ API:
@@ -368,25 +382,78 @@ function registerAtlasMaterial(
   name: string,
   opts: { textureURL: string; atlasIndex: number; texHasAlpha?: boolean }
 ) {
-  console.log("[ATLAS] creating material", name, "index", opts.atlasIndex, "url", opts.textureURL);
+  console.log(
+    "[ATLAS] creating material",
+    name,
+    "index",
+    opts.atlasIndex,
+    "url",
+    opts.textureURL
+  );
   noa.registry.registerMaterial(name, opts as any);
 }
 
-registerAtlasMaterial("grass_top", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
-registerAtlasMaterial("grass_side", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
-registerAtlasMaterial("dirt", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
-registerAtlasMaterial("stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
-registerAtlasMaterial("wood", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
-registerAtlasMaterial("leaves", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LEAVES, texHasAlpha: true });
+registerAtlasMaterial("grass_top", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GRASS_TOP,
+});
+registerAtlasMaterial("grass_side", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GRASS_SIDE,
+});
+registerAtlasMaterial("dirt", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.DIRT,
+});
+registerAtlasMaterial("stone", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.STONE,
+});
+registerAtlasMaterial("wood", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.WOOD,
+});
+registerAtlasMaterial("leaves", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.LEAVES,
+  texHasAlpha: true,
+});
 
-registerAtlasMaterial("bedrock", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
-registerAtlasMaterial("coal_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
-registerAtlasMaterial("iron_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
-registerAtlasMaterial("gold_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
-registerAtlasMaterial("diamond_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIAMOND_ORE });
+registerAtlasMaterial("bedrock", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.BEDROCK,
+});
+registerAtlasMaterial("coal_ore", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.COAL_ORE,
+});
+registerAtlasMaterial("iron_ore", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.IRON_ORE,
+});
+registerAtlasMaterial("gold_ore", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.GOLD_ORE,
+});
+registerAtlasMaterial("diamond_ore", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.DIAMOND_ORE,
+});
+
+// ✅ Biome mats (NEW)
+registerAtlasMaterial("sand", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.SAND,
+});
+registerAtlasMaterial("snow", {
+  textureURL: TERRAIN_ATLAS_URL,
+  atlasIndex: ATLAS.SNOW,
+});
 
 // Blocks
-noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
+noa.registry.registerBlock(GRASS_ID, {
+  material: ["grass_top", "dirt", "grass_side"],
+});
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
@@ -397,6 +464,10 @@ noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
 noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
 noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
 noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
+
+// ✅ Biome blocks registered (NEW)
+noa.registry.registerBlock(SAND_ID, { material: "sand" });
+noa.registry.registerBlock(SNOW_ID, { material: "snow" });
 
 /* ===============================
    6. Inventory State
@@ -495,7 +566,11 @@ function stackLabel(s: ItemStack): string {
   return `${itemName(s.id)}\n×${s.count}`;
 }
 
-function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
+function renderSlot(
+  el: HTMLDivElement,
+  stack: ItemStack,
+  isSelected = false
+) {
   el.innerHTML = "";
   el.style.width = "64px";
   el.style.height = "64px";
@@ -550,10 +625,13 @@ function renderInventoryUI() {
   // Cursor
   renderSlot(cursorSlotEl, invState.cursor, false);
   cursorNameEl.textContent =
-    invState.cursor.id > 0 ? stackLabel(invState.cursor).split("\n")[0] : "(empty)";
+    invState.cursor.id > 0
+      ? stackLabel(invState.cursor).split("\n")[0]
+      : "(empty)";
 
   // Hotbar
-  for (let i = 0; i < HOTBAR_SLOTS; i++) renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
+  for (let i = 0; i < HOTBAR_SLOTS; i++)
+    renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
 
   // Backpack
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
@@ -563,7 +641,8 @@ function renderInventoryUI() {
   // Client hint only: enable/disable craft buttons
   const countItemSlotsOnly = (id: number): number => {
     let n = 0;
-    for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
+    for (const s of invState.slots)
+      if (s.id === id && s.count > 0) n += s.count;
     return n;
   };
 
@@ -656,7 +735,9 @@ function initUI() {
   try {
     // Build craft UI from RECIPES (single source of truth)
     for (const r of RECIPES) {
-      const inStr = r.inputs.map((it) => `${itemName(it.id)}×${it.count}`).join(" + ");
+      const inStr = r.inputs
+        .map((it) => `${itemName(it.id)}×${it.count}`)
+        .join(" + ");
       const outStr = `${itemName(r.output.id)}×${r.output.count}`;
       addCraftButton(`${outStr}  ←  ${inStr}   [RMB=max]`, r.id);
     }
@@ -678,7 +759,11 @@ function initUI() {
 ================================ */
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
-  const me = noa.ents.getPosition(noa.playerEntity) as [number, number, number];
+  const me = noa.ents.getPosition(noa.playerEntity) as [
+    number,
+    number,
+    number
+  ];
   if (!me) return null;
 
   let best: number | null = null;
@@ -717,10 +802,12 @@ function updateOverlay(extraLine = "") {
 
   const mineLine =
     miningProgress && miningProgress.progress > 0
-      ? `Mining: ${(miningProgress.progress * 100).toFixed(0)}% (stage ${miningProgress.stage})`
+      ? `Mining: ${(miningProgress.progress * 100).toFixed(0)}% (stage ${
+          miningProgress.stage
+        })`
       : miningActive
-        ? `Mining: active (awaiting progress...)`
-        : "Mining: -";
+      ? `Mining: active (awaiting progress...)`
+      : "Mining: -";
 
   const psLine = minePS
     ? `PS: rate=${minePS.emitRate} alive=${minePS.isStarted() ? "Y" : "N"}`
@@ -738,7 +825,9 @@ function updateOverlay(extraLine = "") {
     <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
     <strong>${mineLine}</strong><br>
     <span style="opacity:.9">${psLine}</span><br>
-    <strong>DEBUG_PARTICLES_ALWAYS:</strong> ${DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"}<br>
+    <strong>DEBUG_PARTICLES_ALWAYS:</strong> ${
+      DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"
+    }<br>
     -------------------------<br>
     [Click/Hold LMB] Mine  |  [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
@@ -787,7 +876,9 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "p" || e.key === "P") {
     remotePlayersEnabled = !remotePlayersEnabled;
-    updateOverlay(remotePlayersEnabled ? "Remote Players: ON" : "Remote Players: OFF");
+    updateOverlay(
+      remotePlayersEnabled ? "Remote Players: ON" : "Remote Players: OFF"
+    );
     return;
   }
 
@@ -805,7 +896,9 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "n" || e.key === "N") {
     vmTuning = !vmTuning;
-    updateOverlay(vmTuning ? "VM Tuning: ON (tuning keys captured)" : "VM Tuning: OFF");
+    updateOverlay(
+      vmTuning ? "VM Tuning: ON (tuning keys captured)" : "VM Tuning: OFF"
+    );
     return;
   }
 
@@ -817,7 +910,11 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "k" || e.key === "K") {
     DEBUG_PARTICLES_ALWAYS = !DEBUG_PARTICLES_ALWAYS;
-    updateOverlay(DEBUG_PARTICLES_ALWAYS ? "DEBUG particles forced ON" : "DEBUG particles forced OFF");
+    updateOverlay(
+      DEBUG_PARTICLES_ALWAYS
+        ? "DEBUG particles forced ON"
+        : "DEBUG particles forced OFF"
+    );
     return;
   }
 });
@@ -835,7 +932,12 @@ window.addEventListener(
       e.key === "ArrowDown";
 
     const isRotKey =
-      e.key === "7" || e.key === "8" || e.key === "9" || e.key === "0" || e.key === "-" || e.key === "=";
+      e.key === "7" ||
+      e.key === "8" ||
+      e.key === "9" ||
+      e.key === "0" ||
+      e.key === "-" ||
+      e.key === "=";
 
     if (!isArrow && !isRotKey) return;
 
@@ -861,9 +963,11 @@ window.addEventListener(
     if (e.key === "=") vmRotZ += rStep;
 
     updateOverlay(
-      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(3)} | rot=(${vmRotX.toFixed(
+      `VM: xMul=${vmBaseXMul.toFixed(3)} y=${vmBaseY.toFixed(
+        3
+      )} | rot=(${vmRotX.toFixed(2)},${vmRotY.toFixed(2)},${vmRotZ.toFixed(
         2
-      )},${vmRotY.toFixed(2)},${vmRotZ.toFixed(2)}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
+      )}) | mirror=${vmMirrorX ? "ON" : "OFF"}`
     );
   },
   { capture: true }
@@ -872,13 +976,28 @@ window.addEventListener(
 /* ===============================
    7. World Streaming (Path B)
 ================================ */
-type PendingChunk = { data: any; chunkSize: number; x: number; y: number; z: number };
+type PendingChunk = {
+  data: any;
+  chunkSize: number;
+  x: number;
+  y: number;
+  z: number;
+};
 
 const pendingChunks = new Map<string, PendingChunk>();
-const queuedRequests = new Map<string, { id: string; chunkSize: number; x: number; y: number; z: number }>();
+const queuedRequests = new Map<
+  string,
+  { id: string; chunkSize: number; x: number; y: number; z: number }
+>();
 const worldAny = noa.world as any;
 
-function sendChunkRequest(req: { id: string; chunkSize: number; x: number; y: number; z: number }) {
+function sendChunkRequest(req: {
+  id: string;
+  chunkSize: number;
+  x: number;
+  y: number;
+  z: number;
+}) {
   if (!room) {
     queuedRequests.set(req.id, req);
     return;
@@ -892,7 +1011,11 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-type TypedArrayLike = { buffer: ArrayBufferLike; byteOffset: number; byteLength: number };
+type TypedArrayLike = {
+  buffer: ArrayBufferLike;
+  byteOffset: number;
+  byteLength: number;
+};
 function isTypedArrayLike(v: unknown): v is TypedArrayLike {
   return (
     typeof v === "object" &&
@@ -1126,7 +1249,10 @@ function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
   if (!r) return null;
   const s =
-    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
+    (typeof r.getScene === "function" ? r.getScene() : null) ??
+    r._scene ??
+    r.scene ??
+    null;
   return (s as BABYLON.Scene) ?? null;
 }
 
@@ -1157,12 +1283,8 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
   if (crackSceneUid == null) crackSceneUid = uid ?? null;
 
   if (crackSceneUid !== (uid ?? null)) {
-    try {
-      crackMesh?.dispose();
-    } catch {}
-    try {
-      crackMat?.dispose();
-    } catch {}
+    try { crackMesh?.dispose(); } catch {}
+    try { crackMat?.dispose(); } catch {}
     crackMesh = null;
     crackMat = null;
     crackSceneUid = uid ?? null;
@@ -1227,9 +1349,7 @@ function resetDropAtlasMatsIfSceneChanged(scene: BABYLON.Scene) {
   const suid = uid ?? null;
   if (dropAtlasMatsSceneUid !== suid) {
     for (const m of dropAtlasMats.values()) {
-      try {
-        m.dispose();
-      } catch {}
+      try { m.dispose(); } catch {}
     }
     dropAtlasMats.clear();
     dropAtlasMatsSceneUid = suid;
@@ -1271,27 +1391,29 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
 }
 
 function itemIdToAtlasIndex(itemId: number): number {
-  // Blocks
+  // Blocks (shared item ids)
   if (itemId === Items.GRASS) return ATLAS.GRASS_SIDE;
   if (itemId === Items.DIRT) return ATLAS.DIRT;
   if (itemId === Items.STONE) return ATLAS.STONE;
   if (itemId === Items.WOOD_LOG) return ATLAS.WOOD;
   if (itemId === Items.LEAVES) return ATLAS.LEAVES;
 
-  // Ores/items
+  // Minerals/items
   if (itemId === Items.COAL) return ATLAS.COAL_ORE;
   if (itemId === Items.RAW_IRON) return ATLAS.IRON_ORE;
   if (itemId === Items.RAW_GOLD) return ATLAS.GOLD_ORE;
   if (itemId === Items.DIAMOND) return ATLAS.DIAMOND_ORE;
+
+  // Optional biome items if you add them later
+  if ((Items as any).SAND && itemId === (Items as any).SAND) return ATLAS.SAND;
+  if ((Items as any).SNOW && itemId === (Items as any).SNOW) return ATLAS.SNOW;
 
   return ATLAS.STONE;
 }
 
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
-    try {
-      m.dispose();
-    } catch {}
+    try { m.dispose(); } catch {}
   }
   dropMeshes.clear();
 }
@@ -1326,9 +1448,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const id of Array.from(dropMeshes.keys())) {
     if (!drops.has(id)) {
       const m = dropMeshes.get(id);
-      try {
-        m?.dispose();
-      } catch {}
+      try { m?.dispose(); } catch {}
       dropMeshes.delete(id);
     }
   }
@@ -1399,12 +1519,8 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   const suid = uid ?? null;
 
   if (minePSSceneUid !== suid) {
-    try {
-      minePS?.dispose();
-    } catch {}
-    try {
-      minePSTex?.dispose();
-    } catch {}
+    try { minePS?.dispose(); } catch {}
+    try { minePSTex?.dispose(); } catch {}
     minePS = null;
     minePSTex = null;
     minePSSceneUid = suid;
@@ -1697,12 +1813,12 @@ function readNoaPitch(): number {
     typeof p1 === "number" && Number.isFinite(p1)
       ? p1
       : typeof p2 === "number" && Number.isFinite(p2)
-        ? p2
-        : typeof p3 === "number" && Number.isFinite(p3)
-          ? p3
-          : typeof p4 === "number" && Number.isFinite(p4)
-            ? p4
-            : 0;
+      ? p2
+      : typeof p3 === "number" && Number.isFinite(p3)
+      ? p3
+      : typeof p4 === "number" && Number.isFinite(p4)
+      ? p4
+      : 0;
   return v;
 }
 
@@ -1772,7 +1888,11 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x =
+    vmRotX +
+    pitchInfluence * vmPitchMul -
+    punch01 * vmPunchRotMul +
+    lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
@@ -1804,7 +1924,9 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpScene = new BABYLON.Scene(engine);
   rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
 
-  console.log("[RP] ensureRpScene", { useRightHandedSystem: rpScene.useRightHandedSystem });
+  console.log("[RP] ensureRpScene", {
+    useRightHandedSystem: rpScene.useRightHandedSystem,
+  });
 
   rpScene.autoClear = false;
   rpScene.autoClearDepthAndStencil = false;
@@ -1860,37 +1982,61 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const mat = makeRemoteMaterial(id, rpScene);
   remoteMats.set(id, mat);
 
-  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
+  const body = BABYLON.MeshBuilder.CreateBox(
+    `remoteBody:${id}`,
+    { width: BODY_W, height: BODY_H, depth: BODY_D },
+    rpScene
+  );
   body.parent = root;
   body.position.set(0, bodyCenterY, 0);
   body.material = mat;
   body.isPickable = false;
 
-  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
+  const head = BABYLON.MeshBuilder.CreateBox(
+    `remoteHead:${id}`,
+    { width: HEAD, height: HEAD, depth: HEAD },
+    rpScene
+  );
   head.parent = root;
   head.position.set(0, headCenterY, 0);
   head.material = mat;
   head.isPickable = false;
 
-  const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
+  const armL = BABYLON.MeshBuilder.CreateBox(
+    `remoteArmL:${id}`,
+    { width: ARM_W, height: ARM_H, depth: ARM_D },
+    rpScene
+  );
   armL.parent = root;
   armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armL.material = mat;
   armL.isPickable = false;
 
-  const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
+  const armR = BABYLON.MeshBuilder.CreateBox(
+    `remoteArmR:${id}`,
+    { width: ARM_W, height: ARM_H, depth: ARM_D },
+    rpScene
+  );
   armR.parent = root;
   armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
   armR.material = mat;
   armR.isPickable = false;
 
-  const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
+  const legL = BABYLON.MeshBuilder.CreateBox(
+    `remoteLegL:${id}`,
+    { width: LEG_W, height: LEG_H, depth: LEG_D },
+    rpScene
+  );
   legL.parent = root;
   legL.position.set(-0.16, LEG_H * 0.5, 0);
   legL.material = mat;
   legL.isPickable = false;
 
-  const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
+  const legR = BABYLON.MeshBuilder.CreateBox(
+    `remoteLegR:${id}`,
+    { width: LEG_W, height: LEG_H, depth: LEG_D },
+    rpScene
+  );
   legR.parent = root;
   legR.position.set(0.16, LEG_H * 0.5, 0);
   legR.material = mat;
@@ -1918,16 +2064,12 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
 function removeRemoteMesh(id: string) {
   const root = remoteMeshes.get(id);
   if (root) {
-    try {
-      root.dispose();
-    } catch {}
+    try { root.dispose(); } catch {}
     remoteMeshes.delete(id);
   }
   const mat = remoteMats.get(id);
   if (mat) {
-    try {
-      mat.dispose();
-    } catch {}
+    try { mat.dispose(); } catch {}
     remoteMats.delete(id);
   }
 
@@ -2004,8 +2146,8 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
       typeof worldCam.getAbsolutePosition === "function"
         ? worldCam.getAbsolutePosition()
         : worldCam.globalPosition instanceof BABYLON.Vector3
-          ? worldCam.globalPosition
-          : null;
+        ? worldCam.globalPosition
+        : null;
 
     console.log("[RP] cam+offset", {
       handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
@@ -2135,7 +2277,12 @@ async function connect() {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
 
-        if (miningProgress && msg.x === miningProgress.x && msg.y === miningProgress.y && msg.z === miningProgress.z) {
+        if (
+          miningProgress &&
+          msg.x === miningProgress.x &&
+          msg.y === miningProgress.y &&
+          msg.z === miningProgress.z
+        ) {
           miningProgress = null;
         }
       }
@@ -2241,9 +2388,7 @@ async function connect() {
       drops.delete(id);
       const mesh = dropMeshes.get(id);
       if (mesh) {
-        try {
-          mesh.dispose();
-        } catch {}
+        try { mesh.dispose(); } catch {}
         dropMeshes.delete(id);
       }
       updateOverlay();
@@ -2375,9 +2520,7 @@ async function connect() {
       const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      try {
-        noa.ents.setPosition(noa.playerEntity, [x, y, z]);
-      } catch {}
+      try { noa.ents.setPosition(noa.playerEntity, [x, y, z]); } catch {}
 
       canSendMoves = true;
       console.log("[NET] youJoined spawn", { x, y, z });

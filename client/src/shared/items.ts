@@ -3,6 +3,10 @@
 //
 // Shared items/defs/recipes (single source of truth for server).
 // Client can mirror these IDs/defs (or you can import them if you share across packages).
+//
+// Updated for biome work:
+// ✅ Add SAND + SNOW items (placeable blocks)
+// ✅ Keep durability-safe semantics: tools are maxStack=1 and carry dur
 
 export const Items = {
   // Blocks as items
@@ -11,6 +15,10 @@ export const Items = {
   STONE: 3,
   WOOD_LOG: 4,
   LEAVES: 5,
+
+  // Biome blocks as items (NEW)
+  SAND: 6,
+  SNOW: 7,
 
   // Basic crafted
   PLANK: 10,
@@ -34,9 +42,9 @@ export type ToolKind = "pick";
 
 export type ToolDef = {
   kind: ToolKind;
-  tier: number;          // 1 wood, 2 stone, 3 iron...
+  tier: number; // 1 wood, 2 stone, 3 iron...
   maxDurability: number; // durability points
-  speedMul: number;      // lower break time multiplier
+  speedMul: number; // lower break time multiplier
 };
 
 export type ItemDef = {
@@ -56,6 +64,10 @@ const STONE_ID = 3;
 const WOOD_ID = 4;
 const LEAVES_ID = 5;
 
+// Biome surface blocks (MUST match server+client block IDs)
+const SAND_ID = 11;
+const SNOW_ID = 12;
+
 export const ITEM_DEFS: Record<number, ItemDef> = {
   // Blocks
   1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
@@ -63,6 +75,10 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
   4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
   5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
+
+  // Biome blocks (NEW)
+  6: { id: 6, name: "Sand", maxStack: 64, placeBlockId: SAND_ID },
+  7: { id: 7, name: "Snow", maxStack: 64, placeBlockId: SNOW_ID },
 
   // Crafted
   10: { id: 10, name: "Planks", maxStack: 64 },
