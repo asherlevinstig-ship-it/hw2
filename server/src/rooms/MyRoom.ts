@@ -1,8 +1,9 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
 // Includes: biomes + biome terrain + biome trees + ores + bedrock + inventory + drops + crafting + hold-to-mine
-// NEW: deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
-// NEW: Cornucopia (central hub) + Safe Zone radius (server authoritative protection + client sync)
+// Deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
+// NEW: Town of Beginnings (central safe zone) stamped per-chunk (deterministic, seam-safe)
+// NOTE: No match phase yet (always-on safe zone rules)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -214,18 +215,25 @@ export class MyRoom extends Room {
   private readonly BIOME_SNOW = 3;
 
   // POIs (region grid)
-  private readonly REGION_SIZE = 128; // or 96/128 etc
-  private readonly POI_CHANCE = 0.13; // tune
-  private readonly POI_EDGE_PAD = 16; // avoid edges inside region
+  private readonly REGION_SIZE = 128;
+  private readonly POI_CHANCE = 0.13;
+  private readonly POI_EDGE_PAD = 16;
 
-  // Cornucopia (central hub) + Safe Zone
-  private readonly CORNUCOPIA_X = 0;
-  private readonly CORNUCOPIA_Z = 0;
+  // =========================
+  // Town of Beginnings (safe zone)
+  // =========================
+  private readonly TOWN_CENTER_X = 0;
+  private readonly TOWN_CENTER_Z = 0;
 
-  private readonly SAFE_ZONE_RADIUS = 38; // blocks (tune)
-  private readonly SAFE_ZONE_RADIUS_SQ = this.SAFE_ZONE_RADIUS * this.SAFE_ZONE_RADIUS;
+  // Safe zone radius (horizontal distance)
+  // Pick a number that matches the "town footprint + breathing room".
+  private readonly SAFE_RADIUS = 28;
 
-  private readonly SAFE_ZONE_PROTECT_BLOCKS = true;
+  // Town “blueprint” dimensions: used to stamp building pieces
+  private readonly TOWN_PLAZA_RADIUS = 10;
+  private readonly TOWN_RING_RADIUS = 24; // decorative ring/wall radius
+  private readonly TOWN_PATH_HALF_W = 2; // path half-width (total ~5)
+  private readonly TOWN_CLEAR_HEIGHT = 18; // clear above ground inside town (removes trees)
 
   // =========================
   // World meta / seed
@@ -271,7 +279,10 @@ export class MyRoom extends Room {
     this.autoDispose = false;
 
     this.ensureDirs();
-    console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: this.invDir });
+    console.log("[WORLD] persistence dirs:", {
+      chunks: this.chunksDir,
+      inventories: this.invDir,
+    });
 
     this.worldSeed = this.loadOrCreateWorldSeed(options);
     console.log("[WORLD] worldSeed =", this.worldSeed);
@@ -290,7 +301,10 @@ export class MyRoom extends Room {
       const now = Date.now();
       if (now - this.lastSnapshotLogAt > 3000) {
         this.lastSnapshotLogAt = now;
-        console.log("[SNAPSHOT]", { count: all.length, ids: all.map((p) => p.id).slice(0, 5) });
+        console.log("[SNAPSHOT]", {
+          count: all.length,
+          ids: all.map((p) => p.id).slice(0, 5),
+        });
       }
     }, this.snapshotIntervalMs);
 
@@ -307,7 +321,8 @@ export class MyRoom extends Room {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<WorldDataNeededMsg>;
       if (typeof p.id !== "string" || p.id.length < 1) return;
-      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
+      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z))
+        return;
 
       const rx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
       const ry = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
@@ -340,7 +355,12 @@ export class MyRoom extends Room {
 
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3> & { yaw?: unknown };
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
+      if (
+        !isFiniteNumber(maybe.x) ||
+        !isFiniteNumber(maybe.y) ||
+        !isFiniteNumber(maybe.z)
+      )
+        return;
 
       const x = clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord);
       const y = clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord);
@@ -354,7 +374,7 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 9) return;
+      if (dx * dx + dy * dy + dz * dz > maxDist * maxDist * 9) return;
 
       pl.x = x;
       pl.y = y;
@@ -362,11 +382,21 @@ export class MyRoom extends Room {
       pl.yaw = yaw;
       pl.lastMoveAt = now;
 
-      this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
+      this.broadcast(
+        "playerTransformOther",
+        { id: client.sessionId, x, y, z, yaw },
+        { except: client }
+      );
 
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
-        console.log("[MOVE]", { id: client.sessionId, x: +x.toFixed(2), y: +y.toFixed(2), z: +z.toFixed(2), yaw: +yaw.toFixed(2) });
+        console.log("[MOVE]", {
+          id: client.sessionId,
+          x: +x.toFixed(2),
+          y: +y.toFixed(2),
+          z: +z.toFixed(2),
+          yaw: +yaw.toFixed(2),
+        });
       }
     });
 
@@ -376,12 +406,21 @@ export class MyRoom extends Room {
     this.onMessage("startMine", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<StartMineMsg>;
-      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
+      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z))
+        return;
 
       const x = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
       const y = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
-      const heldSlot = isFiniteNumber((p as any).heldSlot) ? toInt((p as any).heldSlot) : -1;
+      const heldSlot = isFiniteNumber((p as any).heldSlot)
+        ? toInt((p as any).heldSlot)
+        : -1;
+
+      // Safe zone enforcement: NO MINING in Town of Beginnings
+      if (this.isInSafeZoneXZ(x, z)) {
+        this.cancelMiningFor(client, "safe_zone");
+        return;
+      }
 
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
@@ -395,15 +434,15 @@ export class MyRoom extends Room {
         return;
       }
 
-      // Safe zone protection (hub)
-      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) {
-        this.cancelMiningFor(client, "safe_zone");
+      const blockId = this.getBlockAt(x, y, z);
+      if (blockId === this.AIR_ID) {
+        this.cancelMiningFor(client, "air");
         return;
       }
-
-      const blockId = this.getBlockAt(x, y, z);
-      if (blockId === this.AIR_ID) { this.cancelMiningFor(client, "air"); return; }
-      if (blockId === this.BEDROCK_ID) { this.cancelMiningFor(client, "bedrock"); return; }
+      if (blockId === this.BEDROCK_ID) {
+        this.cancelMiningFor(client, "bedrock");
+        return;
+      }
 
       const userId = pl.userId;
       const inv = this.getOrLoadInventory(userId);
@@ -427,7 +466,9 @@ export class MyRoom extends Room {
       const st: MiningState = {
         sessionId: client.sessionId,
         userId,
-        x, y, z,
+        x,
+        y,
+        z,
         heldSlot,
         startedAt: now,
         lastHeartbeatAt: now,
@@ -438,17 +479,32 @@ export class MyRoom extends Room {
       };
 
       this.mining.set(client.sessionId, st);
-      client.send("mineProgress", { x, y, z, progress: 0, stage: 0 } satisfies MineProgressMsg);
+      client.send(
+        "mineProgress",
+        { x, y, z, progress: 0, stage: 0 } satisfies MineProgressMsg
+      );
 
       const picked = this.choosePickStack(inv, heldSlot);
       console.log("[MINE start]", {
-        by: client.sessionId, userId, x, y, z, blockId, breakTimeMs, heldSlot,
-        tool: picked ? { id: (picked.stack as any).id, tier: picked.tool.tier, slot: picked.slotIndex } : null,
+        by: client.sessionId,
+        userId,
+        x,
+        y,
+        z,
+        blockId,
+        breakTimeMs,
+        heldSlot,
+        tool: picked
+          ? { id: (picked.stack as any).id, tier: picked.tool.tier, slot: picked.slotIndex }
+          : null,
       });
     });
 
     this.onMessage("cancelMine", (client: Client, payload: unknown) => {
-      const reason = typeof (payload as any)?.reason === "string" ? String((payload as any).reason).slice(0, 60) : "client_cancel";
+      const reason =
+        typeof (payload as any)?.reason === "string"
+          ? String((payload as any).reason).slice(0, 60)
+          : "client_cancel";
       this.cancelMiningFor(client, reason);
     });
 
@@ -456,14 +512,15 @@ export class MyRoom extends Room {
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
+      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z))
+        return;
 
       const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
       const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      // Safe zone protection (hub)
-      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) return;
+      // Safe zone enforcement: NO MINING in Town of Beginnings
+      if (this.isInSafeZoneXZ(x, z)) return;
 
       const oldId = this.getBlockAt(x, y, z);
       if (oldId === this.AIR_ID) return;
@@ -489,7 +546,8 @@ export class MyRoom extends Room {
     this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<PlaceBlockMsg>;
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
+      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z))
+        return;
       if (!isFiniteNumber(maybe.id)) return;
 
       const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
@@ -499,8 +557,8 @@ export class MyRoom extends Room {
 
       if (blockId === this.BEDROCK_ID) return;
 
-      // Safe zone protection (hub)
-      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(x, z)) return;
+      // Safe zone enforcement: NO PLACING in Town of Beginnings
+      if (this.isInSafeZoneXZ(x, z)) return;
 
       const oldId = this.getBlockAt(x, y, z);
       if (oldId !== this.AIR_ID) return;
@@ -520,7 +578,15 @@ export class MyRoom extends Room {
       if (!def || typeof def.placeBlockId !== "number") return;
       if (def.placeBlockId !== blockId) return;
 
-      console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, blockId, fromSlot, itemId: (stack as any).id });
+      console.log("[EDIT placeBlock]", {
+        by: client.sessionId,
+        x,
+        y,
+        z,
+        blockId,
+        fromSlot,
+        itemId: (stack as any).id,
+      });
 
       (stack as any).count -= 1;
       if ((stack as any).count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
@@ -674,22 +740,41 @@ export class MyRoom extends Room {
     const userId = safeUserId(options?.userId);
     console.log("➕ onJoin", { sessionId: client.sessionId, userId });
 
-    // spawn spacing
-    const spacing = 6;
-    let spawnX = 0;
-    let spawnZ = 0;
+    // spawn spacing (inside town)
+    const spacing = 5;
+    let spawnX = this.TOWN_CENTER_X;
+    let spawnZ = this.TOWN_CENTER_Z;
 
     let slot = 0;
     while (true) {
-      const sx = (slot % 4) * spacing;
-      const sz = Math.floor(slot / 4) * spacing;
-      let occupied = false;
+      // spiral-ish grid around center
+      const sx = this.TOWN_CENTER_X + (slot % 6) * spacing - 12;
+      const sz = this.TOWN_CENTER_Z + Math.floor(slot / 6) * spacing - 12;
 
-      for (const p of this.players.values()) {
-        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) { occupied = true; break; }
+      // keep within safe radius inner area
+      const dx = sx - this.TOWN_CENTER_X;
+      const dz = sz - this.TOWN_CENTER_Z;
+      const d2 = dx * dx + dz * dz;
+      const innerR = Math.max(6, this.SAFE_RADIUS - 8);
+      if (d2 > innerR * innerR) {
+        slot++;
+        if (slot > 4096) break;
+        continue;
       }
 
-      if (!occupied) { spawnX = sx; spawnZ = sz; break; }
+      let occupied = false;
+      for (const p of this.players.values()) {
+        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) {
+          occupied = true;
+          break;
+        }
+      }
+
+      if (!occupied) {
+        spawnX = sx;
+        spawnZ = sz;
+        break;
+      }
 
       slot++;
       if (slot > 4096) break;
@@ -713,14 +798,14 @@ export class MyRoom extends Room {
 
     const inv = this.getOrLoadInventory(userId);
     this.sendInvStateToClient(client, inv);
-
     client.send("worldMeta", { worldSeed: this.worldSeed });
 
-    // Safe zone info for client visuals
+    // Tell client about safe zone (client may ignore if not implemented yet)
     client.send("safeZone", {
-      x: this.CORNUCOPIA_X,
-      z: this.CORNUCOPIA_Z,
-      r: this.SAFE_ZONE_RADIUS,
+      cx: this.TOWN_CENTER_X,
+      cz: this.TOWN_CENTER_Z,
+      radius: this.SAFE_RADIUS,
+      name: "Town of Beginnings",
     });
 
     for (const d of this.drops.values()) {
@@ -734,13 +819,22 @@ export class MyRoom extends Room {
 
     client.send("existingPlayers", existingPlayers);
 
-    this.broadcast("playerJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw }, { except: client });
+    this.broadcast(
+      "playerJoined",
+      { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw },
+      { except: client }
+    );
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
 
     const allNow = Array.from(this.players.values()).map((p) => ({ id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
     client.send("playersSnapshot", allNow);
 
-    console.log("[JOIN STATE]", { joined: client.sessionId, userId, spawn: { x: spawnX, y: spawnY, z: spawnZ }, players: this.players.size });
+    console.log("[JOIN STATE]", {
+      joined: client.sessionId,
+      userId,
+      spawn: { x: spawnX, y: spawnY, z: spawnZ },
+      players: this.players.size,
+    });
   }
 
   onLeave(client: Client, code?: number) {
@@ -963,7 +1057,7 @@ export class MyRoom extends Room {
       cursor: { id: 0, count: 0 } as any,
     };
 
-    // starter kit
+    // starter kit (feel free to tune)
     inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
 
     this.inventories.set(userId, inv);
@@ -990,13 +1084,6 @@ export class MyRoom extends Room {
   private idx(i: number, j: number, k: number): number {
     const CS = this.chunkSize;
     return i + CS * (j + CS * k);
-  }
-
-  // Safe zone check (XZ)
-  private isInsideSafeZone(x: number, z: number): boolean {
-    const dx = x + 0.5 - this.CORNUCOPIA_X;
-    const dz = z + 0.5 - this.CORNUCOPIA_Z;
-    return (dx * dx + dz * dz) <= this.SAFE_ZONE_RADIUS_SQ;
   }
 
   // deterministic hash -> [0,1)
@@ -1058,6 +1145,14 @@ export class MyRoom extends Room {
   }
 
   private getBiome(worldX: number, worldZ: number): number {
+    // Bias town center area to FOREST for a pleasant hub look
+    // (purely aesthetic; terrain still stamped anyway)
+    const dx = worldX - this.TOWN_CENTER_X;
+    const dz = worldZ - this.TOWN_CENTER_Z;
+    if (dx * dx + dz * dz <= (this.SAFE_RADIUS + 10) * (this.SAFE_RADIUS + 10)) {
+      return this.BIOME_FOREST;
+    }
+
     const temp = this.fbm2(worldX, worldZ, 320, 3, 10000);
     const moist = this.fbm2(worldX, worldZ, 260, 3, 20000);
 
@@ -1099,11 +1194,11 @@ export class MyRoom extends Room {
 
   // =========================
   // Trees (biome dependent)
-  // Forest: more trees
-  // Snow: fewer trees, taller
-  // Desert: none
   // =========================
   private shouldPlaceTreeAt(worldX: number, worldZ: number, biome: number): boolean {
+    // no trees inside the Town ring (town stamping also clears, but avoid generating extra)
+    if (this.isInSafeZoneXZ(worldX, worldZ)) return false;
+
     if (biome === this.BIOME_DESERT) return false;
 
     const cell = biome === this.BIOME_FOREST ? 6 : 9; // snow more sparse
@@ -1124,6 +1219,15 @@ export class MyRoom extends Room {
   }
 
   // =========================
+  // Safe zone helpers
+  // =========================
+  private isInSafeZoneXZ(worldX: number, worldZ: number): boolean {
+    const dx = worldX - this.TOWN_CENTER_X;
+    const dz = worldZ - this.TOWN_CENTER_Z;
+    return dx * dx + dz * dz <= this.SAFE_RADIUS * this.SAFE_RADIUS;
+  }
+
+  // =========================
   // POIs (region grid, stamped per chunk)
   // =========================
   private poiCandidateForRegion(rx: number, rz: number): PoiCandidate {
@@ -1132,13 +1236,20 @@ export class MyRoom extends Room {
     if (roll >= this.POI_CHANCE) {
       return {
         exists: false,
-        rx, rz,
-        x0: 0, y0: 0, z0: 0,
+        rx,
+        rz,
+        x0: 0,
+        y0: 0,
+        z0: 0,
         rot: 0,
         tier: "COMMON",
         type: "HUT",
-        minX: 0, minY: 0, minZ: 0,
-        maxX: -1, maxY: -1, maxZ: -1,
+        minX: 0,
+        minY: 0,
+        minZ: 0,
+        maxX: -1,
+        maxY: -1,
+        maxZ: -1,
       };
     }
 
@@ -1158,7 +1269,28 @@ export class MyRoom extends Room {
     const worldX = rx * regionSize + ox;
     const worldZ = rz * regionSize + oz;
 
-    // Place on local surface. For tall structures, we anchor at surface+1.
+    // Avoid placing POIs inside the town safe zone (keep hub clean)
+    if (this.isInSafeZoneXZ(worldX, worldZ)) {
+      return {
+        exists: false,
+        rx,
+        rz,
+        x0: 0,
+        y0: 0,
+        z0: 0,
+        rot: 0,
+        tier: "COMMON",
+        type: "HUT",
+        minX: 0,
+        minY: 0,
+        minZ: 0,
+        maxX: -1,
+        maxY: -1,
+        maxZ: -1,
+      };
+    }
+
+    // Place on local surface. For tall structures, anchor at surface+1.
     const ySurf = this.heightAt(worldX, worldZ);
     const y0 = ySurf + 1;
 
@@ -1172,13 +1304,20 @@ export class MyRoom extends Room {
 
     return {
       exists: true,
-      rx, rz,
-      x0: worldX, y0, z0: worldZ,
+      rx,
+      rz,
+      x0: worldX,
+      y0,
+      z0: worldZ,
       rot,
       tier,
       type,
-      minX, minY, minZ,
-      maxX, maxY, maxZ,
+      minX,
+      minY,
+      minZ,
+      maxX,
+      maxY,
+      maxZ,
     };
   }
 
@@ -1205,42 +1344,64 @@ export class MyRoom extends Room {
 
     if (type === "HUT") {
       const dims = this.poiDims(type, tier);
-      const w = dims.w, d = dims.d, h = dims.h;
+      const w = dims.w,
+        d = dims.d,
+        h = dims.h;
 
       // floor (stone)
       for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
 
       // walls (wood)
       for (let y = 1; y < h - 1; y++) {
-        for (let x = 0; x < w; x++) { ops.push({ dx: x, dy: y, dz: 0, id: wood }); ops.push({ dx: x, dy: y, dz: d - 1, id: wood }); }
-        for (let z = 0; z < d; z++) { ops.push({ dx: 0, dy: y, dz: z, id: wood }); ops.push({ dx: w - 1, dy: y, dz: z, id: wood }); }
+        for (let x = 0; x < w; x++) {
+          ops.push({ dx: x, dy: y, dz: 0, id: wood });
+          ops.push({ dx: x, dy: y, dz: d - 1, id: wood });
+        }
+        for (let z = 0; z < d; z++) {
+          ops.push({ dx: 0, dy: y, dz: z, id: wood });
+          ops.push({ dx: w - 1, dy: y, dz: z, id: wood });
+        }
       }
 
-      // roof (leaves-ish) sloped-ish
+      // roof (leaves-ish)
       const roofY = h - 1;
       for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
 
-      // doorway opening - filter those wall ops
+      // doorway carve (filter out front-center wood at y=1..2)
       const doorX = Math.floor(w / 2);
-      const filtered = ops.filter((o) => !(o.id === wood && o.dz === 0 && (o.dx === doorX) && (o.dy === 1 || o.dy === 2)));
+      const filtered = ops.filter((o) => !(o.id === wood && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2)));
       return filtered;
     }
 
     // TOWER
     const dims = this.poiDims(type, tier);
-    const w = dims.w, d = dims.d, h = dims.h;
+    const w = dims.w,
+      d = dims.d,
+      h = dims.h;
 
     // base disk
     for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
 
-    // pillars + walls
+    // walls
     for (let y = 1; y < h; y++) {
-      for (let x = 0; x < w; x++) { ops.push({ dx: x, dy: y, dz: 0, id: stone }); ops.push({ dx: x, dy: y, dz: d - 1, id: stone }); }
-      for (let z = 0; z < d; z++) { ops.push({ dx: 0, dy: y, dz: z, id: stone }); ops.push({ dx: w - 1, dy: y, dz: z, id: stone }); }
-      // occasional ring accents
+      for (let x = 0; x < w; x++) {
+        ops.push({ dx: x, dy: y, dz: 0, id: stone });
+        ops.push({ dx: x, dy: y, dz: d - 1, id: stone });
+      }
+      for (let z = 0; z < d; z++) {
+        ops.push({ dx: 0, dy: y, dz: z, id: stone });
+        ops.push({ dx: w - 1, dy: y, dz: z, id: stone });
+      }
+      // ring accents
       if (y % 4 === 0) {
-        for (let x = 1; x < w - 1; x++) { ops.push({ dx: x, dy: y, dz: 1, id: wood }); ops.push({ dx: x, dy: y, dz: d - 2, id: wood }); }
-        for (let z = 1; z < d - 1; z++) { ops.push({ dx: 1, dy: y, dz: z, id: wood }); ops.push({ dx: w - 2, dy: y, dz: z, id: wood }); }
+        for (let x = 1; x < w - 1; x++) {
+          ops.push({ dx: x, dy: y, dz: 1, id: wood });
+          ops.push({ dx: x, dy: y, dz: d - 2, id: wood });
+        }
+        for (let z = 1; z < d - 1; z++) {
+          ops.push({ dx: 1, dy: y, dz: z, id: wood });
+          ops.push({ dx: w - 2, dy: y, dz: z, id: wood });
+        }
       }
     }
 
@@ -1248,14 +1409,15 @@ export class MyRoom extends Room {
     for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: h, dz: z, id: wood });
 
     // crown
-    for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) {
-      const edge = x === 0 || z === 0 || x === w - 1 || z === d - 1;
-      if (edge) ops.push({ dx: x, dy: h + 1, dz: z, id: leaves });
-    }
+    for (let z = 0; z < d; z++)
+      for (let x = 0; x < w; x++) {
+        const edge = x === 0 || z === 0 || x === w - 1 || z === d - 1;
+        if (edge) ops.push({ dx: x, dy: h + 1, dz: z, id: leaves });
+      }
 
     // doorway opening at base (front)
     const doorX = Math.floor(w / 2);
-    const filtered = ops.filter((o) => !(o.id === stone && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2)));
+    const filtered = ops.filter((o) => !(o.id === this.STONE_ID && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2)));
     return filtered;
   }
 
@@ -1291,10 +1453,14 @@ export class MyRoom extends Room {
 
         // quick bbox intersect with chunk bbox (3D)
         if (
-          poi.maxX < chunkMinX || poi.minX > chunkMaxX ||
-          poi.maxY < chunkMinY || poi.minY > chunkMaxY ||
-          poi.maxZ < chunkMinZ || poi.minZ > chunkMaxZ
-        ) continue;
+          poi.maxX < chunkMinX ||
+          poi.minX > chunkMaxX ||
+          poi.maxY < chunkMinY ||
+          poi.minY > chunkMaxY ||
+          poi.maxZ < chunkMinZ ||
+          poi.minZ > chunkMaxZ
+        )
+          continue;
 
         const dims = this.poiDims(poi.type, poi.tier);
         const ops = this.poiOps(poi.type, poi.tier);
@@ -1316,9 +1482,11 @@ export class MyRoom extends Room {
 
           const idx = this.idx(lx, ly, lz);
 
-          // do not stamp into bedrock, and do not place AIR stamps
-          if (op.id === this.AIR_ID) continue;
+          // do not stamp into bedrock
           if (vox[idx] === this.BEDROCK_ID) continue;
+
+          // POIs never stamp AIR
+          if (op.id === this.AIR_ID) continue;
 
           vox[idx] = clamp(toInt(op.id), 0, 255);
         }
@@ -1327,104 +1495,222 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Cornucopia (stamped per chunk, deterministic at center)
+  // Town of Beginnings stamping (seam-safe, deterministic)
   // =========================
-  private stampCornucopiaIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+  private stampTownIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
     const CS = this.chunkSize;
-
-    const centerX = this.CORNUCOPIA_X;
-    const centerZ = this.CORNUCOPIA_Z;
-
-    const radius = 8;     // platform radius
-    const wallH = 4;      // short wall height
-
-    // Anchor on terrain height at center (deterministic)
-    const baseY = this.heightAt(centerX, centerZ) + 1;
 
     const chunkMinX = cx * CS;
     const chunkMinY = cy * CS;
     const chunkMinZ = cz * CS;
+
     const chunkMaxX = chunkMinX + CS - 1;
     const chunkMaxY = chunkMinY + CS - 1;
     const chunkMaxZ = chunkMinZ + CS - 1;
 
-    // Quick AABB reject
-    const minX = centerX - radius - 2;
-    const maxX = centerX + radius + 2;
-    const minZ = centerZ - radius - 2;
-    const maxZ = centerZ + radius + 2;
-    const minY = baseY - 2;
-    const maxY = baseY + wallH + 10;
+    // quick reject by horizontal distance from town center (chunk AABB vs circle)
+    const closestX = clamp(this.TOWN_CENTER_X, chunkMinX, chunkMaxX);
+    const closestZ = clamp(this.TOWN_CENTER_Z, chunkMinZ, chunkMaxZ);
+    const dx0 = closestX - this.TOWN_CENTER_X;
+    const dz0 = closestZ - this.TOWN_CENTER_Z;
+    const r = this.SAFE_RADIUS + 2;
+    if (dx0 * dx0 + dz0 * dz0 > r * r) return;
 
-    if (
-      maxX < chunkMinX || minX > chunkMaxX ||
-      maxY < chunkMinY || minY > chunkMaxY ||
-      maxZ < chunkMinZ || minZ > chunkMaxZ
-    ) return;
+    // Town is anchored to the surface at center
+    const centerY = this.heightAt(this.TOWN_CENTER_X, this.TOWN_CENTER_Z);
+    const groundY = centerY; // terrain surface
+    const townBaseY = groundY + 1;
 
-    const place = (wx: number, wy: number, wz: number, id: number) => {
-      if (wx < chunkMinX || wx > chunkMaxX) return;
-      if (wy < chunkMinY || wy > chunkMaxY) return;
-      if (wz < chunkMinZ || wz > chunkMaxZ) return;
+    // We stamp by iterating the chunk voxels and deciding if each world position is in a town feature.
+    // This avoids huge op lists and stays seam-safe.
+    for (let lx = 0; lx < CS; lx++) {
+      for (let lz = 0; lz < CS; lz++) {
+        const wx = chunkMinX + lx;
+        const wz = chunkMinZ + lz;
 
-      const lx = wx - chunkMinX;
-      const ly = wy - chunkMinY;
-      const lz = wz - chunkMinZ;
-      const ii = this.idx(lx, ly, lz);
-
-      if (vox[ii] === this.BEDROCK_ID) return;
-      vox[ii] = clamp(toInt(id), 0, 255);
-    };
-
-    const stone = this.STONE_ID;
-    const wood = this.WOOD_ID;
-    const leaves = this.LEAVES_ID;
-
-    // 1) Stone platform (filled down a bit)
-    for (let dz = -radius; dz <= radius; dz++) {
-      for (let dx = -radius; dx <= radius; dx++) {
+        const dx = wx - this.TOWN_CENTER_X;
+        const dz = wz - this.TOWN_CENTER_Z;
         const d2 = dx * dx + dz * dz;
-        if (d2 > radius * radius) continue;
 
-        const wx = centerX + dx;
-        const wz = centerZ + dz;
+        // Only affect within ring radius + a bit
+        if (d2 > (this.TOWN_RING_RADIUS + 4) * (this.TOWN_RING_RADIUS + 4)) continue;
 
-        for (let y = baseY - 2; y <= baseY; y++) {
-          place(wx, y, wz, stone);
+        // Locally estimate surface for this column (helps flatten paths/plaza)
+        const colSurface = this.heightAt(wx, wz);
+        const colTownBase = colSurface + 1;
+
+        // Features:
+        // 1) Central plaza (stone disk)
+        const inPlaza = d2 <= this.TOWN_PLAZA_RADIUS * this.TOWN_PLAZA_RADIUS;
+
+        // 2) Cardinal paths (stone strips)
+        const inPath =
+          (Math.abs(dz) <= this.TOWN_PATH_HALF_W && Math.abs(dx) <= this.TOWN_RING_RADIUS) ||
+          (Math.abs(dx) <= this.TOWN_PATH_HALF_W && Math.abs(dz) <= this.TOWN_RING_RADIUS);
+
+        // 3) Decorative outer ring "wall" (low wall + leaves lamps)
+        const ringR0 = this.TOWN_RING_RADIUS;
+        const ringR1 = this.TOWN_RING_RADIUS + 1;
+        const inRingBand = d2 >= ringR0 * ringR0 && d2 <= ringR1 * ringR1;
+
+        // 4) Four small starter huts near ring (one per quadrant, aligned to paths)
+        // We'll place huts at approx: (+/-16, +/-16) relative to center, sized 7x7
+        const hutCenters: Array<{ hx: number; hz: number }> = [
+          { hx: this.TOWN_CENTER_X + 16, hz: this.TOWN_CENTER_Z + 16 },
+          { hx: this.TOWN_CENTER_X - 16, hz: this.TOWN_CENTER_Z + 16 },
+          { hx: this.TOWN_CENTER_X + 16, hz: this.TOWN_CENTER_Z - 16 },
+          { hx: this.TOWN_CENTER_X - 16, hz: this.TOWN_CENTER_Z - 16 },
+        ];
+
+        let hutLocal: { ox: number; oz: number; which: number } | null = null;
+        for (let i = 0; i < hutCenters.length; i++) {
+          const c = hutCenters[i];
+          const ox = wx - c.hx;
+          const oz = wz - c.hz;
+          // hut footprint 7x7 centered (ox,oz in [-3..3])
+          if (Math.abs(ox) <= 3 && Math.abs(oz) <= 3) {
+            hutLocal = { ox, oz, which: i };
+            break;
+          }
+        }
+
+        // 5) Center fountain/totem (small pillar + leaves crown)
+        const inFountainFoot = Math.abs(dx) <= 1 && Math.abs(dz) <= 1;
+
+        // For each column, stamp per-y (vertical)
+        for (let ly = 0; ly < CS; ly++) {
+          const wy = chunkMinY + ly;
+          const ii = this.idx(lx, ly, lz);
+
+          // never touch bedrock
+          if (vox[ii] === this.BEDROCK_ID) continue;
+
+          // Clear space above ground inside safe area (removes trees/overhangs)
+          if (this.isInSafeZoneXZ(wx, wz)) {
+            const clearTop = Math.min(chunkMaxY, colSurface + this.TOWN_CLEAR_HEIGHT);
+            if (wy > colSurface && wy <= clearTop) {
+              vox[ii] = this.AIR_ID;
+            }
+          }
+
+          // Flatten and paint plaza/path at surface+1 (place stone at base)
+          // Make sure we also "fill" if terrain dips slightly: fill up to (colSurface+1)
+          if (inPlaza || inPath) {
+            // target surface for town floor
+            const targetY = colSurface + 1;
+
+            // Fill blocks up to targetY with dirt/stone to avoid holes if terrain lower
+            if (wy <= targetY && wy >= colSurface - 2) {
+              // “support” layer near top
+              if (wy === targetY) vox[ii] = this.STONE_ID;
+              else if (wy >= targetY - 2) vox[ii] = this.DIRT_ID;
+              // don't aggressively change deeper layers
+            }
+
+            // Clear above target a bit so plaza stays open
+            if (wy > targetY && wy <= targetY + 6) {
+              vox[ii] = this.AIR_ID;
+            }
+          }
+
+          // Outer ring low wall at surface+2
+          if (inRingBand) {
+            const wallY = colSurface + 2;
+            if (wy === wallY) vox[ii] = this.STONE_ID;
+            if (wy === wallY + 1) {
+              // occasional leafy lantern posts
+              const every = 5;
+              const onPost = (mod(dx, every) === 0 && mod(dz, every) === 0) || this.hash2i(wx, wz, 91234) > 0.94;
+              if (onPost) vox[ii] = this.LEAVES_ID;
+            }
+            if (wy > wallY + 1 && wy <= wallY + 5) {
+              // keep air above wall
+              vox[ii] = this.AIR_ID;
+            }
+          }
+
+          // Center fountain/totem
+          if (inFountainFoot) {
+            const baseY = colSurface + 1;
+            // stone pad
+            if (wy === baseY) vox[ii] = this.STONE_ID;
+            // pillar
+            if (wy >= baseY + 1 && wy <= baseY + 5) vox[ii] = this.WOOD_ID;
+            // crown
+            if (wy === baseY + 6) vox[ii] = this.LEAVES_ID;
+            if (wy === baseY + 7 && (Math.abs(dx) + Math.abs(dz) === 1)) vox[ii] = this.LEAVES_ID;
+            // clear air around
+            if (wy > baseY && wy <= baseY + 10 && !(wy >= baseY + 1 && wy <= baseY + 7)) {
+              // don’t force air inside pillar/crown area; elsewhere already cleared
+            }
+          }
+
+          // Starter huts
+          if (hutLocal) {
+            // hut uses local "hut surface" based on that column
+            const hutBaseY = colTownBase; // colSurface+1
+
+            const ox = hutLocal.ox;
+            const oz = hutLocal.oz;
+
+            const w = 7;
+            const h = 5; // walls height
+            const roofY = hutBaseY + (h - 1);
+
+            // floor
+            if (wy === hutBaseY) {
+              vox[ii] = this.STONE_ID;
+            }
+
+            // walls: boundary of square at y=hutBaseY+1..hutBaseY+h-2
+            const isEdge = Math.abs(ox) === 3 || Math.abs(oz) === 3;
+            const wallY0 = hutBaseY + 1;
+            const wallY1 = hutBaseY + (h - 2);
+
+            // door: open on side facing center
+            // determine which side is “front” by quadrant:
+            // (+,+) hut front points toward (-,-) i.e. center => front side is negative ox/oz direction; simplest: pick the side with larger abs offset
+            let doorSide: "N" | "S" | "E" | "W" = "S";
+            // hut is located at (+/-16, +/-16), so door should be towards center:
+            // if hut center hx > 0 => door on west wall (ox=-3). if hx < 0 => east wall (ox=+3)
+            // if hz > 0 => door on south wall (oz=-3). if hz < 0 => north wall (oz=+3)
+            const hc = hutCenters[hutLocal.which];
+            const towardX = hc.hx > this.TOWN_CENTER_X ? "W" : "E";
+            const towardZ = hc.hz > this.TOWN_CENTER_Z ? "S" : "N";
+            // pick one axis to avoid double doors: choose the axis with larger |offset|
+            doorSide = Math.abs(hc.hx - this.TOWN_CENTER_X) >= Math.abs(hc.hz - this.TOWN_CENTER_Z) ? (towardX as any) : (towardZ as any);
+
+            const doorX = 0;
+            const doorY1 = hutBaseY + 1;
+            const doorY2 = hutBaseY + 2;
+
+            const isDoor =
+              (doorSide === "N" && oz === 3 && ox === doorX && (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "S" && oz === -3 && ox === doorX && (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "E" && ox === 3 && oz === doorX && (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "W" && ox === -3 && oz === doorX && (wy === doorY1 || wy === doorY2));
+
+            if (wy >= wallY0 && wy <= wallY1 && isEdge) {
+              vox[ii] = isDoor ? this.AIR_ID : this.WOOD_ID;
+            }
+
+            // roof (leaves)
+            if (wy === roofY) {
+              vox[ii] = this.LEAVES_ID;
+            }
+
+            // clear inside volume
+            if (wy > hutBaseY && wy <= roofY + 2 && !isEdge) {
+              vox[ii] = this.AIR_ID;
+            }
+          }
         }
       }
-    }
-
-    // 2) Ring wall
-    for (let dz = -radius; dz <= radius; dz++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const d2 = dx * dx + dz * dz;
-        const edge = d2 >= (radius - 1) * (radius - 1) && d2 <= radius * radius;
-        if (!edge) continue;
-
-        const wx = centerX + dx;
-        const wz = centerZ + dz;
-
-        for (let y = baseY + 1; y <= baseY + wallH; y++) place(wx, y, wz, stone);
-      }
-    }
-
-    // 3) Central "horn" marker (pillar + cap)
-    for (let y = baseY + 1; y <= baseY + 7; y++) place(centerX, y, centerZ, wood);
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) place(centerX + dx, baseY + 8, centerZ + dz, leaves);
-
-    // 4) Entrances (carve gaps)
-    const carve = (wx: number, wy: number, wz: number) => place(wx, wy, wz, this.AIR_ID);
-    for (let y = baseY + 1; y <= baseY + 2; y++) {
-      carve(centerX + radius, y, centerZ);
-      carve(centerX - radius, y, centerZ);
-      carve(centerX, y, centerZ + radius);
-      carve(centerX, y, centerZ - radius);
     }
   }
 
   // =========================
-  // Chunk generation (biomes + ores + bedrock + trees + POIs + Cornucopia)
+  // Chunk generation (biomes + ores + bedrock + trees + POIs + Town)
   // =========================
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
@@ -1439,9 +1725,11 @@ export class MyRoom extends Room {
         const height = this.heightAt(worldX, worldZ);
 
         const surfaceId =
-          biome === this.BIOME_DESERT ? this.SAND_ID
-          : biome === this.BIOME_SNOW ? this.SNOW_ID
-          : this.GRASS_ID;
+          biome === this.BIOME_DESERT
+            ? this.SAND_ID
+            : biome === this.BIOME_SNOW
+            ? this.SNOW_ID
+            : this.GRASS_ID;
 
         const subsurfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
 
@@ -1501,11 +1789,12 @@ export class MyRoom extends Room {
       }
     }
 
-    // Stamp POIs LAST so they are seam-safe and deterministic across chunk order.
+    // Stamp POIs LAST-ish (seam-safe and deterministic across chunk order)
     this.stampPoiIntoChunk(vox, cx, cy, cz);
 
-    // Stamp Cornucopia even later (always present)
-    this.stampCornucopiaIntoChunk(vox, cx, cy, cz);
+    // Stamp Town of Beginnings very last so it overrides terrain/trees/POIs near center
+    // (POIs already avoid town, but this ensures town is always clean)
+    this.stampTownIntoChunk(vox, cx, cy, cz);
 
     console.log("[WORLD] generated chunk:", { cx, cy, cz, seed: this.worldSeed });
     return vox;
@@ -1746,7 +2035,12 @@ export class MyRoom extends Room {
     if (!st) return;
     this.mining.delete(client.sessionId);
     client.send("mineCancelled", { reason });
-    console.log("[MINE cancel]", { by: client.sessionId, reason, target: { x: st.x, y: st.y, z: st.z }, blockId: st.lastBlockId });
+    console.log("[MINE cancel]", {
+      by: client.sessionId,
+      reason,
+      target: { x: st.x, y: st.y, z: st.z },
+      blockId: st.lastBlockId,
+    });
   }
 
   private tickMining(): void {
@@ -1754,28 +2048,49 @@ export class MyRoom extends Room {
 
     for (const [sid, st] of this.mining.entries()) {
       const client = this.clients.find((c) => c.sessionId === sid);
-      if (!client) { this.mining.delete(sid); continue; }
+      if (!client) {
+        this.mining.delete(sid);
+        continue;
+      }
 
       const pl = this.players.get(sid);
-      if (!pl) { this.cancelMiningFor(client, "no_player"); continue; }
+      if (!pl) {
+        this.cancelMiningFor(client, "no_player");
+        continue;
+      }
 
-      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) { this.cancelMiningFor(client, "timeout"); continue; }
+      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) {
+        this.cancelMiningFor(client, "timeout");
+        continue;
+      }
 
-      const dx = st.x + 0.5 - pl.x;
-      const dy = st.y + 0.5 - pl.y;
-      const dz = st.z + 0.5 - pl.z;
-      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) { this.cancelMiningFor(client, "too_far"); continue; }
-
-      // Safe zone protection (hub)
-      if (this.SAFE_ZONE_PROTECT_BLOCKS && this.isInsideSafeZone(st.x, st.z)) {
+      // Safe zone enforcement mid-mine (in case retarget or weirdness)
+      if (this.isInSafeZoneXZ(st.x, st.z)) {
         this.cancelMiningFor(client, "safe_zone");
         continue;
       }
 
+      const dx = st.x + 0.5 - pl.x;
+      const dy = st.y + 0.5 - pl.y;
+      const dz = st.z + 0.5 - pl.z;
+      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) {
+        this.cancelMiningFor(client, "too_far");
+        continue;
+      }
+
       const currentId = this.getBlockAt(st.x, st.y, st.z);
-      if (currentId === this.AIR_ID) { this.cancelMiningFor(client, "air"); continue; }
-      if (currentId === this.BEDROCK_ID) { this.cancelMiningFor(client, "bedrock"); continue; }
-      if (currentId !== st.lastBlockId) { this.cancelMiningFor(client, "block_changed"); continue; }
+      if (currentId === this.AIR_ID) {
+        this.cancelMiningFor(client, "air");
+        continue;
+      }
+      if (currentId === this.BEDROCK_ID) {
+        this.cancelMiningFor(client, "bedrock");
+        continue;
+      }
+      if (currentId !== st.lastBlockId) {
+        this.cancelMiningFor(client, "block_changed");
+        continue;
+      }
 
       const inv = this.getOrLoadInventory(st.userId);
       const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
@@ -1823,10 +2138,19 @@ export class MyRoom extends Room {
         console.log("[MINE done]", {
           by: sid,
           userId: st.userId,
-          x: st.x, y: st.y, z: st.z,
+          x: st.x,
+          y: st.y,
+          z: st.z,
           blockId: currentId,
           canDrop,
-          tool: picked ? { id: (picked.stack as any).id, tier: picked.tool.tier, slot: picked.slotIndex, dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0 } : null,
+          tool: picked
+            ? {
+                id: (picked.stack as any).id,
+                tier: picked.tool.tier,
+                slot: picked.slotIndex,
+                dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0,
+              }
+            : null,
           breakTimeMs: st.breakTimeMs,
         });
 
