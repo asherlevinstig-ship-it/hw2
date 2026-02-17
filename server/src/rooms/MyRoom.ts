@@ -1,74 +1,13 @@
 // server/src/rooms/MyRoom.ts
-// FULL FILE - paste exactly as-is
-//
-// Path B (server authoritative chunks) + multiplayer + persistence
-//
-// ✅ FIXES "world resets on refresh":
-// - NOA requests chunks using chunk ORIGIN coords (multiples of chunkSize), e.g. x = -32
-// - Server storage/generation needs CHUNK INDICES, e.g. cx = -1
-// - This file normalizes request coords -> indices for storage, but echoes original coords
-//   back to the client (so pendingChunks match).
-//
-// ✅ Adds Minecraft-ish mineral generation + bedrock:
-// - Bedrock randomized thickness in lowest layers
-// - Coal / Iron / Gold / Diamond ores (deterministic hash noise, no libs)
-// - Ores only replace stone and depend on depth
-//
-// ✅ Survival loop hooks (inventory + drops + crafting):
-// - Server-authoritative inventory (hotbar + backpack) persisted per userId
-// - Mining spawns item drops (server authoritative drop entities)
-// - Pickup collects drops into inventory
-// - Placing consumes inventory from specified hotbar slot
-// - Inventory clicks: left/right/shift (cursor-based)
-// - Crafting: simple recipe list (wood -> planks -> sticks -> picks)
-//
-// ✅ Option A Mining (HOLD-TO-MINE, tool speed, progress messages):
-// - Client sends startMine {x,y,z,heldSlot?} repeatedly while held; server is authoritative.
-// - Server computes break time based on block + tool tier/speed.
-// - Server sends mineProgress {x,y,z,progress,stage,done?} to the mining client.
-// - When done, server edits the world (persistent) and broadcasts blockUpdate.
-// - Server also sends mineCancelled when mining is interrupted.
-//
-// ✅ Better mining rules (NEW):
-// - Proper tool tiers (wood/stone/iron picks) from shared/items.ts
-// - Correct “needs pick” per ore for DROPS (coal/iron require >=1; gold/diamond require >=3)
-// - Optional tool durability: damage 1 on successful stone-like break; break tool at 0
-//
-// ✅ Drops cleanup (NEW):
-// - Drops expire after DROP_TTL_MS to prevent world clutter
-// - Periodic cleanup broadcasts dropDespawn
-//
-// ✅ Seed persistence (NEW):
-// - Stores worldSeed in world/meta.json (created on first run)
-// - hash noise now incorporates worldSeed for repeatable maps across restarts
-//
-// ✅ Biomes (NEW, simple 2D seed-based map):
-// - getBiome(worldX, worldZ) -> FOREST / DESERT / SNOW
-// - Biome changes surface block (grass vs sand vs snow)
-// - Trees only in forest (simple deterministic placement)
-//
-// ✅ Fix Hazard 2 (NEW): durability + cursor/right-click mismatch
-// - Tool stacks (maxStack=1) always preserve dur when moved via clicks or shift-move
-// - Right-click behaviors special-case tools to avoid splitting/losing dur
-//
-// Persistence:
-// - Saves chunk files keyed by CHUNK INDEX: c_<cx>_<cy>_<cz>.bin
-// - Saves player inventories keyed by userId: inv_<userId>.json
-// - Loads from disk first, else generates
-//
-// Also:
-// - autoDispose = false so room isn't destroyed when last client disconnects
-// - loud logs for saves/loads/requests
-//
-// IMPORTANT:
-// - This file imports Items/defs/recipes from shared/items.ts
-// - Node16/NodeNext module resolution requires explicit ".js" extensions in server TS imports.
+// FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
+// Includes: biomes + biome terrain + biome trees + ores + bedrock + inventory + drops + crafting + hold-to-mine
+// NEW: deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// ✅ Shared items (single source of truth)
+// Shared items (single source of truth) - NodeNext requires ".js"
 import {
   Items,
   ITEM_DEFS,
@@ -81,7 +20,7 @@ type Vec3 = { x: number; y: number; z: number };
 type WorldDataNeededMsg = {
   id: string;
   chunkSize: number;
-  x: number; // NOA chunk coord (often chunk origin in world units)
+  x: number; // NOA chunk coord (often chunk ORIGIN)
   y: number;
   z: number;
 };
@@ -89,7 +28,7 @@ type WorldDataNeededMsg = {
 type ChunkDataMsg = {
   id: string;
   chunkSize: number;
-  // IMPORTANT: echo these exactly as requested so client pending check passes
+  // echo request coords exactly so client pending check passes
   x: number;
   y: number;
   z: number;
@@ -110,7 +49,7 @@ type PlayerInfo = {
 type ItemStack = SharedItemStack;
 
 type InvState = {
-  slots: ItemStack[]; // length = HOTBAR_SLOTS + BACKPACK_SLOTS
+  slots: ItemStack[]; // HOTBAR + BACKPACK
   cursor: ItemStack;
 };
 
@@ -141,12 +80,10 @@ type PlaceBlockMsg = {
   y: number;
   z: number;
   id: number; // blockId to place
-  fromSlot?: number; // hotbar slot index to consume from
+  fromSlot?: number; // hotbar index to consume from
 };
 
 type StartMineMsg = { x: number; y: number; z: number; heldSlot?: number };
-type CancelMineMsg = { reason?: string };
-
 type MineProgressMsg = {
   x: number;
   y: number;
@@ -156,33 +93,6 @@ type MineProgressMsg = {
   done?: boolean;
   reason?: string;
 };
-
-function isFiniteNumber(n: unknown): n is number {
-  return typeof n === "number" && Number.isFinite(n);
-}
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-
-function toInt(n: number): number {
-  return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
-}
-
-function floorDiv(a: number, b: number): number {
-  return Math.floor(a / b);
-}
-
-function mod(a: number, b: number): number {
-  return ((a % b) + b) % b;
-}
-
-function safeUserId(v: unknown): string {
-  const s = typeof v === "string" ? v : "";
-  const trimmed = s.slice(0, 80);
-  const ok = trimmed.replace(/[^a-zA-Z0-9_\-]/g, "");
-  return ok.length >= 3 ? ok : "anon";
-}
 
 type MiningState = {
   sessionId: string;
@@ -199,6 +109,55 @@ type MiningState = {
   lastBlockId: number;
 };
 
+function isFiniteNumber(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n);
+}
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+function toInt(n: number): number {
+  return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
+}
+function floorDiv(a: number, b: number): number {
+  return Math.floor(a / b);
+}
+function mod(a: number, b: number): number {
+  return ((a % b) + b) % b;
+}
+function safeUserId(v: unknown): string {
+  const s = typeof v === "string" ? v : "";
+  const trimmed = s.slice(0, 80);
+  const ok = trimmed.replace(/[^a-zA-Z0-9_\-]/g, "");
+  return ok.length >= 3 ? ok : "anon";
+}
+
+/** =========================
+ *  POIs (region grid)
+ *  ========================= */
+type PoiType = "TOWER" | "HUT";
+type PoiTier = "COMMON" | "RARE" | "LEGENDARY";
+
+type PoiCandidate = {
+  exists: boolean;
+  rx: number;
+  rz: number;
+  x0: number; // world origin for placement (min corner)
+  y0: number;
+  z0: number;
+  rot: 0 | 90 | 180 | 270;
+  tier: PoiTier;
+  type: PoiType;
+  // world bbox inclusive
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+};
+
+type StampOp = { dx: number; dy: number; dz: number; id: number };
+
 export class MyRoom extends Room {
   // =========================
   // Constants
@@ -206,7 +165,6 @@ export class MyRoom extends Room {
   private readonly chunkSize = 32; // MUST match client
   private readonly baseHeight = 12;
 
-  // Inventory layout (MUST match client)
   private readonly HOTBAR_SLOTS = 5;
   private readonly BACKPACK_SLOTS = 20;
   private readonly INV_SLOTS = this.HOTBAR_SLOTS + this.BACKPACK_SLOTS;
@@ -226,36 +184,52 @@ export class MyRoom extends Room {
   private readonly GOLD_ORE_ID = 9;
   private readonly DIAMOND_ORE_ID = 10;
 
-  // Biome surface blocks (NEW) - MUST match client
+  // Biome surface blocks (MUST match client)
   private readonly SAND_ID = 11;
   private readonly SNOW_ID = 12;
 
-  // Drops cleanup (NEW)
+  // Drops cleanup
   private readonly DROP_TTL_MS = 3 * 60 * 1000; // 3 minutes
   private readonly DROP_CLEANUP_EVERY_MS = 5000;
 
-  // =========================
-  // World meta / seed (NEW)
-  // =========================
-  private readonly worldDir = path.join(process.cwd(), "world");
-  private readonly chunksDir = path.join(this.worldDir, "chunks");
-  private readonly invDir = path.join(this.worldDir, "inventories");
-  private readonly metaPath = path.join(this.worldDir, "meta.json");
-  private worldSeed = 0; // persisted in meta.json
-
-  // =========================
-  // Players
-  // =========================
-  private players = new Map<string, PlayerInfo>();
-
+  // Movement / safety
   private readonly minMoveIntervalMs = 60;
   private readonly snapshotIntervalMs = 500;
-
   private readonly maxAbsCoord = 100000;
   private readonly maxSpeedBlocksPerSec = 18;
 
   private lastMoveLogAt = 0;
   private lastSnapshotLogAt = 0;
+
+  // Mining (Option A)
+  private readonly mineTickMs = 50;
+  private readonly mineHeartbeatTimeoutMs = 450;
+  private readonly mineReach = 6.0;
+  private readonly mineProgressSendMinMs = 80;
+
+  // Biomes
+  private readonly BIOME_FOREST = 1;
+  private readonly BIOME_DESERT = 2;
+  private readonly BIOME_SNOW = 3;
+
+  // POIs (region grid)
+  private readonly REGION_SIZE = 128; // or 96/128 etc
+  private readonly POI_CHANCE = 0.13; // tune
+  private readonly POI_EDGE_PAD = 16; // avoid edges inside region
+
+  // =========================
+  // World meta / seed
+  // =========================
+  private readonly worldDir = path.join(process.cwd(), "world");
+  private readonly chunksDir = path.join(this.worldDir, "chunks");
+  private readonly invDir = path.join(this.worldDir, "inventories");
+  private readonly metaPath = path.join(this.worldDir, "meta.json");
+  private worldSeed = 0;
+
+  // =========================
+  // Players
+  // =========================
+  private players = new Map<string, PlayerInfo>();
 
   // =========================
   // World
@@ -263,46 +237,36 @@ export class MyRoom extends Room {
   private chunks = new Map<string, Uint8Array>();
 
   // =========================
-  // Drops (server authoritative)
+  // Drops
   // =========================
   private drops = new Map<string, Drop>();
   private nextDropSeq = 1;
 
   // =========================
-  // Mining (Option A)
+  // Mining state
   // =========================
   private mining = new Map<string, MiningState>(); // by sessionId
-  private readonly mineTickMs = 50;
-  private readonly mineHeartbeatTimeoutMs = 450; // if client stops sending startMine, cancel
-  private readonly mineReach = 6.0; // max distance to mine
-  private readonly mineProgressSendMinMs = 80; // throttle progress messages per client
 
   // =========================
-  // Biomes (NEW)
+  // Inventory cache
   // =========================
-  private readonly BIOME_FOREST = 1;
-  private readonly BIOME_DESERT = 2;
-  private readonly BIOME_SNOW = 3;
+  private inventories = new Map<string, InvState>();
 
   // =========================
   // onCreate
   // =========================
   onCreate(options: any) {
     console.log("✅ MyRoom created", options);
-
     this.maxClients = 32;
-
-    // Keep room alive when empty (refresh disconnect won't dispose)
     this.autoDispose = false;
 
     this.ensureDirs();
     console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: this.invDir });
 
-    // ✅ World seed (persisted)
     this.worldSeed = this.loadOrCreateWorldSeed(options);
     console.log("[WORLD] worldSeed =", this.worldSeed);
 
-    // Periodic snapshot
+    // players snapshot
     this.clock.setInterval(() => {
       const all = Array.from(this.players.values()).map((p) => ({
         id: p.id,
@@ -311,7 +275,6 @@ export class MyRoom extends Room {
         z: p.z,
         yaw: p.yaw,
       }));
-
       this.broadcast("playersSnapshot", all);
 
       const now = Date.now();
@@ -321,15 +284,11 @@ export class MyRoom extends Room {
       }
     }, this.snapshotIntervalMs);
 
-    // Mining tick loop
-    this.clock.setInterval(() => {
-      this.tickMining();
-    }, this.mineTickMs);
+    // mining tick
+    this.clock.setInterval(() => this.tickMining(), this.mineTickMs);
 
-    // Drops cleanup loop (NEW)
-    this.clock.setInterval(() => {
-      this.cleanupDrops();
-    }, this.DROP_CLEANUP_EVERY_MS);
+    // drops cleanup
+    this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
 
     // =========================
     // Chunk streaming
@@ -337,26 +296,21 @@ export class MyRoom extends Room {
     this.onMessage("worldDataNeeded", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<WorldDataNeededMsg>;
-
       if (typeof p.id !== "string" || p.id.length < 1) return;
       if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
 
-      // Clamp incoming NOA coords (could be origins or indices)
       const rx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
       const ry = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
       const rz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
 
-      // ✅ Normalize to CHUNK INDICES for storage/generation
+      // normalize to indices for storage/generation
       const { cx, cy, cz } = this.normalizeChunkRequestToIndex(rx, ry, rz);
-
-      const CS = this.chunkSize;
       const chunk = this.getOrCreateChunk(cx, cy, cz);
 
       const msg: ChunkDataMsg = {
         id: p.id,
-        chunkSize: CS,
-        // ✅ Echo EXACT request coords so client pending check passes
-        x: rx,
+        chunkSize: this.chunkSize,
+        x: rx, // echo exact request
         y: ry,
         z: rz,
         voxels: chunk,
@@ -370,15 +324,12 @@ export class MyRoom extends Room {
     // =========================
     this.onMessage("playerMove", (client: Client, payload: unknown) => {
       const now = Date.now();
-
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
-
       if (now - pl.lastMoveAt < this.minMoveIntervalMs) return;
 
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3> & { yaw?: unknown };
-
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
 
       const x = clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord);
@@ -393,7 +344,6 @@ export class MyRoom extends Room {
       const dy = y - pl.y;
       const dz = z - pl.z;
 
-      // allow a bit of burst due to network jitter; still clamp egregious teleports
       if (dx * dx + dy * dy + dz * dz > (maxDist * maxDist) * 9) return;
 
       pl.x = x;
@@ -406,13 +356,7 @@ export class MyRoom extends Room {
 
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
-        console.log("[MOVE]", {
-          id: client.sessionId,
-          x: +x.toFixed(2),
-          y: +y.toFixed(2),
-          z: +z.toFixed(2),
-          yaw: +yaw.toFixed(2),
-        });
+        console.log("[MOVE]", { id: client.sessionId, x: +x.toFixed(2), y: +y.toFixed(2), z: +z.toFixed(2), yaw: +yaw.toFixed(2) });
       }
     });
 
@@ -427,8 +371,6 @@ export class MyRoom extends Room {
       const x = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
       const y = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
       const z = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
-
-      // ✅ IMPORTANT: heldSlot comes from client selected hotbar slot
       const heldSlot = isFiniteNumber((p as any).heldSlot) ? toInt((p as any).heldSlot) : -1;
 
       const pl = this.players.get(client.sessionId);
@@ -438,26 +380,18 @@ export class MyRoom extends Room {
       const dx = x + 0.5 - pl.x;
       const dy = y + 0.5 - pl.y;
       const dz = z + 0.5 - pl.z;
-      const dist2 = dx * dx + dy * dy + dz * dz;
-      if (dist2 > this.mineReach * this.mineReach) {
+      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) {
         this.cancelMiningFor(client, "too_far");
         return;
       }
 
       const blockId = this.getBlockAt(x, y, z);
-      if (blockId === this.AIR_ID) {
-        this.cancelMiningFor(client, "air");
-        return;
-      }
-      if (blockId === this.BEDROCK_ID) {
-        this.cancelMiningFor(client, "bedrock");
-        return;
-      }
+      if (blockId === this.AIR_ID) { this.cancelMiningFor(client, "air"); return; }
+      if (blockId === this.BEDROCK_ID) { this.cancelMiningFor(client, "bedrock"); return; }
 
       const userId = pl.userId;
       const inv = this.getOrLoadInventory(userId);
 
-      // If already mining same block, update heartbeat only
       const cur = this.mining.get(client.sessionId);
       const now = Date.now();
 
@@ -465,16 +399,11 @@ export class MyRoom extends Room {
         cur.lastHeartbeatAt = now;
         cur.heldSlot = heldSlot;
 
-        // If block changed under them, cancel
         const nowBlock = this.getBlockAt(x, y, z);
-        if (nowBlock !== cur.lastBlockId) {
-          this.cancelMiningFor(client, "block_changed");
-          return;
-        }
+        if (nowBlock !== cur.lastBlockId) this.cancelMiningFor(client, "block_changed");
         return;
       }
 
-      // starting a new target: cancel any previous
       if (cur) this.cancelMiningFor(client, "retarget");
 
       const breakTimeMs = this.computeBreakTimeMs(blockId, inv, heldSlot);
@@ -482,9 +411,7 @@ export class MyRoom extends Room {
       const st: MiningState = {
         sessionId: client.sessionId,
         userId,
-        x,
-        y,
-        z,
+        x, y, z,
         heldSlot,
         startedAt: now,
         lastHeartbeatAt: now,
@@ -495,35 +422,21 @@ export class MyRoom extends Room {
       };
 
       this.mining.set(client.sessionId, st);
-
-      // send immediate first progress update (0%)
-      const msg: MineProgressMsg = { x, y, z, progress: 0, stage: 0 };
-      client.send("mineProgress", msg);
+      client.send("mineProgress", { x, y, z, progress: 0, stage: 0 } satisfies MineProgressMsg);
 
       const picked = this.choosePickStack(inv, heldSlot);
-
       console.log("[MINE start]", {
-        by: client.sessionId,
-        userId,
-        x,
-        y,
-        z,
-        blockId,
-        breakTimeMs,
-        heldSlot,
-        tool: picked ? { id: picked.stack.id, tier: picked.tool.tier, slot: picked.slotIndex } : null,
+        by: client.sessionId, userId, x, y, z, blockId, breakTimeMs, heldSlot,
+        tool: picked ? { id: (picked.stack as any).id, tier: picked.tool.tier, slot: picked.slotIndex } : null,
       });
     });
 
     this.onMessage("cancelMine", (client: Client, payload: unknown) => {
-      const reason =
-        typeof (payload as any)?.reason === "string"
-          ? String((payload as any).reason).slice(0, 60)
-          : "client_cancel";
+      const reason = typeof (payload as any)?.reason === "string" ? String((payload as any).reason).slice(0, 60) : "client_cancel";
       this.cancelMiningFor(client, reason);
     });
 
-    // Legacy instant mine (if still sent by old clients)
+    // legacy instant mine
     this.onMessage("mineBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const maybe = payload as Partial<Vec3>;
@@ -539,8 +452,6 @@ export class MyRoom extends Room {
 
       const pl = this.players.get(client.sessionId);
       const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
-
-      // legacy has no heldSlot; we’ll just pick best tool anywhere
       const canDrop = this.canBlockDropWithTool(oldId, inv, -1);
 
       console.log("[EDIT mineBlock legacy]", { by: client.sessionId, x, y, z, oldId, canDrop });
@@ -558,7 +469,6 @@ export class MyRoom extends Room {
     // =========================
     this.onMessage("placeBlock", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
-
       const maybe = payload as Partial<PlaceBlockMsg>;
       if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
       if (!isFiniteNumber(maybe.id)) return;
@@ -568,47 +478,34 @@ export class MyRoom extends Room {
       const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
       const blockId = toInt(clamp(maybe.id, 0, 255));
 
-      // cannot place bedrock
       if (blockId === this.BEDROCK_ID) return;
 
       const oldId = this.getBlockAt(x, y, z);
-      if (oldId !== this.AIR_ID) return; // only place into air
+      if (oldId !== this.AIR_ID) return;
 
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
       const inv = this.getOrLoadInventory(pl.userId);
 
-      // require fromSlot to be a valid hotbar slot
       const fromSlot = isFiniteNumber(maybe.fromSlot) ? toInt(maybe.fromSlot) : -1;
       if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) return;
 
       const stack = inv.slots[fromSlot];
-      if (!stack || stack.id <= 0 || stack.count <= 0) return;
+      if (!stack || (stack as any).id <= 0 || (stack as any).count <= 0) return;
 
-      // item must be placeable and match blockId
-      const def = ITEM_DEFS[stack.id];
+      const def = ITEM_DEFS[(stack as any).id];
       if (!def || typeof def.placeBlockId !== "number") return;
       if (def.placeBlockId !== blockId) return;
 
-      console.log("[EDIT placeBlock]", {
-        by: client.sessionId,
-        x,
-        y,
-        z,
-        blockId,
-        fromSlot,
-        itemId: stack.id,
-      });
+      console.log("[EDIT placeBlock]", { by: client.sessionId, x, y, z, blockId, fromSlot, itemId: (stack as any).id });
 
-      // consume 1
-      stack.count -= 1;
-      if (stack.count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
+      (stack as any).count -= 1;
+      if ((stack as any).count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
 
       this.saveInventory(pl.userId, inv);
       this.sendInvStateToClient(client, inv);
 
-      // placing cancels mining if they were mining that spot
       const ms = this.mining.get(client.sessionId);
       if (ms && ms.x === x && ms.y === y && ms.z === z) this.cancelMiningFor(client, "placed_on_target");
 
@@ -630,26 +527,22 @@ export class MyRoom extends Room {
       const drop = this.drops.get(dropId);
       if (!drop) return;
 
-      // expiry check (NEW)
       if (Date.now() - drop.createdAt > this.DROP_TTL_MS) {
         this.drops.delete(dropId);
         this.broadcast("dropDespawn", { dropId });
         return;
       }
 
-      // distance check (server authoritative)
       const dx = drop.x - pl.x;
       const dy = drop.y - pl.y;
       const dz = drop.z - pl.z;
-      const dist2 = dx * dx + dy * dy + dz * dz;
-      if (dist2 > 2.6 * 2.6) return;
+      if (dx * dx + dy * dy + dz * dz > 2.6 * 2.6) return;
 
       const inv = this.getOrLoadInventory(pl.userId);
       const accepted = this.inventoryAdd(inv, { id: drop.itemId, count: drop.count });
 
-      if (accepted <= 0) return; // inventory full/no space
+      if (accepted <= 0) return;
 
-      // consume whole drop
       this.drops.delete(dropId);
       this.broadcast("dropDespawn", { dropId });
 
@@ -665,8 +558,8 @@ export class MyRoom extends Room {
     this.onMessage("invClick", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<InvClickMsg>;
-
       if (!isFiniteNumber(p.slot)) return;
+
       const slot = toInt(p.slot);
       if (slot < 0 || slot >= this.INV_SLOTS) return;
 
@@ -677,7 +570,6 @@ export class MyRoom extends Room {
       if (!pl) return;
 
       const inv = this.getOrLoadInventory(pl.userId);
-
       this.applyInvClick(inv, slot, button, shift);
 
       this.saveInventory(pl.userId, inv);
@@ -690,7 +582,6 @@ export class MyRoom extends Room {
     this.onMessage("craft", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<CraftMsg>;
-
       const recipeId = typeof p.recipeId === "string" ? p.recipeId : "";
       if (!recipeId) return;
 
@@ -708,8 +599,6 @@ export class MyRoom extends Room {
       const wantMax = !!p.max;
       const timesReq = isFiniteNumber(p.times) ? clamp(toInt(p.times), 1, 999) : 1;
 
-      // ✅ IMPORTANT: crafting should use SLOTS ONLY (not cursor),
-      // otherwise cursor becomes an unintended ingredient source/sink.
       const craftableByInputs = () => {
         for (const req of recipe.inputs) {
           if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
@@ -718,36 +607,25 @@ export class MyRoom extends Room {
       };
 
       const tryCraftOnce = (): boolean => {
-        // check inputs (SLOTS ONLY)
         for (const req of recipe.inputs) {
           if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
         }
-        // check output space
-        const canFit = this.inventoryCanFit(inv, recipe.output.id, recipe.output.count);
-        if (!canFit) return false;
+        if (!this.inventoryCanFit(inv, recipe.output.id, recipe.output.count)) return false;
 
-        // consume inputs (SLOTS ONLY)
         for (const req of recipe.inputs) this.inventoryRemoveSlots(inv, req.id, req.count);
-
-        // add output (inventoryAdd will initialize tool durability if applicable)
         this.inventoryAdd(inv, { id: recipe.output.id, count: recipe.output.count });
-
         return true;
       };
 
       let crafted = 0;
-
       if (wantMax) {
-        // craft until you can't
         while (crafted < 999 && craftableByInputs()) {
-          const ok = tryCraftOnce();
-          if (!ok) break;
+          if (!tryCraftOnce()) break;
           crafted++;
         }
       } else {
         for (let i = 0; i < timesReq; i++) {
-          const ok = tryCraftOnce();
-          if (!ok) break;
+          if (!tryCraftOnce()) break;
           crafted++;
         }
       }
@@ -764,9 +642,7 @@ export class MyRoom extends Room {
     // =========================
     // Ping
     // =========================
-    this.onMessage("ping", (client: Client, payload: unknown) => {
-      client.send("pong", payload);
-    });
+    this.onMessage("ping", (client: Client, payload: unknown) => client.send("pong", payload));
   }
 
   // =========================
@@ -774,10 +650,10 @@ export class MyRoom extends Room {
   // =========================
   onJoin(client: Client, options: any) {
     const userId = safeUserId(options?.userId);
-    console.log("➕ onJoin", { sessionId: client.sessionId, userId, options });
+    console.log("➕ onJoin", { sessionId: client.sessionId, userId });
 
+    // spawn spacing
     const spacing = 6;
-
     let spawnX = 0;
     let spawnZ = 0;
 
@@ -785,20 +661,13 @@ export class MyRoom extends Room {
     while (true) {
       const sx = (slot % 4) * spacing;
       const sz = Math.floor(slot / 4) * spacing;
-
       let occupied = false;
+
       for (const p of this.players.values()) {
-        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) {
-          occupied = true;
-          break;
-        }
+        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) { occupied = true; break; }
       }
 
-      if (!occupied) {
-        spawnX = sx;
-        spawnZ = sz;
-        break;
-      }
+      if (!occupied) { spawnX = sx; spawnZ = sz; break; }
 
       slot++;
       if (slot > 4096) break;
@@ -820,18 +689,11 @@ export class MyRoom extends Room {
 
     this.players.set(client.sessionId, spawn);
 
-    // Ensure inventory exists
     const inv = this.getOrLoadInventory(userId);
-
-    // Send inv state to joining client
     this.sendInvStateToClient(client, inv);
-
-    // Optional: let client know seed (useful for debug)
     client.send("worldMeta", { worldSeed: this.worldSeed });
 
-    // Send existing drops to joining client
     for (const d of this.drops.values()) {
-      // skip expired (NEW)
       if (Date.now() - d.createdAt > this.DROP_TTL_MS) continue;
       client.send("dropSpawn", d);
     }
@@ -842,29 +704,13 @@ export class MyRoom extends Room {
 
     client.send("existingPlayers", existingPlayers);
 
-    this.broadcast(
-      "playerJoined",
-      { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw },
-      { except: client }
-    );
-
+    this.broadcast("playerJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw }, { except: client });
     client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
 
-    const allNow = Array.from(this.players.values()).map((p) => ({
-      id: p.id,
-      x: p.x,
-      y: p.y,
-      z: p.z,
-      yaw: p.yaw,
-    }));
+    const allNow = Array.from(this.players.values()).map((p) => ({ id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
     client.send("playersSnapshot", allNow);
 
-    console.log("[JOIN STATE]", {
-      joined: client.sessionId,
-      userId,
-      spawn: { x: spawnX, y: spawnY, z: spawnZ },
-      players: this.players.size,
-    });
+    console.log("[JOIN STATE]", { joined: client.sessionId, userId, spawn: { x: spawnX, y: spawnY, z: spawnZ }, players: this.players.size });
   }
 
   onLeave(client: Client, code?: number) {
@@ -878,24 +724,17 @@ export class MyRoom extends Room {
     console.log("🧹 MyRoom disposed");
     this.players.clear();
     this.mining.clear();
-    // keep chunks/drops maps as-is? room disposed means process exit, so doesn't matter.
   }
 
   // =========================
-  // Chunk coord normalization (THE FIX)
+  // Chunk coord normalization
   // =========================
   private normalizeChunkRequestToIndex(rx: number, ry: number, rz: number): { cx: number; cy: number; cz: number } {
     const CS = this.chunkSize;
-
-    // If NOA provides origins (multiples of CS), convert to index.
-    // If it provides indices, keep them.
     const toIndex = (v: number) => {
-      // origins are typically exact multiples of CS (…,-64,-32,0,32,64,…)
-      if (v !== 0 && v % CS === 0) return toInt(v / CS);
-      // also handle 0 (ambiguous) by treating as index 0
-      return toInt(v);
+      if (v !== 0 && v % CS === 0) return toInt(v / CS); // origin -> index
+      return toInt(v); // index
     };
-
     return { cx: toIndex(rx), cy: toIndex(ry), cz: toIndex(rz) };
   }
 
@@ -909,13 +748,9 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Persistence: world meta (seed) (NEW)
+  // Persistence: world seed
   // =========================
   private loadOrCreateWorldSeed(options: any): number {
-    // Priority:
-    // 1) options.worldSeed (number)
-    // 2) existing meta.json
-    // 3) generate + save
     const optSeedRaw = (options as any)?.worldSeed;
     if (typeof optSeedRaw === "number" && Number.isFinite(optSeedRaw)) {
       const s = (optSeedRaw | 0) >>> 0;
@@ -978,23 +813,19 @@ export class MyRoom extends Room {
   private chunkKey(cx: number, cy: number, cz: number): string {
     return `${cx},${cy},${cz}`;
   }
-
   private chunkFilePath(cx: number, cy: number, cz: number): string {
     return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`);
   }
-
   private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
     const fp = this.chunkFilePath(cx, cy, cz);
     try {
       if (!fs.existsSync(fp)) return null;
-
       const buf = fs.readFileSync(fp);
       const expected = this.chunkSize * this.chunkSize * this.chunkSize;
       if (buf.byteLength !== expected) {
         console.warn("[WORLD] chunk file wrong size, ignoring:", fp, { got: buf.byteLength, expected });
         return null;
       }
-
       const out = new Uint8Array(expected);
       out.set(buf);
       console.log("[WORLD] loaded chunk:", { cx, cy, cz, fp });
@@ -1004,7 +835,6 @@ export class MyRoom extends Room {
       return null;
     }
   }
-
   private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
     const fp = this.chunkFilePath(cx, cy, cz);
     const tmp = fp + ".tmp";
@@ -1088,8 +918,6 @@ export class MyRoom extends Room {
     console.log("[INV] saved", { userId, fp });
   }
 
-  private inventories = new Map<string, InvState>();
-
   private getOrLoadInventory(userId: string): InvState {
     const cached = this.inventories.get(userId);
     if (cached) return cached;
@@ -1100,13 +928,12 @@ export class MyRoom extends Room {
       return fromDisk;
     }
 
-    // new inventory: give starter wood (optional)
     const inv: InvState = {
       slots: Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 } as any)),
       cursor: { id: 0, count: 0 } as any,
     };
 
-    // Starter kit (tweak as you like)
+    // starter kit
     inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
 
     this.inventories.set(userId, inv);
@@ -1124,7 +951,6 @@ export class MyRoom extends Room {
   }
 
   private sendInvStateToClient(client: Client, inv: InvState): void {
-    // ✅ includes dur fields when present
     client.send("invState", { slots: inv.slots, cursor: inv.cursor });
   }
 
@@ -1134,11 +960,6 @@ export class MyRoom extends Room {
   private idx(i: number, j: number, k: number): number {
     const CS = this.chunkSize;
     return i + CS * (j + CS * k);
-  }
-
-  private heightAt(worldX: number, worldZ: number): number {
-    // Keep your original terrain shape for now (events can tune later)
-    return this.baseHeight + Math.floor(Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6);
   }
 
   // deterministic hash -> [0,1)
@@ -1160,11 +981,10 @@ export class MyRoom extends Room {
   }
 
   private smoothstep(t: number): number {
-    // classic smoothstep
     return t * t * (3 - 2 * t);
   }
 
-  // 2D value noise (grid-based, smoothed)
+  // 2D value noise
   private valueNoise2(x: number, z: number, cellSize: number, salt = 0): number {
     const cx = floorDiv(x, cellSize);
     const cz = floorDiv(z, cellSize);
@@ -1185,13 +1005,11 @@ export class MyRoom extends Room {
     return ix0 + (ix1 - ix0) * sz;
   }
 
-  // 2–3 octave FBM-ish blend
   private fbm2(x: number, z: number, baseCell: number, octaves: number, salt = 0): number {
     let sum = 0;
     let amp = 1;
     let norm = 0;
     let cell = baseCell;
-
     for (let i = 0; i < octaves; i++) {
       const n = this.valueNoise2(x, z, Math.max(4, cell), salt + i * 1013);
       sum += n * amp;
@@ -1199,19 +1017,40 @@ export class MyRoom extends Room {
       amp *= 0.5;
       cell = Math.floor(cell * 0.5);
     }
-
     return norm > 0 ? sum / norm : 0.5;
   }
 
   private getBiome(worldX: number, worldZ: number): number {
-    // Two fields: temperature + moisture (both deterministic from seed)
     const temp = this.fbm2(worldX, worldZ, 320, 3, 10000);
     const moist = this.fbm2(worldX, worldZ, 260, 3, 20000);
 
-    // Simple readable mapping:
     if (temp < 0.36) return this.BIOME_SNOW;
     if (temp > 0.66 && moist < 0.46) return this.BIOME_DESERT;
     return this.BIOME_FOREST;
+  }
+
+  // biome-aware terrain height
+  private heightAt(worldX: number, worldZ: number): number {
+    const biome = this.getBiome(worldX, worldZ);
+
+    // base macro undulation
+    const macro = Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6;
+
+    // extra biome flavor
+    if (biome === this.BIOME_DESERT) {
+      // flatter + gentle dunes
+      const dunes = Math.sin(worldX / 34) * 2 + Math.cos(worldZ / 31) * 2;
+      return this.baseHeight + Math.floor(macro * 0.45 + dunes);
+    }
+
+    if (biome === this.BIOME_SNOW) {
+      // taller, rougher
+      const ridges = Math.sin(worldX / 22) * 4 + Math.cos(worldZ / 19) * 4;
+      return this.baseHeight + 4 + Math.floor(macro * 0.85 + ridges * 0.75);
+    }
+
+    // forest default
+    return this.baseHeight + Math.floor(macro * 0.9);
   }
 
   private veinNoise(x: number, y: number, z: number): number {
@@ -1221,30 +1060,243 @@ export class MyRoom extends Room {
     return a * 0.6 + b * 0.25 + c * 0.15;
   }
 
-  private isForest(worldX: number, worldZ: number): boolean {
-    return this.getBiome(worldX, worldZ) === this.BIOME_FOREST;
-  }
+  // =========================
+  // Trees (biome dependent)
+  // Forest: more trees
+  // Snow: fewer trees, taller
+  // Desert: none
+  // =========================
+  private shouldPlaceTreeAt(worldX: number, worldZ: number, biome: number): boolean {
+    if (biome === this.BIOME_DESERT) return false;
 
-  private shouldPlaceTreeAt(worldX: number, worldZ: number): boolean {
-    // deterministic sparse placement; only in forest
-    if (!this.isForest(worldX, worldZ)) return false;
-
-    // Use a coarse cell so trees feel clustered
-    const cell = 7;
+    const cell = biome === this.BIOME_FOREST ? 6 : 9; // snow more sparse
     const cx = floorDiv(worldX, cell);
     const cz = floorDiv(worldZ, cell);
 
     const r = this.hash2i(cx, cz, 33333);
-    // ~1 tree per ~2-3 cells on average (tune later)
-    return r > 0.78;
+
+    if (biome === this.BIOME_FOREST) return r > 0.73; // more
+    if (biome === this.BIOME_SNOW) return r > 0.88; // fewer
+    return false;
   }
 
-  private treeHeight(worldX: number, worldZ: number): number {
-    // 4..6
+  private treeHeight(worldX: number, worldZ: number, biome: number): number {
     const r = this.hash2i(worldX, worldZ, 44444);
-    return 4 + Math.floor(r * 3);
+    if (biome === this.BIOME_SNOW) return 6 + Math.floor(r * 4); // 6..9
+    return 4 + Math.floor(r * 3); // 4..6
   }
 
+  // =========================
+  // POIs (region grid, stamped per chunk)
+  // =========================
+  private poiCandidateForRegion(rx: number, rz: number): PoiCandidate {
+    const regionSize = this.REGION_SIZE;
+    const roll = this.hash2i(rx, rz, 70001);
+    if (roll >= this.POI_CHANCE) {
+      return {
+        exists: false,
+        rx, rz,
+        x0: 0, y0: 0, z0: 0,
+        rot: 0,
+        tier: "COMMON",
+        type: "HUT",
+        minX: 0, minY: 0, minZ: 0,
+        maxX: -1, maxY: -1, maxZ: -1,
+      };
+    }
+
+    const typeRoll = this.hash2i(rx, rz, 70002);
+    const type: PoiType = typeRoll < 0.55 ? "HUT" : "TOWER";
+
+    const tierRoll = this.hash2i(rx, rz, 70003);
+    const tier: PoiTier = tierRoll < 0.84 ? "COMMON" : tierRoll < 0.97 ? "RARE" : "LEGENDARY";
+
+    const rotRoll = this.hash2i(rx, rz, 70004);
+    const rot: 0 | 90 | 180 | 270 = rotRoll < 0.25 ? 0 : rotRoll < 0.5 ? 90 : rotRoll < 0.75 ? 180 : 270;
+
+    const pad = this.POI_EDGE_PAD;
+    const ox = pad + Math.floor(this.hash2i(rx, rz, 70005) * (regionSize - pad * 2));
+    const oz = pad + Math.floor(this.hash2i(rx, rz, 70006) * (regionSize - pad * 2));
+
+    const worldX = rx * regionSize + ox;
+    const worldZ = rz * regionSize + oz;
+
+    // Place on local surface. For tall structures, we anchor at surface+1.
+    const ySurf = this.heightAt(worldX, worldZ);
+    const y0 = ySurf + 1;
+
+    const dims = this.poiDims(type, tier);
+    const minX = worldX;
+    const minY = y0;
+    const minZ = worldZ;
+    const maxX = worldX + dims.w - 1;
+    const maxY = y0 + dims.h - 1;
+    const maxZ = worldZ + dims.d - 1;
+
+    return {
+      exists: true,
+      rx, rz,
+      x0: worldX, y0, z0: worldZ,
+      rot,
+      tier,
+      type,
+      minX, minY, minZ,
+      maxX, maxY, maxZ,
+    };
+  }
+
+  private poiDims(type: PoiType, tier: PoiTier): { w: number; h: number; d: number } {
+    if (type === "HUT") {
+      if (tier === "LEGENDARY") return { w: 11, h: 7, d: 11 };
+      if (tier === "RARE") return { w: 9, h: 6, d: 9 };
+      return { w: 7, h: 5, d: 7 };
+    }
+    // TOWER
+    if (tier === "LEGENDARY") return { w: 11, h: 22, d: 11 };
+    if (tier === "RARE") return { w: 9, h: 16, d: 9 };
+    return { w: 7, h: 12, d: 7 };
+  }
+
+  private poiOps(type: PoiType, tier: PoiTier): StampOp[] {
+    // Simple blocky structures (wood + leaves accents) to keep it cheap.
+    // NOTE: These are LOCAL ops in unrotated space, origin at (0,0,0).
+    const ops: StampOp[] = [];
+
+    const wood = this.WOOD_ID;
+    const stone = this.STONE_ID;
+    const leaves = this.LEAVES_ID;
+
+    if (type === "HUT") {
+      const dims = this.poiDims(type, tier);
+      const w = dims.w, d = dims.d, h = dims.h;
+
+      // floor (stone)
+      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
+
+      // walls (wood)
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 0; x < w; x++) { ops.push({ dx: x, dy: y, dz: 0, id: wood }); ops.push({ dx: x, dy: y, dz: d - 1, id: wood }); }
+        for (let z = 0; z < d; z++) { ops.push({ dx: 0, dy: y, dz: z, id: wood }); ops.push({ dx: w - 1, dy: y, dz: z, id: wood }); }
+      }
+
+      // roof (leaves-ish) sloped-ish
+      const roofY = h - 1;
+      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
+
+      // doorway (air carve) - we do by skipping, not carving, so add nothing there
+      // carve: place AIR to override if chunk already has blocks (we don't want that).
+      // So: just avoid placing wood in doorway area:
+      // We'll remove those ops after generation: easiest is "don't place" in walls loop at specific coords.
+      // (Already placed; we can filter cheaply here.)
+      const doorX = Math.floor(w / 2);
+      const filtered = ops.filter((o) => !(o.id === wood && o.dz === 0 && (o.dx === doorX) && (o.dy === 1 || o.dy === 2)));
+      return filtered;
+    }
+
+    // TOWER
+    const dims = this.poiDims(type, tier);
+    const w = dims.w, d = dims.d, h = dims.h;
+
+    // base disk
+    for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
+
+    // pillars + walls
+    for (let y = 1; y < h; y++) {
+      for (let x = 0; x < w; x++) { ops.push({ dx: x, dy: y, dz: 0, id: stone }); ops.push({ dx: x, dy: y, dz: d - 1, id: stone }); }
+      for (let z = 0; z < d; z++) { ops.push({ dx: 0, dy: y, dz: z, id: stone }); ops.push({ dx: w - 1, dy: y, dz: z, id: stone }); }
+      // occasional ring accents
+      if (y % 4 === 0) {
+        for (let x = 1; x < w - 1; x++) { ops.push({ dx: x, dy: y, dz: 1, id: wood }); ops.push({ dx: x, dy: y, dz: d - 2, id: wood }); }
+        for (let z = 1; z < d - 1; z++) { ops.push({ dx: 1, dy: y, dz: z, id: wood }); ops.push({ dx: w - 2, dy: y, dz: z, id: wood }); }
+      }
+    }
+
+    // top platform
+    for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: h, dz: z, id: wood });
+
+    // crown
+    for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) {
+      const edge = x === 0 || z === 0 || x === w - 1 || z === d - 1;
+      if (edge) ops.push({ dx: x, dy: h + 1, dz: z, id: leaves });
+    }
+
+    // doorway opening at base (front)
+    const doorX = Math.floor(w / 2);
+    const filtered = ops.filter((o) => !(o.id === stone && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2)));
+    return filtered;
+  }
+
+  private rotateLocal(dx: number, dz: number, w: number, d: number, rot: 0 | 90 | 180 | 270): { rx: number; rz: number } {
+    // rotate around origin (0,0) within bounding box sized (w,d)
+    if (rot === 0) return { rx: dx, rz: dz };
+    if (rot === 90) return { rx: d - 1 - dz, rz: dx };
+    if (rot === 180) return { rx: w - 1 - dx, rz: d - 1 - dz };
+    return { rx: dz, rz: w - 1 - dx }; // 270
+  }
+
+  private stampPoiIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+    const CS = this.chunkSize;
+
+    const chunkMinX = cx * CS;
+    const chunkMinY = cy * CS;
+    const chunkMinZ = cz * CS;
+
+    const chunkMaxX = chunkMinX + CS - 1;
+    const chunkMaxY = chunkMinY + CS - 1;
+    const chunkMaxZ = chunkMinZ + CS - 1;
+
+    // determine which regions overlap chunk AABB (XZ only)
+    const regMinX = floorDiv(chunkMinX, this.REGION_SIZE);
+    const regMaxX = floorDiv(chunkMaxX, this.REGION_SIZE);
+    const regMinZ = floorDiv(chunkMinZ, this.REGION_SIZE);
+    const regMaxZ = floorDiv(chunkMaxZ, this.REGION_SIZE);
+
+    for (let rx = regMinX; rx <= regMaxX; rx++) {
+      for (let rz = regMinZ; rz <= regMaxZ; rz++) {
+        const poi = this.poiCandidateForRegion(rx, rz);
+        if (!poi.exists) continue;
+
+        // quick bbox intersect with chunk bbox (3D)
+        if (
+          poi.maxX < chunkMinX || poi.minX > chunkMaxX ||
+          poi.maxY < chunkMinY || poi.minY > chunkMaxY ||
+          poi.maxZ < chunkMinZ || poi.minZ > chunkMaxZ
+        ) continue;
+
+        const dims = this.poiDims(poi.type, poi.tier);
+        const ops = this.poiOps(poi.type, poi.tier);
+
+        // stamp ops (only into this chunk's voxels)
+        for (const op of ops) {
+          const rotPos = this.rotateLocal(op.dx, op.dz, dims.w, dims.d, poi.rot);
+          const wx = poi.x0 + rotPos.rx;
+          const wy = poi.y0 + op.dy;
+          const wz = poi.z0 + rotPos.rz;
+
+          if (wx < chunkMinX || wx > chunkMaxX) continue;
+          if (wy < chunkMinY || wy > chunkMaxY) continue;
+          if (wz < chunkMinZ || wz > chunkMaxZ) continue;
+
+          const lx = wx - chunkMinX;
+          const ly = wy - chunkMinY;
+          const lz = wz - chunkMinZ;
+
+          const idx = this.idx(lx, ly, lz);
+
+          // do not stamp into bedrock, and do not place AIR stamps
+          if (op.id === this.AIR_ID) continue;
+          if (vox[idx] === this.BEDROCK_ID) continue;
+
+          // prefer POI blocks over terrain (yes), but don't overwrite trees leaves/wood? (keep simple)
+          vox[idx] = clamp(toInt(op.id), 0, 255);
+        }
+      }
+    }
+  }
+
+  // =========================
+  // Chunk generation (biomes + ores + bedrock + trees + POIs)
+  // =========================
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
     const vox = new Uint8Array(CS * CS * CS);
@@ -1258,76 +1310,59 @@ export class MyRoom extends Room {
         const height = this.heightAt(worldX, worldZ);
 
         const surfaceId =
-          biome === this.BIOME_DESERT ? this.SAND_ID : biome === this.BIOME_SNOW ? this.SNOW_ID : this.GRASS_ID;
+          biome === this.BIOME_DESERT ? this.SAND_ID
+          : biome === this.BIOME_SNOW ? this.SNOW_ID
+          : this.GRASS_ID;
 
-        // Desert sub-surface feels sandy; snow sits on dirt
         const subsurfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
 
-        // Trees only in forest
-        const hasTree = biome === this.BIOME_FOREST && this.shouldPlaceTreeAt(worldX, worldZ);
-        const tH = hasTree ? this.treeHeight(worldX, worldZ) : 0;
+        const hasTree = this.shouldPlaceTreeAt(worldX, worldZ, biome);
+        const tH = hasTree ? this.treeHeight(worldX, worldZ, biome) : 0;
 
         for (let j = 0; j < CS; j++) {
           const worldY = cy * CS + j;
 
-          // Default terrain
           let id = this.AIR_ID;
           if (worldY > height) id = this.AIR_ID;
           else if (worldY === height) id = surfaceId;
           else if (worldY > height - 4) id = subsurfaceId;
           else id = this.STONE_ID;
 
-          // Bedrock bottom: randomized thickness in worldY 0..4
+          // bedrock at worldY <= 4
           if (worldY <= 4) {
             const r = this.hash3i(worldX, worldY, worldZ);
-            const threshold = 0.95 - worldY * 0.18; // y=0 ~0.95 (almost always), y=4 ~0.23
+            const threshold = 0.95 - worldY * 0.18;
             if (r < threshold) {
               vox[this.idx(i, j, k)] = this.BEDROCK_ID;
               continue;
             }
           }
 
-          // Ores: only replace stone, depth-based thresholds
+          // ores only replace stone
           if (id === this.STONE_ID) {
             const n = this.veinNoise(worldX, worldY, worldZ);
 
-            // Diamond: deep + rare
             if (worldY <= 16 && n > 0.985) id = this.DIAMOND_ORE_ID;
-            // Gold
             else if (worldY <= 32 && n > 0.975) id = this.GOLD_ORE_ID;
-            // Iron
             else if (worldY <= 64 && n > 0.965) id = this.IRON_ORE_ID;
-            // Coal
             else if (worldY <= 128 && n > 0.955) id = this.COAL_ORE_ID;
           }
 
-          // Simple forest tree column (deterministic, chunk-safe)
-          // Trunk above ground at (worldX, worldZ) only; canopy handled locally (simple + cheap)
-          if (hasTree) {
+          // simple tree trunk + local canopy (only forest/snow; desert none)
+          if (hasTree && biome !== this.BIOME_DESERT) {
             const trunkBaseY = height + 1;
             const trunkTopY = height + tH;
 
             if (worldY >= trunkBaseY && worldY <= trunkTopY) {
               id = this.WOOD_ID;
             } else {
-              // small canopy around top, local-only (readability > perfect cross-chunk canopy)
               const canopyY0 = trunkTopY - 1;
               const canopyY1 = trunkTopY + 2;
 
               if (worldY >= canopyY0 && worldY <= canopyY1) {
-                // Simple deterministic "blob" density based on local offsets
-                const dy = worldY - trunkTopY;
-                const dist2 = (dy * dy) * 0.9; // vertical weight
-
-                // Local only: use i/k offsets in-chunk
-                const dx = 0;
-                const dz = 0;
-
                 const r = this.hash3i(worldX, worldY, worldZ);
-                const allow = r > 0.22;
-
-                // Put leaves mostly in the top few layers
-                if (allow && dist2 <= 3.2 && id === this.AIR_ID) id = this.LEAVES_ID;
+                const allow = r > (biome === this.BIOME_SNOW ? 0.42 : 0.22); // snow canopy sparser
+                if (allow && id === this.AIR_ID) id = this.LEAVES_ID;
               }
             }
           }
@@ -1337,13 +1372,15 @@ export class MyRoom extends Room {
       }
     }
 
+    // Stamp POIs LAST so they are seam-safe and deterministic across chunk order.
+    this.stampPoiIntoChunk(vox, cx, cy, cz);
+
     console.log("[WORLD] generated chunk:", { cx, cy, cz, seed: this.worldSeed });
     return vox;
   }
 
   private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const key = this.chunkKey(cx, cy, cz);
-
     const cached = this.chunks.get(key);
     if (cached) return cached;
 
@@ -1360,7 +1397,6 @@ export class MyRoom extends Room {
 
   private getBlockAt(x: number, y: number, z: number): number {
     const CS = this.chunkSize;
-
     const cx = floorDiv(x, CS);
     const cy = floorDiv(y, CS);
     const cz = floorDiv(z, CS);
@@ -1375,7 +1411,6 @@ export class MyRoom extends Room {
 
   private setBlockAuthoritative(x: number, y: number, z: number, id: number): void {
     const CS = this.chunkSize;
-
     const cx = floorDiv(x, CS);
     const cy = floorDiv(y, CS);
     const cz = floorDiv(z, CS);
@@ -1409,7 +1444,6 @@ export class MyRoom extends Room {
     for (const [id, d] of this.drops.entries()) {
       if (now - d.createdAt > this.DROP_TTL_MS) expired.push(id);
     }
-
     if (expired.length <= 0) return;
 
     for (const id of expired) {
@@ -1451,7 +1485,6 @@ export class MyRoom extends Room {
     if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
     if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
 
-    // bedrock + unknowns drop nothing
     return 0;
   }
 
@@ -1483,20 +1516,14 @@ export class MyRoom extends Room {
     const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999));
     const durRaw = Number((s as any)?.dur ?? 0);
     const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
-    if (id > 0 && count > 0) {
-      return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
-    }
+    if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
     return { id: 0, count: 0 } as any;
   }
 
-  // Choose the tool stack we actually use for mining:
-  // 1) held hotbar slot if it's a pick
-  // 2) otherwise best pick found in inventory slots (anywhere)
   private choosePickStack(
     inv: InvState,
     heldSlot: number
   ): { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> } | null {
-    // held slot priority
     if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
       const s = inv.slots[heldSlot];
       if (s && (s as any).id > 0 && (s as any).count > 0) {
@@ -1505,7 +1532,6 @@ export class MyRoom extends Room {
       }
     }
 
-    // find best pick by tier
     let best:
       | { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> }
       | null = null;
@@ -1520,38 +1546,28 @@ export class MyRoom extends Room {
     return best;
   }
 
-  // Ore/tool gating rules (Minecraft-ish):
-  // - Stone-like blocks: require pick to DROP anything.
-  // - Coal/Iron/Stone: need tier >= 1 (wood+)
-  // - Gold/Diamond: need tier >= 3 (iron+)
   private requiredPickTierForDrops(blockId: number): number {
     if (blockId === this.STONE_ID) return 1;
     if (blockId === this.COAL_ORE_ID) return 1;
     if (blockId === this.IRON_ORE_ID) return 1;
     if (blockId === this.GOLD_ORE_ID) return 3;
     if (blockId === this.DIAMOND_ORE_ID) return 3;
-    return 0; // grass/dirt/wood/leaves/sand/snow etc
+    return 0;
   }
 
-  // Tool gating + drops rule
   private canBlockDropWithTool(blockId: number, inv: InvState | null, heldSlot = -1): boolean {
-    // bedrock never drops
     if (blockId === this.BEDROCK_ID) return false;
 
     const reqTier = this.requiredPickTierForDrops(blockId);
     if (reqTier <= 0) return true;
 
     if (!inv) return false;
-
     const picked = this.choosePickStack(inv, heldSlot);
     if (!picked) return false;
-
     return picked.tool.tier >= reqTier;
   }
 
-  // Compute break time based on block + tool tier/speed
   private computeBreakTimeMs(blockId: number, inv: InvState, heldSlot = -1): number {
-    // base times (ms) tuned for feel
     let base = 450;
 
     if (blockId === this.LEAVES_ID) base = 180;
@@ -1569,21 +1585,16 @@ export class MyRoom extends Room {
 
     const picked = this.choosePickStack(inv, heldSlot);
 
-    // Tool multipliers:
-    // - Pick speeds up stone-like blocks; other blocks mostly unchanged
     if (this.isStoneLike(blockId)) {
       if (picked) base = Math.floor(base * picked.tool.speedMul);
-      else base = Math.floor(base * 2.8); // painful by hand
+      else base = Math.floor(base * 2.8);
     } else {
-      // small bonus with pick on wood (optional)
       if (blockId === this.WOOD_ID && picked) base = Math.floor(base * 0.92);
     }
 
-    // clamp to sane range
     return clamp(base, 80, 12000);
   }
 
-  // Optional durability: damage chosen tool by 1 on successful stone-like break
   private damageTool(inv: InvState, slotIndex: number): void {
     const s = inv.slots[slotIndex];
     if (!s || (s as any).id <= 0 || (s as any).count <= 0) return;
@@ -1594,27 +1605,16 @@ export class MyRoom extends Room {
     const cur = toInt(clamp(Number((s as any).dur ?? tool.maxDurability), 0, 999999));
     const next = cur - 1;
 
-    if (next <= 0) {
-      // break tool
-      inv.slots[slotIndex] = { id: 0, count: 0 } as any;
-    } else {
-      (s as any).dur = next;
-    }
+    if (next <= 0) inv.slots[slotIndex] = { id: 0, count: 0 } as any;
+    else (s as any).dur = next;
   }
 
   private cancelMiningFor(client: Client, reason: string): void {
     const st = this.mining.get(client.sessionId);
     if (!st) return;
-
     this.mining.delete(client.sessionId);
     client.send("mineCancelled", { reason });
-
-    console.log("[MINE cancel]", {
-      by: client.sessionId,
-      reason,
-      target: { x: st.x, y: st.y, z: st.z },
-      blockId: st.lastBlockId,
-    });
+    console.log("[MINE cancel]", { by: client.sessionId, reason, target: { x: st.x, y: st.y, z: st.z }, blockId: st.lastBlockId });
   }
 
   private tickMining(): void {
@@ -1622,53 +1622,26 @@ export class MyRoom extends Room {
 
     for (const [sid, st] of this.mining.entries()) {
       const client = this.clients.find((c) => c.sessionId === sid);
-      if (!client) {
-        this.mining.delete(sid);
-        continue;
-      }
+      if (!client) { this.mining.delete(sid); continue; }
 
       const pl = this.players.get(sid);
-      if (!pl) {
-        this.cancelMiningFor(client, "no_player");
-        continue;
-      }
+      if (!pl) { this.cancelMiningFor(client, "no_player"); continue; }
 
-      // heartbeat timeout (client released LMB or lost focus)
-      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) {
-        this.cancelMiningFor(client, "timeout");
-        continue;
-      }
+      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) { this.cancelMiningFor(client, "timeout"); continue; }
 
-      // reach check
       const dx = st.x + 0.5 - pl.x;
       const dy = st.y + 0.5 - pl.y;
       const dz = st.z + 0.5 - pl.z;
-      const dist2 = dx * dx + dy * dy + dz * dz;
-      if (dist2 > this.mineReach * this.mineReach) {
-        this.cancelMiningFor(client, "too_far");
-        continue;
-      }
+      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) { this.cancelMiningFor(client, "too_far"); continue; }
 
-      // block still exists and same id?
       const currentId = this.getBlockAt(st.x, st.y, st.z);
-      if (currentId === this.AIR_ID) {
-        this.cancelMiningFor(client, "air");
-        continue;
-      }
-      if (currentId === this.BEDROCK_ID) {
-        this.cancelMiningFor(client, "bedrock");
-        continue;
-      }
-      if (currentId !== st.lastBlockId) {
-        this.cancelMiningFor(client, "block_changed");
-        continue;
-      }
+      if (currentId === this.AIR_ID) { this.cancelMiningFor(client, "air"); continue; }
+      if (currentId === this.BEDROCK_ID) { this.cancelMiningFor(client, "bedrock"); continue; }
+      if (currentId !== st.lastBlockId) { this.cancelMiningFor(client, "block_changed"); continue; }
 
-      // recompute break time occasionally (tool could have changed mid-mine)
       const inv = this.getOrLoadInventory(st.userId);
       const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
       if (newBreak !== st.breakTimeMs) {
-        // keep progress proportionally similar
         const elapsed = Math.max(0, now - st.startedAt);
         const p = st.breakTimeMs > 0 ? elapsed / st.breakTimeMs : 0;
         st.breakTimeMs = newBreak;
@@ -1677,72 +1650,51 @@ export class MyRoom extends Room {
 
       const elapsedMs = Math.max(0, now - st.startedAt);
       const progress01 = clamp(elapsedMs / Math.max(1, st.breakTimeMs), 0, 1);
-
       const stage = clamp(Math.floor(progress01 * 10), 0, 9);
 
       const shouldSend =
         stage !== st.lastStageSent || now - st.lastProgressSentAt >= this.mineProgressSendMinMs || progress01 >= 1;
 
-      if (shouldSend) {
-        st.lastStageSent = stage;
-        st.lastProgressSentAt = now;
+      if (!shouldSend) continue;
 
-        const msg: MineProgressMsg = {
-          x: st.x,
-          y: st.y,
-          z: st.z,
-          progress: progress01,
-          stage,
-        };
+      st.lastStageSent = stage;
+      st.lastProgressSentAt = now;
 
-        // if done, mine completes now
-        if (progress01 >= 1) {
-          // Choose tool (to know tier + which slot to damage)
-          const picked = this.choosePickStack(inv, st.heldSlot);
+      const msg: MineProgressMsg = { x: st.x, y: st.y, z: st.z, progress: progress01, stage };
 
-          // Finish: remove block + drops (authoritative + persistent)
-          const canDrop = this.canBlockDropWithTool(currentId, inv, st.heldSlot);
+      if (progress01 >= 1) {
+        const picked = this.choosePickStack(inv, st.heldSlot);
+        const canDrop = this.canBlockDropWithTool(currentId, inv, st.heldSlot);
 
-          this.setBlockAuthoritative(st.x, st.y, st.z, this.AIR_ID);
+        this.setBlockAuthoritative(st.x, st.y, st.z, this.AIR_ID);
 
-          if (canDrop) {
-            const dropItem = this.blockIdToDropItemId(currentId);
-            if (dropItem > 0) this.spawnDrop(dropItem, 1, st.x + 0.5, st.y + 0.65, st.z + 0.5);
-          }
-
-          // Optional durability: damage tool only for stone-like blocks
-          if (picked && this.isStoneLike(currentId)) {
-            this.damageTool(inv, picked.slotIndex);
-            this.saveInventory(st.userId, inv);
-            this.sendInvStateToClient(client, inv);
-          }
-
-          msg.done = true;
-          client.send("mineProgress", msg);
-
-          console.log("[MINE done]", {
-            by: sid,
-            userId: st.userId,
-            x: st.x,
-            y: st.y,
-            z: st.z,
-            blockId: currentId,
-            canDrop,
-            tool: picked
-              ? {
-                  id: (picked.stack as any).id,
-                  tier: picked.tool.tier,
-                  slot: picked.slotIndex,
-                  dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0,
-                }
-              : null,
-            breakTimeMs: st.breakTimeMs,
-          });
-
-          this.mining.delete(sid);
-        } else {
-          client.send("mineProgress", msg);
+        if (canDrop) {
+          const dropItem = this.blockIdToDropItemId(currentId);
+          if (dropItem > 0) this.spawnDrop(dropItem, 1, st.x + 0.5, st.y + 0.65, st.z + 0.5);
         }
+
+        if (picked && this.isStoneLike(currentId)) {
+          this.damageTool(inv, picked.slotIndex);
+          this.saveInventory(st.userId, inv);
+          this.sendInvStateToClient(client, inv);
+        }
+
+        msg.done = true;
+        client.send("mineProgress", msg);
+
+        console.log("[MINE done]", {
+          by: sid,
+          userId: st.userId,
+          x: st.x, y: st.y, z: st.z,
+          blockId: currentId,
+          canDrop,
+          tool: picked ? { id: (picked.stack as any).id, tier: picked.tool.tier, slot: picked.slotIndex, dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0 } : null,
+          breakTimeMs: st.breakTimeMs,
+        });
+
+        this.mining.delete(sid);
+      } else {
+        client.send("mineProgress", msg);
       }
     }
   }
@@ -1756,10 +1708,7 @@ export class MyRoom extends Room {
     const durRaw = Number((s as any)?.dur ?? 0);
     const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
 
-    if (id > 0 && count > 0) {
-      // keep dur if present (>0)
-      return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
-    }
+    if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
     return { id: 0, count: 0 } as any;
   }
 
@@ -1768,19 +1717,6 @@ export class MyRoom extends Room {
     return def ? clamp(toInt(def.maxStack), 1, 999999) : 64;
   }
 
-  // Count in slots + cursor (useful for "has tool anywhere" rules)
-  private inventoryCountAny(inv: InvState, itemId: number): number {
-    let n = 0;
-    for (const s of inv.slots) if ((s as any).id === itemId && (s as any).count > 0) n += (s as any).count;
-    if ((inv.cursor as any).id === itemId && (inv.cursor as any).count > 0) n += (inv.cursor as any).count;
-    return n;
-  }
-
-  private inventoryHasAny(inv: InvState, itemId: number): boolean {
-    return this.inventoryCountAny(inv, itemId) > 0;
-  }
-
-  // ✅ SLOTS ONLY (used for crafting inputs)
   private inventoryCountSlots(inv: InvState, itemId: number): number {
     let n = 0;
     for (const s of inv.slots) if ((s as any).id === itemId && (s as any).count > 0) n += (s as any).count;
@@ -1790,13 +1726,11 @@ export class MyRoom extends Room {
   private inventoryCanFit(inv: InvState, itemId: number, count: number): boolean {
     const want = clamp(toInt(count), 1, 999999);
     const maxS = this.maxStackFor(itemId);
-
     let remaining = want;
 
-    // fill existing stacks
-    for (const s of inv.slots) {
-      if ((s as any).id === itemId && (s as any).count > 0) {
-        const space = maxS - (s as any).count;
+    for (const s of inv.slots as any[]) {
+      if (s.id === itemId && s.count > 0) {
+        const space = maxS - s.count;
         if (space > 0) {
           const take = Math.min(space, remaining);
           remaining -= take;
@@ -1805,9 +1739,8 @@ export class MyRoom extends Room {
       }
     }
 
-    // use empty slots
-    for (const s of inv.slots) {
-      if ((s as any).id === 0 || (s as any).count <= 0) {
+    for (const s of inv.slots as any[]) {
+      if (s.id === 0 || s.count <= 0) {
         const take = Math.min(maxS, remaining);
         remaining -= take;
         if (remaining <= 0) return true;
@@ -1817,8 +1750,6 @@ export class MyRoom extends Room {
     return remaining <= 0;
   }
 
-  // returns how many items were accepted (0..stack.count)
-  // NOTE: tools (maxStack=1) get initialized durability when placed into a slot (fresh tools only)
   private inventoryAdd(inv: InvState, stack: ItemStack): number {
     const s = this.normalizeStack(stack);
     if ((s as any).id <= 0 || (s as any).count <= 0) return 0;
@@ -1828,7 +1759,7 @@ export class MyRoom extends Room {
     let remaining = (s as any).count | 0;
     let accepted = 0;
 
-    // fill existing stacks first (only meaningful for stackables)
+    // fill existing
     for (let i = 0; i < inv.slots.length; i++) {
       const slot = inv.slots[i] as any;
       if (slot.id === id && slot.count > 0) {
@@ -1843,21 +1774,19 @@ export class MyRoom extends Room {
       }
     }
 
-    // then fill empty slots
+    // fill empty
     for (let i = 0; i < inv.slots.length; i++) {
       const slot = inv.slots[i] as any;
       if (slot.id === 0 || slot.count <= 0) {
-        const take = Math.min(maxS, remaining);
-
         const def = ITEM_DEFS[id];
         const isTool = !!def?.tool;
 
-        // tools: initialize durability at max
         if (isTool) {
           inv.slots[i] = { id, count: 1, dur: def!.tool!.maxDurability } as any;
           remaining -= 1;
           accepted += 1;
         } else {
+          const take = Math.min(maxS, remaining);
           inv.slots[i] = { id, count: take } as any;
           remaining -= take;
           accepted += take;
@@ -1870,39 +1799,6 @@ export class MyRoom extends Room {
     return accepted;
   }
 
-  // remove up to count; returns removed (slots first, then cursor)
-  private inventoryRemoveAny(inv: InvState, itemId: number, count: number): number {
-    const want = clamp(toInt(count), 1, 999999);
-    let remaining = want;
-    let removed = 0;
-
-    // remove from slots first
-    for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i] as any;
-      if (s.id === itemId && s.count > 0) {
-        const take = Math.min(s.count, remaining);
-        s.count -= take;
-        remaining -= take;
-        removed += take;
-        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 } as any;
-        if (remaining <= 0) return removed;
-      }
-    }
-
-    // then cursor
-    const cur = inv.cursor as any;
-    if (cur.id === itemId && cur.count > 0 && remaining > 0) {
-      const take = Math.min(cur.count, remaining);
-      cur.count -= take;
-      remaining -= take;
-      removed += take;
-      if (cur.count <= 0) inv.cursor = { id: 0, count: 0 } as any;
-    }
-
-    return removed;
-  }
-
-  // ✅ remove up to count; SLOTS ONLY; returns removed
   private inventoryRemoveSlots(inv: InvState, itemId: number, count: number): number {
     const want = clamp(toInt(count), 1, 999999);
     let remaining = want;
@@ -1919,7 +1815,6 @@ export class MyRoom extends Room {
         if (remaining <= 0) break;
       }
     }
-
     return removed;
   }
 
@@ -1927,7 +1822,6 @@ export class MyRoom extends Room {
   // Inventory click logic (durability-safe)
   // =========================
   private applyInvClick(inv: InvState, slotIndex: number, button: "L" | "R", shift: boolean): void {
-    // normalize state
     inv.cursor = this.normalizeStack(inv.cursor);
     inv.slots[slotIndex] = this.normalizeStack(inv.slots[slotIndex]);
 
@@ -1937,7 +1831,7 @@ export class MyRoom extends Room {
     const cursorIsTool = cursor.id > 0 && cursor.count > 0 && this.isToolItem(cursor.id);
     const slotIsTool = slot.id > 0 && slot.count > 0 && this.isToolItem(slot.id);
 
-    // Quick move: Shift + Left (move between hotbar/backpack)
+    // shift+L quick move between hotbar/backpack
     if (shift && button === "L") {
       if (slot.id <= 0 || slot.count <= 0) return;
 
@@ -1945,20 +1839,11 @@ export class MyRoom extends Room {
       const targetStart = isHotbar ? this.HOTBAR_SLOTS : 0;
       const targetEnd = isHotbar ? this.INV_SLOTS : this.HOTBAR_SLOTS;
 
-      // attempt to move entire stack into target region
-      const moved = this.moveStackBetweenRanges(inv, slotIndex, targetStart, targetEnd);
-      if (moved) return;
-
-      // if can't move, do nothing
+      if (this.moveStackBetweenRanges(inv, slotIndex, targetStart, targetEnd)) return;
       return;
     }
 
     if (button === "L") {
-      // LEFT CLICK:
-      // - if cursor empty: pick up slot
-      // - else if slot empty: place cursor
-      // - else if same id: stack into slot
-      // - else: swap
       if (cursor.id <= 0 || cursor.count <= 0) {
         inv.cursor = this.cloneStack(slot) as any;
         inv.slots[slotIndex] = { id: 0, count: 0 } as any;
@@ -1980,35 +1865,21 @@ export class MyRoom extends Room {
         slot.count += take;
         cursor.count -= take;
 
-        // dur remains whatever slot had; tools never stack due to maxStack=1 -> space=0
         inv.slots[slotIndex] = slot as any;
         inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
         return;
       }
 
-      // swap (preserve dur)
       inv.slots[slotIndex] = this.cloneStack(cursor) as any;
       inv.cursor = this.cloneStack(slot) as any;
       return;
     }
 
-    // RIGHT CLICK (durability-safe):
-    // - if cursor empty and slot not empty:
-    //     - stackables: take half (ceil)
-    //     - tools: take whole tool (count=1) + preserve dur
-    // - else if cursor not empty:
-    //     - if cursor is tool:
-    //         - if slot empty: place whole tool preserving dur
-    //         - else swap (tool <-> slot) preserving dur (prevents "place one" that loses dur)
-    //     - else (stackable cursor):
-    //         - if slot empty: place one
-    //         - else if same id and slot not full: place one
-    //         - else: do nothing
+    // RIGHT CLICK
     if (cursor.id <= 0 || cursor.count <= 0) {
       if (slot.id <= 0 || slot.count <= 0) return;
 
       if (slotIsTool) {
-        // pick up tool intact
         inv.cursor = this.cloneStack(slot) as any;
         inv.slots[slotIndex] = { id: 0, count: 0 } as any;
         return;
@@ -2021,21 +1892,18 @@ export class MyRoom extends Room {
       return;
     }
 
-    // cursor has items
     if (cursorIsTool) {
-      // tool cannot be split/placed-one; treat RMB as "place/swap whole tool"
       if (slot.id <= 0 || slot.count <= 0) {
         inv.slots[slotIndex] = this.cloneStack(cursor) as any;
         inv.cursor = { id: 0, count: 0 } as any;
         return;
       }
-      // swap
       inv.slots[slotIndex] = this.cloneStack(cursor) as any;
       inv.cursor = this.cloneStack(slot) as any;
       return;
     }
 
-    // cursor is stackable
+    // cursor stackable
     if (slot.id <= 0 || slot.count <= 0) {
       inv.slots[slotIndex] = { id: cursor.id, count: 1 } as any;
       cursor.count -= 1;
@@ -2054,7 +1922,7 @@ export class MyRoom extends Room {
       return;
     }
 
-    // different item: do nothing on right-click for stackables
+    // different item: do nothing on RMB for stackables
   }
 
   private moveStackBetweenRanges(inv: InvState, fromIndex: number, toStart: number, toEnd: number): boolean {
@@ -2065,7 +1933,6 @@ export class MyRoom extends Room {
     const maxS = this.maxStackFor(from.id);
     const isTool = this.isToolItem(from.id) || maxS === 1;
 
-    // Tools: move whole tool into first empty slot in target range, preserving dur
     if (isTool) {
       for (let i = toStart; i < toEnd; i++) {
         const s = this.normalizeStack(inv.slots[i]) as any;
@@ -2080,7 +1947,6 @@ export class MyRoom extends Room {
 
     let remaining = from.count;
 
-    // 1) fill existing stacks in target range
     for (let i = toStart; i < toEnd; i++) {
       const s = this.normalizeStack(inv.slots[i]) as any;
       if (s.id === from.id && s.count > 0) {
@@ -2095,7 +1961,6 @@ export class MyRoom extends Room {
       }
     }
 
-    // 2) fill empty slots in target range
     for (let i = toStart; i < toEnd && remaining > 0; i++) {
       const s = this.normalizeStack(inv.slots[i]) as any;
       if (s.id <= 0 || s.count <= 0) {
@@ -2108,7 +1973,6 @@ export class MyRoom extends Room {
     const moved = from.count - remaining;
     if (moved <= 0) return false;
 
-    // update from slot
     const newCount = from.count - moved;
     inv.slots[fromIndex] = newCount > 0 ? ({ id: from.id, count: newCount } as any) : ({ id: 0, count: 0 } as any);
     return true;
