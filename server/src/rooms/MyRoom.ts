@@ -299,15 +299,28 @@ export class MyRoom extends Room {
     console.log("[WORLD] worldSeed =", this.worldSeed);
 
     // Load pre-expanded structures (Path B)
+    // IMPORTANT: process.cwd() is typically ".../server" in your runtime.
+    // So "server/src/..." becomes ".../server/server/src/..." (wrong).
+    // Use "src/..." OR an absolute path built from cwd.
     try {
-      this.townHall = loadBlockStructure(
-        "server/src/structures/town_hall.blocks.json"
-      );
+      const relA = "src/structures/town_hall.blocks.json";
+      const relB = path.join("server", "src", "structures", "town_hall.blocks.json"); // fallback if cwd is repo root
+
+      let chosen = relA;
+      const absA = path.join(process.cwd(), relA);
+      if (!fs.existsSync(absA)) {
+        const absB = path.join(process.cwd(), relB);
+        if (fs.existsSync(absB)) chosen = relB;
+      }
+
+      this.townHall = loadBlockStructure(chosen);
+
       console.log("[STRUCT] townHall loaded:", {
         name: this.townHall.name,
         blocks: this.townHall.blocks.length,
         size: this.townHall.size,
         anchor: this.townHall.anchor,
+        chosen,
       });
     } catch (e) {
       console.warn("[STRUCT] townHall failed to load", e);
@@ -1056,7 +1069,11 @@ export class MyRoom extends Room {
   private chunkFilePath(cx: number, cy: number, cz: number): string {
     return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`);
   }
-  private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
+  private readChunkFromDisk(
+    cx: number,
+    cy: number,
+    cz: number
+  ): Uint8Array | null {
     const fp = this.chunkFilePath(cx, cy, cz);
     try {
       if (!fs.existsSync(fp)) return null;
@@ -1078,7 +1095,12 @@ export class MyRoom extends Room {
       return null;
     }
   }
-  private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
+  private writeChunkToDisk(
+    cx: number,
+    cy: number,
+    cz: number,
+    chunk: Uint8Array
+  ): void {
     const fp = this.chunkFilePath(cx, cy, cz);
     const tmp = fp + ".tmp";
     fs.writeFileSync(tmp, Buffer.from(chunk));
@@ -1101,16 +1123,23 @@ export class MyRoom extends Room {
       const j = JSON.parse(raw);
 
       const slotsIn = Array.isArray(j?.slots) ? j.slots : null;
-      const cursorIn = typeof j?.cursor === "object" && j?.cursor ? j.cursor : null;
+      const cursorIn =
+        typeof j?.cursor === "object" && j?.cursor ? j.cursor : null;
 
-      const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 } as any));
+      const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({
+        id: 0,
+        count: 0,
+      })) as any;
+
       if (slotsIn) {
         for (let i = 0; i < Math.min(this.INV_SLOTS, slotsIn.length); i++) {
           const s = slotsIn[i];
           const id = toInt(clamp(Number(s?.id ?? 0), 0, 999999));
           const count = toInt(clamp(Number(s?.count ?? 0), 0, 999999));
           const durRaw = Number(s?.dur ?? 0);
-          const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
+          const dur = Number.isFinite(durRaw)
+            ? toInt(clamp(durRaw, 0, 999999))
+            : 0;
 
           slots[i] =
             id > 0 && count > 0
@@ -1122,9 +1151,13 @@ export class MyRoom extends Room {
       }
 
       const cId = toInt(clamp(Number((cursorIn as any)?.id ?? 0), 0, 999999));
-      const cCount = toInt(clamp(Number((cursorIn as any)?.count ?? 0), 0, 999999));
+      const cCount = toInt(
+        clamp(Number((cursorIn as any)?.count ?? 0), 0, 999999)
+      );
       const cDurRaw = Number((cursorIn as any)?.dur ?? 0);
-      const cDur = Number.isFinite(cDurRaw) ? toInt(clamp(cDurRaw, 0, 999999)) : 0;
+      const cDur = Number.isFinite(cDurRaw)
+        ? toInt(clamp(cDurRaw, 0, 999999))
+        : 0;
 
       const cursor: ItemStack =
         cId > 0 && cCount > 0
@@ -1172,7 +1205,10 @@ export class MyRoom extends Room {
     }
 
     const inv: InvState = {
-      slots: Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 } as any)),
+      slots: Array.from({ length: this.INV_SLOTS }, () => ({
+        id: 0,
+        count: 0,
+      })) as any,
       cursor: { id: 0, count: 0 } as any,
     };
 
@@ -1208,7 +1244,11 @@ export class MyRoom extends Room {
   // deterministic hash -> [0,1)
   private hash3i(x: number, y: number, z: number): number {
     const seed = this.worldSeed | 0;
-    let h = x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1597334677;
+    let h =
+      x * 374761393 +
+      y * 668265263 +
+      z * 2147483647 +
+      seed * 1597334677;
     h = (h ^ (h >>> 13)) * 1274126177;
     h = h ^ (h >>> 16);
     return (h >>> 0) / 4294967296;
@@ -1228,7 +1268,12 @@ export class MyRoom extends Room {
   }
 
   // 2D value noise
-  private valueNoise2(x: number, z: number, cellSize: number, salt = 0): number {
+  private valueNoise2(
+    x: number,
+    z: number,
+    cellSize: number,
+    salt = 0
+  ): number {
     const cx = floorDiv(x, cellSize);
     const cz = floorDiv(z, cellSize);
 
@@ -1248,7 +1293,13 @@ export class MyRoom extends Room {
     return ix0 + (ix1 - ix0) * sz;
   }
 
-  private fbm2(x: number, z: number, baseCell: number, octaves: number, salt = 0): number {
+  private fbm2(
+    x: number,
+    z: number,
+    baseCell: number,
+    octaves: number,
+    salt = 0
+  ): number {
     let sum = 0;
     let amp = 1;
     let norm = 0;
@@ -1267,7 +1318,10 @@ export class MyRoom extends Room {
     // Bias town center area to FOREST for a pleasant hub look
     const dx = worldX - this.TOWN_CENTER_X;
     const dz = worldZ - this.TOWN_CENTER_Z;
-    if (dx * dx + dz * dz <= (this.SAFE_RADIUS + 10) * (this.SAFE_RADIUS + 10)) {
+    if (
+      dx * dx + dz * dz <=
+      (this.SAFE_RADIUS + 10) * (this.SAFE_RADIUS + 10)
+    ) {
       return this.BIOME_FOREST;
     }
 
@@ -1293,7 +1347,9 @@ export class MyRoom extends Room {
 
     if (biome === this.BIOME_SNOW) {
       const ridges = Math.sin(worldX / 22) * 4 + Math.cos(worldZ / 19) * 4;
-      return this.baseHeight + 4 + Math.floor(macro * 0.85 + ridges * 0.75);
+      return (
+        this.baseHeight + 4 + Math.floor(macro * 0.85 + ridges * 0.75)
+      );
     }
 
     return this.baseHeight + Math.floor(macro * 0.9);
@@ -1309,7 +1365,11 @@ export class MyRoom extends Room {
   // =========================
   // Trees (biome dependent)
   // =========================
-  private shouldPlaceTreeAt(worldX: number, worldZ: number, biome: number): boolean {
+  private shouldPlaceTreeAt(
+    worldX: number,
+    worldZ: number,
+    biome: number
+  ): boolean {
     // no trees inside Town safe zone
     if (this.isInSafeZoneXZ(worldX, worldZ)) return false;
 
@@ -1378,8 +1438,12 @@ export class MyRoom extends Room {
       rotRoll < 0.25 ? 0 : rotRoll < 0.5 ? 90 : rotRoll < 0.75 ? 180 : 270;
 
     const pad = this.POI_EDGE_PAD;
-    const ox = pad + Math.floor(this.hash2i(rx, rz, 70005) * (regionSize - pad * 2));
-    const oz = pad + Math.floor(this.hash2i(rx, rz, 70006) * (regionSize - pad * 2));
+    const ox =
+      pad +
+      Math.floor(this.hash2i(rx, rz, 70005) * (regionSize - pad * 2));
+    const oz =
+      pad +
+      Math.floor(this.hash2i(rx, rz, 70006) * (regionSize - pad * 2));
 
     const worldX = rx * regionSize + ox;
     const worldZ = rz * regionSize + oz;
@@ -1435,7 +1499,10 @@ export class MyRoom extends Room {
     };
   }
 
-  private poiDims(type: PoiType, tier: PoiTier): { w: number; h: number; d: number } {
+  private poiDims(
+    type: PoiType,
+    tier: PoiTier
+  ): { w: number; h: number; d: number } {
     if (type === "HUT") {
       if (tier === "LEGENDARY") return { w: 11, h: 7, d: 11 };
       if (tier === "RARE") return { w: 9, h: 6, d: 9 };
@@ -1453,10 +1520,14 @@ export class MyRoom extends Room {
 
     if (type === "HUT") {
       const dims = this.poiDims(type, tier);
-      const w = dims.w, d = dims.d, h = dims.h;
+      const w = dims.w,
+        d = dims.d,
+        h = dims.h;
 
       // floor
-      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
+      for (let z = 0; z < d; z++)
+        for (let x = 0; x < w; x++)
+          ops.push({ dx: x, dy: 0, dz: z, id: stone });
 
       // walls
       for (let y = 1; y < h - 1; y++) {
@@ -1472,12 +1543,20 @@ export class MyRoom extends Room {
 
       // roof
       const roofY = h - 1;
-      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
+      for (let z = 0; z < d; z++)
+        for (let x = 0; x < w; x++)
+          ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
 
       // doorway carve
       const doorX = Math.floor(w / 2);
       const filtered = ops.filter(
-        (o) => !(o.id === wood && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2))
+        (o) =>
+          !(
+            o.id === wood &&
+            o.dz === 0 &&
+            o.dx === doorX &&
+            (o.dy === 1 || o.dy === 2)
+          )
       );
       return filtered;
     }
@@ -1485,14 +1564,25 @@ export class MyRoom extends Room {
     return [];
   }
 
-  private rotateLocal(dx: number, dz: number, w: number, d: number, rot: 0 | 90 | 180 | 270): { rx: number; rz: number } {
+  private rotateLocal(
+    dx: number,
+    dz: number,
+    w: number,
+    d: number,
+    rot: 0 | 90 | 180 | 270
+  ): { rx: number; rz: number } {
     if (rot === 0) return { rx: dx, rz: dz };
     if (rot === 90) return { rx: d - 1 - dz, rz: dx };
     if (rot === 180) return { rx: w - 1 - dx, rz: d - 1 - dz };
     return { rx: dz, rz: w - 1 - dx };
   }
 
-  private stampPoiIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+  private stampPoiIntoChunk(
+    vox: Uint8Array,
+    cx: number,
+    cy: number,
+    cz: number
+  ): void {
     const CS = this.chunkSize;
 
     const chunkMinX = cx * CS;
@@ -1527,7 +1617,13 @@ export class MyRoom extends Room {
         const ops = this.poiOps(poi.type, poi.tier);
 
         for (const op of ops) {
-          const rotPos = this.rotateLocal(op.dx, op.dz, dims.w, dims.d, poi.rot);
+          const rotPos = this.rotateLocal(
+            op.dx,
+            op.dz,
+            dims.w,
+            dims.d,
+            poi.rot
+          );
           const wx = poi.x0 + rotPos.rx;
           const wy = poi.y0 + op.dy;
           const wz = poi.z0 + rotPos.rz;
@@ -1554,7 +1650,12 @@ export class MyRoom extends Room {
   // =========================
   // Town of Beginnings stamping (procedural + structure stamping)
   // =========================
-  private stampTownIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+  private stampTownIntoChunk(
+    vox: Uint8Array,
+    cx: number,
+    cy: number,
+    cz: number
+  ): void {
     const CS = this.chunkSize;
 
     const chunkMinX = cx * CS;
@@ -1583,7 +1684,11 @@ export class MyRoom extends Room {
         const dz = wz - this.TOWN_CENTER_Z;
         const d2 = dx * dx + dz * dz;
 
-        if (d2 > (this.TOWN_RING_RADIUS + 4) * (this.TOWN_RING_RADIUS + 4)) continue;
+        if (
+          d2 >
+          (this.TOWN_RING_RADIUS + 4) * (this.TOWN_RING_RADIUS + 4)
+        )
+          continue;
 
         const colSurface = this.heightAt(wx, wz);
         const colTownBase = colSurface + 1;
@@ -1591,8 +1696,10 @@ export class MyRoom extends Room {
         const inPlaza = d2 <= this.TOWN_PLAZA_RADIUS * this.TOWN_PLAZA_RADIUS;
 
         const inPath =
-          (Math.abs(dz) <= this.TOWN_PATH_HALF_W && Math.abs(dx) <= this.TOWN_RING_RADIUS) ||
-          (Math.abs(dx) <= this.TOWN_PATH_HALF_W && Math.abs(dz) <= this.TOWN_RING_RADIUS);
+          (Math.abs(dz) <= this.TOWN_PATH_HALF_W &&
+            Math.abs(dx) <= this.TOWN_RING_RADIUS) ||
+          (Math.abs(dx) <= this.TOWN_PATH_HALF_W &&
+            Math.abs(dz) <= this.TOWN_RING_RADIUS);
 
         const ringR0 = this.TOWN_RING_RADIUS;
         const ringR1 = this.TOWN_RING_RADIUS + 1;
@@ -1626,7 +1733,10 @@ export class MyRoom extends Room {
 
           // clear space above ground inside safe area
           if (this.isInSafeZoneXZ(wx, wz)) {
-            const clearTop = Math.min(chunkMaxY, colSurface + this.TOWN_CLEAR_HEIGHT);
+            const clearTop = Math.min(
+              chunkMaxY,
+              colSurface + this.TOWN_CLEAR_HEIGHT
+            );
             if (wy > colSurface && wy <= clearTop) vox[ii] = this.AIR_ID;
           }
 
@@ -1649,7 +1759,8 @@ export class MyRoom extends Room {
             if (wy === wallY + 1) {
               const every = 5;
               const onPost =
-                (mod(dx, every) === 0 && mod(dz, every) === 0) || this.hash2i(wx, wz, 91234) > 0.94;
+                (mod(dx, every) === 0 && mod(dz, every) === 0) ||
+                this.hash2i(wx, wz, 91234) > 0.94;
               if (onPost) vox[ii] = this.LEAVES_ID;
             }
             if (wy > wallY + 1 && wy <= wallY + 5) vox[ii] = this.AIR_ID;
@@ -1661,7 +1772,8 @@ export class MyRoom extends Room {
             if (wy === baseY) vox[ii] = this.STONE_ID;
             if (wy >= baseY + 1 && wy <= baseY + 5) vox[ii] = this.WOOD_ID;
             if (wy === baseY + 6) vox[ii] = this.LEAVES_ID;
-            if (wy === baseY + 7 && (Math.abs(dx) + Math.abs(dz) === 1)) vox[ii] = this.LEAVES_ID;
+            if (wy === baseY + 7 && (Math.abs(dx) + Math.abs(dz) === 1))
+              vox[ii] = this.LEAVES_ID;
           }
 
           // starter huts
@@ -1685,7 +1797,8 @@ export class MyRoom extends Room {
             const towardX = hc.hx > this.TOWN_CENTER_X ? "W" : "E";
             const towardZ = hc.hz > this.TOWN_CENTER_Z ? "S" : "N";
             doorSide =
-              Math.abs(hc.hx - this.TOWN_CENTER_X) >= Math.abs(hc.hz - this.TOWN_CENTER_Z)
+              Math.abs(hc.hx - this.TOWN_CENTER_X) >=
+              Math.abs(hc.hz - this.TOWN_CENTER_Z)
                 ? (towardX as any)
                 : (towardZ as any);
 
@@ -1694,16 +1807,30 @@ export class MyRoom extends Room {
             const doorY2 = hutBaseY + 2;
 
             const isDoor =
-              (doorSide === "N" && oz === 3 && ox === doorX && (wy === doorY1 || wy === doorY2)) ||
-              (doorSide === "S" && oz === -3 && ox === doorX && (wy === doorY1 || wy === doorY2)) ||
-              (doorSide === "E" && ox === 3 && oz === doorX && (wy === doorY1 || wy === doorY2)) ||
-              (doorSide === "W" && ox === -3 && oz === doorX && (wy === doorY1 || wy === doorY2));
+              (doorSide === "N" &&
+                oz === 3 &&
+                ox === doorX &&
+                (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "S" &&
+                oz === -3 &&
+                ox === doorX &&
+                (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "E" &&
+                ox === 3 &&
+                oz === doorX &&
+                (wy === doorY1 || wy === doorY2)) ||
+              (doorSide === "W" &&
+                ox === -3 &&
+                oz === doorX &&
+                (wy === doorY1 || wy === doorY2));
 
-            if (wy >= wallY0 && wy <= wallY1 && isEdge) vox[ii] = isDoor ? this.AIR_ID : this.WOOD_ID;
+            if (wy >= wallY0 && wy <= wallY1 && isEdge)
+              vox[ii] = isDoor ? this.AIR_ID : this.WOOD_ID;
 
             if (wy === roofY) vox[ii] = this.LEAVES_ID;
 
-            if (wy > hutBaseY && wy <= roofY + 2 && !isEdge) vox[ii] = this.AIR_ID;
+            if (wy > hutBaseY && wy <= roofY + 2 && !isEdge)
+              vox[ii] = this.AIR_ID;
           }
         }
       }
@@ -1718,7 +1845,16 @@ export class MyRoom extends Room {
       const worldY = baseY - this.townHall.anchor.y;
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
 
-      this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
+      this.stampStructureIntoChunk(
+        vox,
+        cx,
+        cy,
+        cz,
+        this.townHall,
+        worldX,
+        worldY,
+        worldZ
+      );
     }
   }
 
@@ -1730,7 +1866,10 @@ export class MyRoom extends Room {
     cx: number,
     cy: number,
     cz: number,
-    s: { size: { w: number; h: number; d: number }; blocks: Array<{ x: number; y: number; z: number; id: number }> },
+    s: {
+      size: { w: number; h: number; d: number };
+      blocks: Array<{ x: number; y: number; z: number; id: number }>;
+    },
     worldX: number,
     worldY: number,
     worldZ: number
@@ -1798,7 +1937,8 @@ export class MyRoom extends Room {
             ? this.SNOW_ID
             : this.GRASS_ID;
 
-        const subsurfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
+        const subsurfaceId =
+          biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
 
         const hasTree = this.shouldPlaceTreeAt(worldX, worldZ, biome);
         const tH = hasTree ? this.treeHeight(worldX, worldZ, biome) : 0;
@@ -1895,7 +2035,12 @@ export class MyRoom extends Room {
     return chunk[this.idx(lx, ly, lz)] | 0;
   }
 
-  private setBlockAuthoritative(x: number, y: number, z: number, id: number): void {
+  private setBlockAuthoritative(
+    x: number,
+    y: number,
+    z: number,
+    id: number
+  ): void {
     const CS = this.chunkSize;
     const cx = floorDiv(x, CS);
     const cy = floorDiv(y, CS);
@@ -1943,8 +2088,16 @@ export class MyRoom extends Room {
     });
   }
 
-  private spawnDrop(itemId: number, count: number, x: number, y: number, z: number): void {
-    const id = `d_${Date.now().toString(16)}_${(this.nextDropSeq++).toString(16)}`;
+  private spawnDrop(
+    itemId: number,
+    count: number,
+    x: number,
+    y: number,
+    z: number
+  ): void {
+    const id = `d_${Date.now().toString(16)}_${(
+      this.nextDropSeq++
+    ).toString(16)}`;
     const drop: Drop = {
       dropId: id,
       itemId: clamp(toInt(itemId), 1, 999999),
@@ -2004,15 +2157,22 @@ export class MyRoom extends Room {
     const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999));
     const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999));
     const durRaw = Number((s as any)?.dur ?? 0);
-    const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
-    if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
+    const dur = Number.isFinite(durRaw)
+      ? toInt(clamp(durRaw, 0, 999999))
+      : 0;
+    if (id > 0 && count > 0)
+      return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
     return { id: 0, count: 0 } as any;
   }
 
   private choosePickStack(
     inv: InvState,
     heldSlot: number
-  ): { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> } | null {
+  ): {
+    slotIndex: number;
+    stack: ItemStack;
+    tool: NonNullable<ReturnType<MyRoom["getToolDef"]>>;
+  } | null {
     if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
       const s = inv.slots[heldSlot];
       if (s && (s as any).id > 0 && (s as any).count > 0) {
@@ -2022,7 +2182,11 @@ export class MyRoom extends Room {
     }
 
     let best:
-      | { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> }
+      | {
+          slotIndex: number;
+          stack: ItemStack;
+          tool: NonNullable<ReturnType<MyRoom["getToolDef"]>>;
+        }
       | null = null;
 
     for (let i = 0; i < inv.slots.length; i++) {
