@@ -3,11 +3,15 @@
 // Includes: biomes + biome terrain + biome trees + ores + bedrock + inventory + drops + crafting + hold-to-mine
 // Deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
 // NEW: Town of Beginnings (central safe zone) stamped per-chunk (deterministic, seam-safe)
+// NEW: .schem structure stamping (server-side) seam-safe, deterministic placement anchor
 // NOTE: No match phase yet (always-on safe zone rules)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+// NEW: schematic loader (server-side)
+import { Schematic } from "prismarine-schematic";
 
 // Shared items (single source of truth) - NodeNext requires ".js"
 import {
@@ -236,6 +240,21 @@ export class MyRoom extends Room {
   private readonly TOWN_CLEAR_HEIGHT = 18; // clear above ground inside town (removes trees)
 
   // =========================
+  // NEW: Schematic structures (.schem)
+  // =========================
+  // Put your schematic at: server/world/structures/mansion.schem (recommended)
+  private readonly structuresDir = path.join(process.cwd(), "world", "structures");
+  private readonly mansionSchemPath = path.join(this.structuresDir, "mansion.schem");
+
+  // Anchor placement in world coords (min corner of schematic)
+  // (You can later make this deterministic via region grid like POIs.)
+  private readonly MANSION_X = 200;
+  private readonly MANSION_Z = 200;
+
+  private schemLoaded = false;
+  private mansionSchem: Schematic | null = null;
+
+  // =========================
   // World meta / seed
   // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
@@ -282,10 +301,32 @@ export class MyRoom extends Room {
     console.log("[WORLD] persistence dirs:", {
       chunks: this.chunksDir,
       inventories: this.invDir,
+      structures: this.structuresDir,
     });
 
     this.worldSeed = this.loadOrCreateWorldSeed(options);
     console.log("[WORLD] worldSeed =", this.worldSeed);
+
+    // NEW: load schematic (non-blocking)
+    void (async () => {
+      try {
+        if (!fs.existsSync(this.structuresDir)) fs.mkdirSync(this.structuresDir, { recursive: true });
+        if (!fs.existsSync(this.mansionSchemPath)) {
+          console.warn("[SCHEM] missing:", this.mansionSchemPath);
+          this.schemLoaded = false;
+          this.mansionSchem = null;
+          return;
+        }
+        const buf = fs.readFileSync(this.mansionSchemPath);
+        this.mansionSchem = await Schematic.read(buf);
+        this.schemLoaded = true;
+        console.log("[SCHEM] loaded", { fp: this.mansionSchemPath, size: (this.mansionSchem as any).size });
+      } catch (e) {
+        console.warn("[SCHEM] failed to load", { fp: this.mansionSchemPath, e });
+        this.schemLoaded = false;
+        this.mansionSchem = null;
+      }
+    })();
 
     // players snapshot
     this.clock.setInterval(() => {
@@ -869,6 +910,7 @@ export class MyRoom extends Room {
     if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
     if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
     if (!fs.existsSync(this.invDir)) fs.mkdirSync(this.invDir, { recursive: true });
+    if (!fs.existsSync(this.structuresDir)) fs.mkdirSync(this.structuresDir, { recursive: true });
   }
 
   // =========================
@@ -1225,6 +1267,135 @@ export class MyRoom extends Room {
     const dx = worldX - this.TOWN_CENTER_X;
     const dz = worldZ - this.TOWN_CENTER_Z;
     return dx * dx + dz * dz <= this.SAFE_RADIUS * this.SAFE_RADIUS;
+  }
+
+  // =========================
+  // NEW: schematic mapping + stamping
+  // =========================
+  private schemBlockToId(name: string): number {
+    // prismarine-schematic names are like "minecraft:oak_log"
+    switch (name) {
+      case "minecraft:air":
+        return this.AIR_ID;
+
+      case "minecraft:grass_block":
+        return this.GRASS_ID;
+      case "minecraft:dirt":
+        return this.DIRT_ID;
+      case "minecraft:stone":
+      case "minecraft:cobblestone":
+        return this.STONE_ID;
+
+      case "minecraft:oak_log":
+      case "minecraft:spruce_log":
+      case "minecraft:birch_log":
+      case "minecraft:jungle_log":
+      case "minecraft:acacia_log":
+      case "minecraft:dark_oak_log":
+        return this.WOOD_ID;
+
+      case "minecraft:oak_leaves":
+      case "minecraft:spruce_leaves":
+      case "minecraft:birch_leaves":
+      case "minecraft:jungle_leaves":
+      case "minecraft:acacia_leaves":
+      case "minecraft:dark_oak_leaves":
+        return this.LEAVES_ID;
+
+      case "minecraft:sand":
+        return this.SAND_ID;
+      case "minecraft:snow":
+      case "minecraft:snow_block":
+        return this.SNOW_ID;
+
+      case "minecraft:coal_ore":
+        return this.COAL_ORE_ID;
+      case "minecraft:iron_ore":
+        return this.IRON_ORE_ID;
+      case "minecraft:gold_ore":
+        return this.GOLD_ORE_ID;
+      case "minecraft:diamond_ore":
+        return this.DIAMOND_ORE_ID;
+
+      default:
+        return this.AIR_ID;
+    }
+  }
+
+  private stampMansionIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
+    if (!this.schemLoaded || !this.mansionSchem) return;
+
+    const CS = this.chunkSize;
+
+    const chunkMinX = cx * CS;
+    const chunkMinY = cy * CS;
+    const chunkMinZ = cz * CS;
+
+    const chunkMaxX = chunkMinX + CS - 1;
+    const chunkMaxY = chunkMinY + CS - 1;
+    const chunkMaxZ = chunkMinZ + CS - 1;
+
+    const schem = this.mansionSchem as any;
+    const w = schem.size.x | 0;
+    const h = schem.size.y | 0;
+    const d = schem.size.z | 0;
+
+    // anchor at surface at the mansion XZ
+    const baseY = this.heightAt(this.MANSION_X, this.MANSION_Z) + 1;
+
+    const minX = this.MANSION_X;
+    const minY = baseY;
+    const minZ = this.MANSION_Z;
+
+    const maxX = minX + w - 1;
+    const maxY = minY + h - 1;
+    const maxZ = minZ + d - 1;
+
+    // AABB reject
+    if (
+      maxX < chunkMinX ||
+      minX > chunkMaxX ||
+      maxY < chunkMinY ||
+      minY > chunkMaxY ||
+      maxZ < chunkMinZ ||
+      minZ > chunkMaxZ
+    )
+      return;
+
+    // iterate only overlap volume
+    const ox0 = Math.max(minX, chunkMinX);
+    const oy0 = Math.max(minY, chunkMinY);
+    const oz0 = Math.max(minZ, chunkMinZ);
+
+    const ox1 = Math.min(maxX, chunkMaxX);
+    const oy1 = Math.min(maxY, chunkMaxY);
+    const oz1 = Math.min(maxZ, chunkMaxZ);
+
+    for (let wx = ox0; wx <= ox1; wx++) {
+      for (let wy = oy0; wy <= oy1; wy++) {
+        for (let wz = oz0; wz <= oz1; wz++) {
+          const lx = wx - chunkMinX;
+          const ly = wy - chunkMinY;
+          const lz = wz - chunkMinZ;
+
+          const ii = this.idx(lx, ly, lz);
+          if (vox[ii] === this.BEDROCK_ID) continue;
+
+          const sx = wx - minX;
+          const sy = wy - minY;
+          const sz = wz - minZ;
+
+          const block = (this.mansionSchem as any).getBlock({ x: sx, y: sy, z: sz });
+          const name = block?.name ?? "minecraft:air";
+          const id = this.schemBlockToId(name);
+
+          // do not overwrite with air
+          if (id === this.AIR_ID) continue;
+
+          vox[ii] = id;
+        }
+      }
+    }
   }
 
   // =========================
@@ -1653,7 +1824,6 @@ export class MyRoom extends Room {
             const ox = hutLocal.ox;
             const oz = hutLocal.oz;
 
-            const w = 7;
             const h = 5; // walls height
             const roofY = hutBaseY + (h - 1);
 
@@ -1668,16 +1838,10 @@ export class MyRoom extends Room {
             const wallY1 = hutBaseY + (h - 2);
 
             // door: open on side facing center
-            // determine which side is “front” by quadrant:
-            // (+,+) hut front points toward (-,-) i.e. center => front side is negative ox/oz direction; simplest: pick the side with larger abs offset
             let doorSide: "N" | "S" | "E" | "W" = "S";
-            // hut is located at (+/-16, +/-16), so door should be towards center:
-            // if hut center hx > 0 => door on west wall (ox=-3). if hx < 0 => east wall (ox=+3)
-            // if hz > 0 => door on south wall (oz=-3). if hz < 0 => north wall (oz=+3)
             const hc = hutCenters[hutLocal.which];
             const towardX = hc.hx > this.TOWN_CENTER_X ? "W" : "E";
             const towardZ = hc.hz > this.TOWN_CENTER_Z ? "S" : "N";
-            // pick one axis to avoid double doors: choose the axis with larger |offset|
             doorSide = Math.abs(hc.hx - this.TOWN_CENTER_X) >= Math.abs(hc.hz - this.TOWN_CENTER_Z) ? (towardX as any) : (towardZ as any);
 
             const doorX = 0;
@@ -1710,7 +1874,7 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Chunk generation (biomes + ores + bedrock + trees + POIs + Town)
+  // Chunk generation (biomes + ores + bedrock + trees + POIs + .schem + Town)
   // =========================
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
@@ -1789,11 +1953,13 @@ export class MyRoom extends Room {
       }
     }
 
-    // Stamp POIs LAST-ish (seam-safe and deterministic across chunk order)
+    // Stamp POIs (seam-safe, deterministic)
     this.stampPoiIntoChunk(vox, cx, cy, cz);
 
-    // Stamp Town of Beginnings very last so it overrides terrain/trees/POIs near center
-    // (POIs already avoid town, but this ensures town is always clean)
+    // NEW: Stamp mansion schematic (seam-safe, deterministic by fixed anchor)
+    this.stampMansionIntoChunk(vox, cx, cy, cz);
+
+    // Stamp Town of Beginnings LAST so it overrides terrain/trees/POIs/structures near center
     this.stampTownIntoChunk(vox, cx, cy, cz);
 
     console.log("[WORLD] generated chunk:", { cx, cy, cz, seed: this.worldSeed });
