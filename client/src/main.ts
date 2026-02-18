@@ -1974,8 +1974,11 @@ function updateMiningParticles(scene: BABYLON.Scene) {
 /* ===============================
    NEW: Building Label (debug) + Beacon Pillar
 ================================ */
+/* ===============================
+   NEW: Building Label (debug) + Beacon Pillar
+================================ */
 let townHallLabelPlane: BABYLON.Mesh | null = null;
-let townHallBeacon: BABYLON.Mesh | null = null; // ✅ The Pillar
+let townHallBeacon: BABYLON.Mesh | null = null;
 let townHallLabelTex: BABYLON.DynamicTexture | null = null;
 let townHallLabelMat: BABYLON.StandardMaterial | null = null;
 let townHallLabelSceneUid: string | number | null = null;
@@ -1984,7 +1987,7 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
   const suid = uid ?? null;
 
-  // Scene changed => dispose
+  // Scene changed => dispose everything
   if (townHallLabelSceneUid !== suid) {
     try { townHallLabelPlane?.dispose(); } catch {}
     try { townHallBeacon?.dispose(); } catch {}
@@ -1999,49 +2002,56 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
 
   if (townHallLabelPlane && townHallBeacon) return;
 
-  // 1. The Text Label (Billboard)
+  // --- 1. The Beacon (Giant Purple Laser) ---
+  townHallBeacon = BABYLON.MeshBuilder.CreateCylinder("townHallBeacon", {
+    height: 1, 
+    diameter: 0.8, // Thicker beam
+    tessellation: 16
+  }, scene);
+  townHallBeacon.renderingGroupId = 3; // Force on top of everything
+  townHallBeacon.isPickable = false;
+  (townHallBeacon as any).isInFrustum = () => true;
+  (townHallBeacon as any).alwaysSelectAsActiveMesh = true; // Never cull
+
+  const beaconMat = new BABYLON.StandardMaterial("beaconMat", scene);
+  beaconMat.disableLighting = true;
+  beaconMat.emissiveColor = new BABYLON.Color3(0.6, 0, 1); // Neon Purple
+  beaconMat.alpha = 0.5;
+  beaconMat.disableDepthWrite = true; // Don't block other things
+  (beaconMat as any).fogEnabled = false; // ✅ CRITICAL: Ignore world fog
+  townHallBeacon.material = beaconMat;
+
+
+  // --- 2. The Text Label (Billboard) ---
   townHallLabelPlane = BABYLON.MeshBuilder.CreatePlane(
     "townHallLabel",
-    { width: 8, height: 2.5 },
+    { width: 12, height: 4 }, // Bigger billboard
     scene
   );
   townHallLabelPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-  townHallLabelPlane.renderingGroupId = 1; // Standard render layer
+  townHallLabelPlane.renderingGroupId = 3; // Force on top
   townHallLabelPlane.isPickable = false;
   (townHallLabelPlane as any).isInFrustum = () => true;
+  (townHallLabelPlane as any).alwaysSelectAsActiveMesh = true;
 
-  // 2. The Pillar (Beacon) - A tall thin cylinder
-  townHallBeacon = BABYLON.MeshBuilder.CreateCylinder("townHallBeacon", {
-    height: 1, // We will scale this in update
-    diameter: 0.4,
-    tessellation: 16
-  }, scene);
-  townHallBeacon.renderingGroupId = 1;
-  townHallBeacon.isPickable = false;
-  (townHallBeacon as any).isInFrustum = () => true;
-
-  // Material for Label
   townHallLabelTex = new BABYLON.DynamicTexture(
     "townHallLabelTex",
     { width: 512, height: 256 },
     scene,
     false
   );
+  
   townHallLabelMat = new BABYLON.StandardMaterial("townHallLabelMat", scene);
   townHallLabelMat.disableLighting = true;
   townHallLabelMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  townHallLabelMat.backFaceCulling = false; // Show from back
+  townHallLabelMat.backFaceCulling = false;
+  townHallLabelMat.disableDepthWrite = true;
+  (townHallLabelMat as any).fogEnabled = false; // ✅ CRITICAL: Ignore world fog
+  
   townHallLabelMat.diffuseTexture = townHallLabelTex;
   (townHallLabelMat.diffuseTexture as BABYLON.Texture).hasAlpha = true;
   
   townHallLabelPlane.material = townHallLabelMat;
-
-  // Material for Beacon (Bright Purple)
-  const beaconMat = new BABYLON.StandardMaterial("beaconMat", scene);
-  beaconMat.disableLighting = true;
-  beaconMat.emissiveColor = new BABYLON.Color3(0.8, 0, 1); // Purple
-  beaconMat.alpha = 0.6;
-  townHallBeacon.material = beaconMat;
 
   // Initial draw
   redrawTownHallLabel("TOWN HALL", "(0,0)");
@@ -2050,74 +2060,84 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
 function redrawTownHallLabel(title: string, subtitle = "") {
   if (!townHallLabelTex) return;
 
-  // ✅ FIX: Cast to CanvasRenderingContext2D
+  // ✅ Cast to standard context
   const ctx = townHallLabelTex.getContext() as unknown as CanvasRenderingContext2D;
   const w = townHallLabelTex.getSize().width;
   const h = townHallLabelTex.getSize().height;
 
-  // Background
+  // Clear
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "rgba(0,0,0,0.7)";
+
+  // Background box (Semi-transparent black)
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
   ctx.fillRect(0, 0, w, h);
 
-  // Border
-  ctx.strokeStyle = "cyan";
-  ctx.lineWidth = 12;
-  ctx.strokeRect(6, 6, w - 12, h - 12);
+  // Border (Cyan)
+  ctx.strokeStyle = "#00FFFF";
+  ctx.lineWidth = 10;
+  ctx.strokeRect(5, 5, w - 10, h - 10);
 
   // Text
-  ctx.fillStyle = "white";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-
+  
+  // Title (White)
+  ctx.fillStyle = "white";
   ctx.font = "bold 80px monospace";
-  ctx.fillText(title, w * 0.5, h * 0.4);
+  ctx.fillText(title, w / 2, h * 0.4);
 
+  // Subtitle (Yellow)
   if (subtitle) {
-    ctx.fillStyle = "yellow";
+    ctx.fillStyle = "#FFFF00";
     ctx.font = "bold 50px monospace";
-    ctx.fillText(subtitle, w * 0.5, h * 0.8);
+    ctx.fillText(subtitle, w / 2, h * 0.8);
   }
 
+  // Force update immediately
   townHallLabelTex.update();
 }
 
 function updateTownHallLabel(scene: BABYLON.Scene) {
-  // CONFIG: Adjust these if your building is elsewhere
+  // CONFIG: Coordinates match MyRoom.ts logic
   const CENTER_X = 0;
   const CENTER_Z = 0;
-  const LABEL_Y = 45; // High up so you can see it from far away
+  const LABEL_Y = 35; // Height of label
 
   ensureTownHallLabel(scene);
   if (!townHallLabelPlane || !townHallBeacon) return;
 
-  townHallLabelPlane.setEnabled(true);
-  townHallBeacon.setEnabled(true);
-
-  // Position Label
+  // 1. Position Label
   townHallLabelPlane.position.set(CENTER_X, LABEL_Y, CENTER_Z);
-
-  // Pulse Label Size
-  const pulse = 1 + Math.sin(performance.now() / 300) * 0.1;
+  
+  // Pulse effect for visibility
+  const pulse = 1 + Math.sin(performance.now() / 250) * 0.1;
   townHallLabelPlane.scaling.set(pulse, pulse, pulse);
 
-  // Position Beacon (Beam)
-  // The cylinder origin is its center, so we place it halfway between label and ground (0)
-  // height = LABEL_Y
+  // 2. Position Beacon
+  // Cylinder origin is center. 
+  // We want it stretching from Y=0 to Y=LABEL_Y.
+  // So position Y = LABEL_Y / 2, Height = LABEL_Y.
   townHallBeacon.position.set(CENTER_X, LABEL_Y / 2, CENTER_Z);
-  townHallBeacon.scaling.y = LABEL_Y; // Scale height to touch ground
+  townHallBeacon.scaling.y = LABEL_Y; 
 
-  // Update text occasionally
+  // 3. Distance Update
   const now = performance.now();
   if ((updateTownHallLabel as any)._lastRedraw == null) (updateTownHallLabel as any)._lastRedraw = 0;
+  
+  // Update text every 1s
   if (now - (updateTownHallLabel as any)._lastRedraw > 1000) {
     (updateTownHallLabel as any)._lastRedraw = now;
     
-    // Get player dist
     const p = noa.ents.getPosition(noa.playerEntity);
-    const dist = p ? Math.sqrt((p[0]-CENTER_X)**2 + (p[2]-CENTER_Z)**2).toFixed(0) : "?";
+    let distStr = "?";
+    if (p) {
+      const dx = p[0] - CENTER_X;
+      const dz = p[2] - CENTER_Z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      distStr = dist.toFixed(0) + "m";
+    }
     
-    redrawTownHallLabel("TOWN HALL", `${dist}m away`);
+    redrawTownHallLabel("TOWN HALL", distStr);
   }
 }
 
