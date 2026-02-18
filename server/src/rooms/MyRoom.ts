@@ -301,9 +301,9 @@ export class MyRoom extends Room {
 
     // Load pre-expanded structures (Path B)
     try {
-      // ✅ FIX: Use __dirname to get an absolute path relative to this file (MyRoom.ts)
-      // Since this file is in src/rooms, we go up one level (..) to src, then into structures.
-      const structPath = path.resolve(__dirname, "../structures/town_hall.blocks.json");
+      // ✅ FIX: Safe ES Module path resolution using process.cwd()
+      // Since PM2 runs from the server folder, we use this exact path:
+      const structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
 
       console.log("========================================");
       console.log(`[STRUCT] Attempting to load JSON from: ${structPath}`);
