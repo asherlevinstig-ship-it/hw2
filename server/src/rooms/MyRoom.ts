@@ -142,8 +142,8 @@ function safeUserId(v: unknown): string {
 }
 
 /** =========================
- *  POIs (region grid)
- *  ========================= */
+ * POIs (region grid)
+ * ========================= */
 type PoiType = "HUT";
 type PoiTier = "COMMON" | "RARE" | "LEGENDARY";
 
@@ -304,14 +304,21 @@ export class MyRoom extends Room {
       this.townHall = loadBlockStructure(
         "server/src/structures/town_hall.blocks.json"
       );
-      console.log("[STRUCT] townHall loaded:", {
-        name: this.townHall.name,
-        blocks: this.townHall.blocks.length,
-        size: this.townHall.size,
-        anchor: this.townHall.anchor,
-      });
+      
+      // ✅ DEBUG: Verify content
+      const blockCount = this.townHall?.blocks?.length ?? 0;
+      console.log("========================================");
+      console.log("[STRUCT] TownHall JSON Loaded successfully");
+      console.log(`[STRUCT] Total Blocks: ${blockCount}`);
+      console.log(`[STRUCT] Size:`, this.townHall?.size);
+      console.log(`[STRUCT] Anchor:`, this.townHall?.anchor);
+      console.log("========================================");
+
     } catch (e) {
-      console.warn("[STRUCT] townHall failed to load", e);
+      console.error("========================================");
+      console.error("[STRUCT] ❌ FATAL: TownHall failed to load!");
+      console.error(e);
+      console.error("========================================");
       this.townHall = null;
     }
 
@@ -423,14 +430,19 @@ export class MyRoom extends Room {
         { except: client }
       );
 
+      // ✅ DEBUG: Added distToCenter and townHall status
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
+        const dist = Math.sqrt((x - this.TOWN_CENTER_X)**2 + (z - this.TOWN_CENTER_Z)**2);
+        
         console.log("[MOVE]", {
           id: client.sessionId,
-          x: +x.toFixed(2),
-          y: +y.toFixed(2),
-          z: +z.toFixed(2),
+          x: +x.toFixed(1),
+          y: +y.toFixed(1),
+          z: +z.toFixed(1),
           yaw: +yaw.toFixed(2),
+          distToCenter: +dist.toFixed(1) + " blocks",
+          townHallStatus: this.townHall ? "ACTIVE" : "MISSING"
         });
       }
     });
@@ -1789,7 +1801,18 @@ export class MyRoom extends Room {
       const worldY = baseY - this.townHall.anchor.y;
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
 
+      // ✅ DEBUG: Log when generating the center chunk (where the building lives)
+      if (cx === 0 && cz === 0) {
+        console.log(`[STRUCT] 🔨 Stamping TownHall into Chunk [${cx}, ${cy}, ${cz}]`);
+        console.log(`[STRUCT] Placed at World Pos: ${worldX}, ${worldY}, ${worldZ}`);
+      }
+
       this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
+    } else {
+      // ✅ DEBUG: Warn if missing during generation
+      if (cx === 0 && cz === 0) {
+        console.warn(`[STRUCT] ⚠️ Skipping TownHall stamp on Chunk [0,0] (Structure is null)`);
+      }
     }
   }
 
