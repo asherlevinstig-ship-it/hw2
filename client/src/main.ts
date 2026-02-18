@@ -1,11 +1,5 @@
 /* client/src/main.ts
- * FULL FILE - with Town Hall Label Added
- *
- * NOA voxel client + Colyseus multiplayer
- * Includes:
- * - Robust voxel decoding
- * - Chunk diagnostics
- * - Town Hall "Building Label" (Billboard)
+ * FULL FILE - with Beacon, Debug Tools, and TS Fixes
  */
 
 import { Engine } from "noa-engine";
@@ -14,7 +8,6 @@ import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
 /**
  * ✅ IMPORTANT:
- * Fixes TS2307 "Cannot find module '../shared/items'":
  * Put your shared items file INSIDE client/src so Vite can resolve it:
  * client/src/shared/items.ts
  */
@@ -1979,9 +1972,10 @@ function updateMiningParticles(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   NEW: Building Label (debug)
+   NEW: Building Label (debug) + Beacon Pillar
 ================================ */
 let townHallLabelPlane: BABYLON.Mesh | null = null;
+let townHallBeacon: BABYLON.Mesh | null = null; // ✅ The Pillar
 let townHallLabelTex: BABYLON.DynamicTexture | null = null;
 let townHallLabelMat: BABYLON.StandardMaterial | null = null;
 let townHallLabelSceneUid: string | number | null = null;
@@ -1993,120 +1987,137 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
   // Scene changed => dispose
   if (townHallLabelSceneUid !== suid) {
     try { townHallLabelPlane?.dispose(); } catch {}
+    try { townHallBeacon?.dispose(); } catch {}
     try { townHallLabelMat?.dispose(); } catch {}
     try { townHallLabelTex?.dispose(); } catch {}
     townHallLabelPlane = null;
+    townHallBeacon = null;
     townHallLabelMat = null;
     townHallLabelTex = null;
     townHallLabelSceneUid = suid;
   }
 
-  if (townHallLabelPlane && townHallLabelMat && townHallLabelTex) return;
+  if (townHallLabelPlane && townHallBeacon) return;
 
-  // Billboard plane
+  // 1. The Text Label (Billboard)
   townHallLabelPlane = BABYLON.MeshBuilder.CreatePlane(
     "townHallLabel",
-    { width: 6, height: 1.5 },
+    { width: 8, height: 2.5 },
     scene
   );
+  townHallLabelPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+  townHallLabelPlane.renderingGroupId = 1; // Standard render layer
   townHallLabelPlane.isPickable = false;
   (townHallLabelPlane as any).isInFrustum = () => true;
-  townHallLabelPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-  townHallLabelPlane.renderingGroupId = 3; // draw late
 
-  // Dynamic texture for crisp text
+  // 2. The Pillar (Beacon) - A tall thin cylinder
+  townHallBeacon = BABYLON.MeshBuilder.CreateCylinder("townHallBeacon", {
+    height: 1, // We will scale this in update
+    diameter: 0.4,
+    tessellation: 16
+  }, scene);
+  townHallBeacon.renderingGroupId = 1;
+  townHallBeacon.isPickable = false;
+  (townHallBeacon as any).isInFrustum = () => true;
+
+  // Material for Label
   townHallLabelTex = new BABYLON.DynamicTexture(
     "townHallLabelTex",
-    { width: 1024, height: 256 },
+    { width: 512, height: 256 },
     scene,
     false
   );
-
   townHallLabelMat = new BABYLON.StandardMaterial("townHallLabelMat", scene);
   townHallLabelMat.disableLighting = true;
   townHallLabelMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  townHallLabelMat.specularColor = new BABYLON.Color3(0, 0, 0);
-  townHallLabelMat.backFaceCulling = false;
-  townHallLabelMat.disableDepthWrite = true;      // helps keep it visible
-  townHallLabelMat.depthFunction = BABYLON.Constants.LEQUAL;
-  townHallLabelMat.alpha = 0.95;
-
+  townHallLabelMat.backFaceCulling = false; // Show from back
   townHallLabelMat.diffuseTexture = townHallLabelTex;
   (townHallLabelMat.diffuseTexture as BABYLON.Texture).hasAlpha = true;
-
+  
   townHallLabelPlane.material = townHallLabelMat;
 
+  // Material for Beacon (Bright Purple)
+  const beaconMat = new BABYLON.StandardMaterial("beaconMat", scene);
+  beaconMat.disableLighting = true;
+  beaconMat.emissiveColor = new BABYLON.Color3(0.8, 0, 1); // Purple
+  beaconMat.alpha = 0.6;
+  townHallBeacon.material = beaconMat;
+
   // Initial draw
-  redrawTownHallLabel("TOWN HALL", "debug marker");
+  redrawTownHallLabel("TOWN HALL", "(0,0)");
 }
 
 function redrawTownHallLabel(title: string, subtitle = "") {
   if (!townHallLabelTex) return;
 
-  // ✅ FIX: Cast to CanvasRenderingContext2D to satisfy TypeScript
+  // ✅ FIX: Cast to CanvasRenderingContext2D
   const ctx = townHallLabelTex.getContext() as unknown as CanvasRenderingContext2D;
-  
   const w = townHallLabelTex.getSize().width;
   const h = townHallLabelTex.getSize().height;
 
   // Background
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
   ctx.fillRect(0, 0, w, h);
 
   // Border
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
-  ctx.lineWidth = 10;
-  ctx.strokeRect(10, 10, w - 20, h - 20);
+  ctx.strokeStyle = "cyan";
+  ctx.lineWidth = 12;
+  ctx.strokeRect(6, 6, w - 12, h - 12);
 
   // Text
   ctx.fillStyle = "white";
-  ctx.textAlign = "center";      // ✅ Error gone
-  ctx.textBaseline = "middle";   // ✅ Error gone
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
 
-  ctx.font = "bold 92px monospace";
-  ctx.fillText(title, w * 0.5, h * 0.48);
+  ctx.font = "bold 80px monospace";
+  ctx.fillText(title, w * 0.5, h * 0.4);
 
   if (subtitle) {
-    ctx.globalAlpha = 0.9;
-    ctx.font = "44px monospace";
-    ctx.fillText(subtitle, w * 0.5, h * 0.78);
-    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = "yellow";
+    ctx.font = "bold 50px monospace";
+    ctx.fillText(subtitle, w * 0.5, h * 0.8);
   }
 
   townHallLabelTex.update();
 }
-// ✅ NEW: position the label above your building
+
 function updateTownHallLabel(scene: BABYLON.Scene) {
-  // Configured based on your town_hall_v1.json and MyRoom.ts logic:
-  // Center is 0,0 because anchor 10,10 aligns with center 0,0 in world
-  const BUILDING_CENTER_X = 0; 
-  const BUILDING_CENTER_Z = 0;
-  const BUILDING_BASE_Y   = 21; // Approx terrain height
-  const BUILDING_HEIGHT   = 14; 
+  // CONFIG: Adjust these if your building is elsewhere
+  const CENTER_X = 0;
+  const CENTER_Z = 0;
+  const LABEL_Y = 45; // High up so you can see it from far away
 
   ensureTownHallLabel(scene);
-  if (!townHallLabelPlane) return;
+  if (!townHallLabelPlane || !townHallBeacon) return;
 
-  // Position label
   townHallLabelPlane.setEnabled(true);
-  townHallLabelPlane.position.set(
-    BUILDING_CENTER_X,
-    BUILDING_BASE_Y + BUILDING_HEIGHT + 3.0,
-    BUILDING_CENTER_Z
-  );
+  townHallBeacon.setEnabled(true);
 
-  // Slight scale pulse so it’s easy to spot
-  const pulse = 1 + Math.sin(performance.now() / 220) * 0.03;
+  // Position Label
+  townHallLabelPlane.position.set(CENTER_X, LABEL_Y, CENTER_Z);
+
+  // Pulse Label Size
+  const pulse = 1 + Math.sin(performance.now() / 300) * 0.1;
   townHallLabelPlane.scaling.set(pulse, pulse, pulse);
 
-  // Optional: show coords live on label
-  // (updates only occasionally to avoid heavy redraws)
+  // Position Beacon (Beam)
+  // The cylinder origin is its center, so we place it halfway between label and ground (0)
+  // height = LABEL_Y
+  townHallBeacon.position.set(CENTER_X, LABEL_Y / 2, CENTER_Z);
+  townHallBeacon.scaling.y = LABEL_Y; // Scale height to touch ground
+
+  // Update text occasionally
   const now = performance.now();
   if ((updateTownHallLabel as any)._lastRedraw == null) (updateTownHallLabel as any)._lastRedraw = 0;
-  if (now - (updateTownHallLabel as any)._lastRedraw > 800) {
+  if (now - (updateTownHallLabel as any)._lastRedraw > 1000) {
     (updateTownHallLabel as any)._lastRedraw = now;
-    redrawTownHallLabel("TOWN HALL", `(${BUILDING_CENTER_X.toFixed(1)}, ${BUILDING_CENTER_Z.toFixed(1)})`);
+    
+    // Get player dist
+    const p = noa.ents.getPosition(noa.playerEntity);
+    const dist = p ? Math.sqrt((p[0]-CENTER_X)**2 + (p[2]-CENTER_Z)**2).toFixed(0) : "?";
+    
+    redrawTownHallLabel("TOWN HALL", `${dist}m away`);
   }
 }
 
@@ -3148,7 +3159,7 @@ let lastTickMs = performance.now();
 
     // NEW: safe zone visuals
     updateSafeZoneVisual(scene);
-    updateTownHallLabel(scene); // ✅ NEW
+    updateTownHallLabel(scene); // ✅ NEW - BEACON/LABEL UPDATER
 
     syncRpCameraFromWorld(scene);
 
