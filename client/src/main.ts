@@ -1,12 +1,11 @@
 /* client/src/main.ts
- * FULL FILE - with ADDED DEBUGGING TOOLS
+ * FULL FILE - with Town Hall Label Added
  *
  * NOA voxel client + Colyseus multiplayer
- * * Updates:
- * 1) Robust voxel decoding (fixes silent corruption)
- * 2) Chunk diagnostics (logs voxel ID distribution per chunk)
- * 3) Unknown ID detection (warns if chunk/structure contains unregistered IDs)
- * 4) Structure JSON debugger (global helper to validate town halls)
+ * Includes:
+ * - Robust voxel decoding
+ * - Chunk diagnostics
+ * - Town Hall "Building Label" (Billboard)
  */
 
 import { Engine } from "noa-engine";
@@ -18,8 +17,6 @@ import * as BABYLON from "@babylonjs/core/Legacy/legacy";
  * Fixes TS2307 "Cannot find module '../shared/items'":
  * Put your shared items file INSIDE client/src so Vite can resolve it:
  * client/src/shared/items.ts
- *
- * Then this import works:
  */
 import {
   Items,
@@ -1219,9 +1216,6 @@ function warnUnknownIdsInChunk(voxels: number[]) {
   }
 }
 
-// Old helper kept for reference, but we use the new one now
-
-
 function applyChunkFromServer(msg: any) {
   if (!msg || typeof msg.id !== "string") return;
 
@@ -1982,6 +1976,138 @@ function updateMiningParticles(scene: BABYLON.Scene) {
     0,
     Math.floor(base + ramp + Math.sin(performance.now() / 55) * 12)
   );
+}
+
+/* ===============================
+   NEW: Building Label (debug)
+================================ */
+let townHallLabelPlane: BABYLON.Mesh | null = null;
+let townHallLabelTex: BABYLON.DynamicTexture | null = null;
+let townHallLabelMat: BABYLON.StandardMaterial | null = null;
+let townHallLabelSceneUid: string | number | null = null;
+
+function ensureTownHallLabel(scene: BABYLON.Scene) {
+  const uid = (scene as any).uid as string | number | undefined;
+  const suid = uid ?? null;
+
+  // Scene changed => dispose
+  if (townHallLabelSceneUid !== suid) {
+    try { townHallLabelPlane?.dispose(); } catch {}
+    try { townHallLabelMat?.dispose(); } catch {}
+    try { townHallLabelTex?.dispose(); } catch {}
+    townHallLabelPlane = null;
+    townHallLabelMat = null;
+    townHallLabelTex = null;
+    townHallLabelSceneUid = suid;
+  }
+
+  if (townHallLabelPlane && townHallLabelMat && townHallLabelTex) return;
+
+  // Billboard plane
+  townHallLabelPlane = BABYLON.MeshBuilder.CreatePlane(
+    "townHallLabel",
+    { width: 6, height: 1.5 },
+    scene
+  );
+  townHallLabelPlane.isPickable = false;
+  (townHallLabelPlane as any).isInFrustum = () => true;
+  townHallLabelPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+  townHallLabelPlane.renderingGroupId = 3; // draw late
+
+  // Dynamic texture for crisp text
+  townHallLabelTex = new BABYLON.DynamicTexture(
+    "townHallLabelTex",
+    { width: 1024, height: 256 },
+    scene,
+    false
+  );
+
+  townHallLabelMat = new BABYLON.StandardMaterial("townHallLabelMat", scene);
+  townHallLabelMat.disableLighting = true;
+  townHallLabelMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  townHallLabelMat.specularColor = new BABYLON.Color3(0, 0, 0);
+  townHallLabelMat.backFaceCulling = false;
+  townHallLabelMat.disableDepthWrite = true;      // helps keep it visible
+  townHallLabelMat.depthFunction = BABYLON.Constants.LEQUAL;
+  townHallLabelMat.alpha = 0.95;
+
+  townHallLabelMat.diffuseTexture = townHallLabelTex;
+  (townHallLabelMat.diffuseTexture as BABYLON.Texture).hasAlpha = true;
+
+  townHallLabelPlane.material = townHallLabelMat;
+
+  // Initial draw
+  redrawTownHallLabel("TOWN HALL", "debug marker");
+}
+
+function redrawTownHallLabel(title: string, subtitle = "") {
+  if (!townHallLabelTex) return;
+
+  // ✅ FIX: Cast to CanvasRenderingContext2D to satisfy TypeScript
+  const ctx = townHallLabelTex.getContext() as unknown as CanvasRenderingContext2D;
+  
+  const w = townHallLabelTex.getSize().width;
+  const h = townHallLabelTex.getSize().height;
+
+  // Background
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, w, h);
+
+  // Border
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = 10;
+  ctx.strokeRect(10, 10, w - 20, h - 20);
+
+  // Text
+  ctx.fillStyle = "white";
+  ctx.textAlign = "center";      // ✅ Error gone
+  ctx.textBaseline = "middle";   // ✅ Error gone
+
+  ctx.font = "bold 92px monospace";
+  ctx.fillText(title, w * 0.5, h * 0.48);
+
+  if (subtitle) {
+    ctx.globalAlpha = 0.9;
+    ctx.font = "44px monospace";
+    ctx.fillText(subtitle, w * 0.5, h * 0.78);
+    ctx.globalAlpha = 1.0;
+  }
+
+  townHallLabelTex.update();
+}
+// ✅ NEW: position the label above your building
+function updateTownHallLabel(scene: BABYLON.Scene) {
+  // Configured based on your town_hall_v1.json and MyRoom.ts logic:
+  // Center is 0,0 because anchor 10,10 aligns with center 0,0 in world
+  const BUILDING_CENTER_X = 0; 
+  const BUILDING_CENTER_Z = 0;
+  const BUILDING_BASE_Y   = 21; // Approx terrain height
+  const BUILDING_HEIGHT   = 14; 
+
+  ensureTownHallLabel(scene);
+  if (!townHallLabelPlane) return;
+
+  // Position label
+  townHallLabelPlane.setEnabled(true);
+  townHallLabelPlane.position.set(
+    BUILDING_CENTER_X,
+    BUILDING_BASE_Y + BUILDING_HEIGHT + 3.0,
+    BUILDING_CENTER_Z
+  );
+
+  // Slight scale pulse so it’s easy to spot
+  const pulse = 1 + Math.sin(performance.now() / 220) * 0.03;
+  townHallLabelPlane.scaling.set(pulse, pulse, pulse);
+
+  // Optional: show coords live on label
+  // (updates only occasionally to avoid heavy redraws)
+  const now = performance.now();
+  if ((updateTownHallLabel as any)._lastRedraw == null) (updateTownHallLabel as any)._lastRedraw = 0;
+  if (now - (updateTownHallLabel as any)._lastRedraw > 800) {
+    (updateTownHallLabel as any)._lastRedraw = now;
+    redrawTownHallLabel("TOWN HALL", `(${BUILDING_CENTER_X.toFixed(1)}, ${BUILDING_CENTER_Z.toFixed(1)})`);
+  }
 }
 
 /* ===============================
@@ -3022,6 +3148,7 @@ let lastTickMs = performance.now();
 
     // NEW: safe zone visuals
     updateSafeZoneVisual(scene);
+    updateTownHallLabel(scene); // ✅ NEW
 
     syncRpCameraFromWorld(scene);
 
