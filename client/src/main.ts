@@ -1,58 +1,12 @@
 /* client/src/main.ts
- * FULL FILE - paste exactly as-is
+ * FULL FILE - with ADDED DEBUGGING TOOLS
  *
  * NOA voxel client + Colyseus multiplayer
- * - Server authoritative chunk streaming (Path B)
- * - Mine/place block sync (Option A: server authoritative)
- * - Remote players rendered in a SECOND Babylon scene (rpScene) rendered AFTER NOA
- * - FIRST-PERSON VIEWMODEL ARM rendered in a SECOND Babylon scene (vmScene)
- *
- * Added:
- * ✅ Inventory (hotbar + backpack) with cursor + clicks (left/right/shift)
- * ✅ Server-authoritative drops + pickup (auto pickup when close)
- * ✅ Basic crafting via simple recipe list (buttons in inventory UI)
- * ✅ 16x16 TEXTURE ATLAS (vertical strip) for blocks (grass top/side/bottom etc)
- *
- * Option A (new):
- * ✅ Server-authoritative mining (hold/click-to-mine): client does NOT remove blocks locally
- * ✅ Mining progress "cracks" (visual overlay wireframe cube, driven by server progress)
- * ✅ Tool-based mining speeds (server computes; client just displays progress)
- *
- * Improvements requested:
- * ✅ Mining feels better:
- *    - Holding down actions the arm continuously
- *    - Click-to-mine continues (no reset) and keeps heartbeating server until done/cancel
- * ✅ Minecraft-ish drops:
- *    - Dropped items render as small atlas-textured voxel cubes (not flat color)
- * ✅ Mining particles:
- *    - Small chip particles emit from the mined block while mining (ramps up with progress)
- *
- * NEW (Cornucopia / Safe Zone):
- * ✅ Client receives safe zone center+radius from server ("safeZone")
- * ✅ Client blocks sending mine/place requests if target is inside safe zone
- * ✅ Client renders a translucent cylinder ring marker for the safe zone
- *
- * Atlas requirement (NOA):
- * - Atlas is a VERTICAL STRIP: width=16, height=16*N tiles stacked top->bottom.
- * - We select a tile via `atlasIndex`.
- *
- * Controls:
- * - V toggles viewmodel overlay ON/OFF
- * - P toggles Remote Player overlay ON/OFF
- * - O toggles Remote "X-RAY" (always visible) ON/OFF
- * - I toggles Inventory UI
- *
- * Debug controls (viewmodel):
- * - B toggles VM debug visuals (axes + screen frame)
- * - N toggles VM tuning mode (enables hotkey nudging)
- * - M toggles VM mirror (fixes "wrong direction"/handedness)
- *
- * Debug controls (particles):
- * - K toggles DEBUG_PARTICLES_ALWAYS (forces emission at player head to prove render)
- *
- * IMPORTANT FIX:
- * When VM tuning is ON, we intercept tuning keys at CAPTURE phase and call
- * preventDefault + stopPropagation so NOA doesn't treat arrow keys as movement.
+ * * Updates:
+ * 1) Robust voxel decoding (fixes silent corruption)
+ * 2) Chunk diagnostics (logs voxel ID distribution per chunk)
+ * 3) Unknown ID detection (warns if chunk/structure contains unregistered IDs)
+ * 4) Structure JSON debugger (global helper to validate town halls)
  */
 
 import { Engine } from "noa-engine";
@@ -63,7 +17,7 @@ import * as BABYLON from "@babylonjs/core/Legacy/legacy";
  * ✅ IMPORTANT:
  * Fixes TS2307 "Cannot find module '../shared/items'":
  * Put your shared items file INSIDE client/src so Vite can resolve it:
- *   client/src/shared/items.ts
+ * client/src/shared/items.ts
  *
  * Then this import works:
  */
@@ -396,9 +350,9 @@ const ATLAS_TILE_COUNT = 13;
  * ✅ noa-engine v0.33+ API:
  * registerMaterial(name, optionsObj)
  * optionsObj uses:
- *   - textureURL (string)
- *   - atlasIndex (number)
- *   - texHasAlpha (boolean)
+ * - textureURL (string)
+ * - atlasIndex (number)
+ * - texHasAlpha (boolean)
  */
 function registerAtlasMaterial(
   name: string,
@@ -490,6 +444,61 @@ noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
 // ✅ Biome blocks registered (NEW)
 noa.registry.registerBlock(SAND_ID, { material: "sand" });
 noa.registry.registerBlock(SNOW_ID, { material: "snow" });
+
+// =========================================================
+// ✅ NEW DEBUG TOOLS: ID Registry & Structure Validation
+// =========================================================
+
+// Track registered block IDs (client-side)
+const REGISTERED_BLOCK_IDS = new Set<number>([
+  GRASS_ID,
+  DIRT_ID,
+  STONE_ID,
+  WOOD_ID,
+  LEAVES_ID,
+  BEDROCK_ID,
+  COAL_ORE_ID,
+  IRON_ORE_ID,
+  GOLD_ORE_ID,
+  DIAMOND_ORE_ID,
+  SAND_ID,
+  SNOW_ID,
+]);
+
+function isRegisteredBlockId(id: number) {
+  return id === 0 || REGISTERED_BLOCK_IDS.has(id); // 0 = air
+}
+
+// Global debug helper for your structure JSON (town hall blocks)
+(globalThis as any).__debugStructureIds = (structure: any) => {
+  if (!structure || !Array.isArray(structure.blocks)) {
+    console.warn("[STRUCT] invalid structure (missing blocks array)");
+    return;
+  }
+
+  const counts = new Map<number, number>();
+  let missingId = 0;
+
+  for (const b of structure.blocks) {
+    const id = Number((b as any)?.id);
+    if (!Number.isFinite(id)) {
+      missingId++;
+      continue;
+    }
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+
+  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const unknown = sorted.filter(([id]) => !isRegisteredBlockId(id));
+
+  console.log("[STRUCT] block id counts:", sorted.slice(0, 30).map(([id, c]) => ({ id, count: c })));
+  console.log("[STRUCT] unknown ids (NOT registered client-side):", unknown.map(([id, c]) => ({ id, count: c })));
+  console.log("[STRUCT] blocks missing/invalid id fields:", missingId);
+};
+
+(globalThis as any).__listRegisteredBlocks = () => {
+  console.log("[STRUCT] REGISTERED_BLOCK_IDS:", Array.from(REGISTERED_BLOCK_IDS.values()).sort((a,b)=>a-b));
+};
 
 /* ===============================
    6. Inventory State
@@ -1092,46 +1101,126 @@ worldAny.on(
   }
 );
 
-type TypedArrayLike = {
-  buffer: ArrayBufferLike;
-  byteOffset: number;
-  byteLength: number;
-};
-function isTypedArrayLike(v: unknown): v is TypedArrayLike {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    "buffer" in (v as any) &&
-    "byteOffset" in (v as any) &&
-    "byteLength" in (v as any) &&
-    (v as any).buffer instanceof ArrayBuffer
-  );
-}
-function toNumberArrayVoxels(v: unknown): number[] | null {
-  if (v == null) return null;
-  if (Array.isArray(v)) {
-    const out = new Array<number>(v.length);
-    for (let i = 0; i < v.length; i++) out[i] = (v[i] as number) | 0;
+// =========================================================
+// ✅ NEW DEBUG TOOLS: VOXEL DECODING & CHUNK ANALYSIS
+// =========================================================
+
+// Robust decode for chunk voxel payloads (Uint8/Uint16/etc)
+function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[] | null {
+  if (msgVoxels == null) return null;
+
+  // If server sends plain JS array
+  if (Array.isArray(msgVoxels)) {
+    if (msgVoxels.length !== expectedLen) return null;
+    const out = new Array<number>(expectedLen);
+    for (let i = 0; i < expectedLen; i++) out[i] = (msgVoxels[i] as any) | 0;
     return out;
   }
-  if (isTypedArrayLike(v)) {
-    const u8 = new Uint8Array(
-      v.buffer as ArrayBuffer,
-      v.byteOffset,
-      v.byteLength
-    );
-    const out = new Array<number>(u8.length);
-    for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
-    return out;
+
+  // If server sends an ArrayBuffer directly
+  if (msgVoxels instanceof ArrayBuffer) {
+    // try uint16 first if size matches
+    if (msgVoxels.byteLength === expectedLen * 2) {
+      const u16 = new Uint16Array(msgVoxels);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = u16[i] | 0;
+      return out;
+    }
+    // fallback uint8
+    if (msgVoxels.byteLength === expectedLen) {
+      const u8 = new Uint8Array(msgVoxels);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = u8[i] | 0;
+      return out;
+    }
+    return null;
   }
-  if (v instanceof ArrayBuffer) {
-    const u8 = new Uint8Array(v);
-    const out = new Array<number>(u8.length);
-    for (let i = 0; i < u8.length; i++) out[i] = u8[i] | 0;
-    return out;
+
+  // If server sends a TypedArray (Uint8Array, Uint16Array, etc)
+  if (ArrayBuffer.isView(msgVoxels) && (msgVoxels as any).buffer instanceof ArrayBuffer) {
+    const view = msgVoxels as ArrayBufferView;
+
+    // If it already has element values (uint16 etc), read directly if length matches
+    const len = (msgVoxels as any).length;
+    if (typeof len === "number" && len === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = (msgVoxels as any)[i] | 0;
+      return out;
+    }
+
+    // Otherwise interpret by byteLength
+    const bytes = view.byteLength;
+    if (bytes === expectedLen * 2) {
+      const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = u16[i] | 0;
+      return out;
+    }
+    if (bytes === expectedLen) {
+      const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = u8[i] | 0;
+      return out;
+    }
+    return null;
   }
+
   return null;
 }
+
+// Chunk diagnostics - logs distribution of block IDs in chunks
+function debugChunkVoxels(label: string, voxels: number[], expected: number) {
+  if (!voxels || voxels.length !== expected) {
+    console.warn(`[CHUNK:${label}] length mismatch`, { got: voxels?.length, expected });
+    return;
+  }
+
+  let min = Infinity;
+  let max = -Infinity;
+  const counts = new Map<number, number>();
+
+  // sample first N for speed (chunk can be big)
+  const N = Math.min(expected, 50000);
+  for (let i = 0; i < N; i++) {
+    const v = voxels[i] | 0;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+
+  // show top few ids
+  const top = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([id, c]) => ({ id, count: c }));
+
+  console.log(`[CHUNK:${label}] voxels sample`, {
+    sampleN: N,
+    min,
+    max,
+    top,
+  });
+}
+
+// Warns if a chunk contains IDs that aren't registered
+function warnUnknownIdsInChunk(voxels: number[]) {
+  const unknown = new Map<number, number>();
+  const N = Math.min(voxels.length, 60000);
+
+  for (let i = 0; i < N; i++) {
+    const v = voxels[i] | 0;
+    if (!isRegisteredBlockId(v)) unknown.set(v, (unknown.get(v) ?? 0) + 1);
+  }
+
+  if (unknown.size) {
+    console.warn("[CHUNK] contains unknown block IDs (not registered client-side)", {
+      unknown: Array.from(unknown.entries()).sort((a,b)=>b[1]-a[1]).slice(0, 20)
+    });
+  }
+}
+
+// Old helper kept for reference, but we use the new one now
+
 
 function applyChunkFromServer(msg: any) {
   if (!msg || typeof msg.id !== "string") return;
@@ -1146,8 +1235,25 @@ function applyChunkFromServer(msg: any) {
 
   const expected = CS * CS * CS;
 
-  const voxels = toNumberArrayVoxels(msg.voxels);
-  if (!voxels || voxels.length !== expected) return;
+  // ✅ CHANGED: Use new robust decoder + debug logging
+  const voxels = decodeVoxelsToNumberArray(msg.voxels, expected);
+  if (!voxels) {
+    console.warn("[CHUNK] decode failed", {
+      id: msg.id,
+      chunkSize: CS,
+      expected,
+      voxType: msg.voxels?.constructor?.name,
+      isArray: Array.isArray(msg.voxels),
+      isBuffer: msg.voxels instanceof ArrayBuffer,
+      isView: ArrayBuffer.isView(msg.voxels),
+      byteLength: msg.voxels?.byteLength,
+    });
+    return;
+  }
+  
+  // Debug analysis
+  debugChunkVoxels(msg.id, voxels, expected);
+  warnUnknownIdsInChunk(voxels);
 
   const data = pending.data;
 
@@ -2994,5 +3100,8 @@ let lastTickMs = performance.now();
     room.send("playerMove", { x: pos[0], y: pos[1], z: pos[2], yaw });
   }
 
-  if (tickCount % 10 === 0) updateOverlay(); updateCoordsHUD();
+  if (tickCount % 10 === 0) {
+     updateOverlay(); 
+     updateCoordsHUD();
+  }
 });
