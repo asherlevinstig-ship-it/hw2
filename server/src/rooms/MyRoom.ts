@@ -301,13 +301,19 @@ export class MyRoom extends Room {
 
     // Load pre-expanded structures (Path B)
     try {
-      this.townHall = loadBlockStructure(
-        "server/src/structures/town_hall.blocks.json"
-      );
-      
-      // ✅ DEBUG: Verify content
-      const blockCount = this.townHall?.blocks?.length ?? 0;
+      // ✅ FIX: Smart path resolution
+      // Automatically detect if we are running in the "server" directory or the root directory.
+      let structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
+      if (!fs.existsSync(structPath)) {
+        structPath = path.join(process.cwd(), "server", "src", "structures", "town_hall.blocks.json");
+      }
+
       console.log("========================================");
+      console.log(`[STRUCT] Attempting to load JSON from: ${structPath}`);
+
+      this.townHall = loadBlockStructure(structPath);
+      
+      const blockCount = this.townHall?.blocks?.length ?? 0;
       console.log("[STRUCT] TownHall JSON Loaded successfully");
       console.log(`[STRUCT] Total Blocks: ${blockCount}`);
       console.log(`[STRUCT] Size:`, this.townHall?.size);
