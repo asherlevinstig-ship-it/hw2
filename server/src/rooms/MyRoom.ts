@@ -301,29 +301,28 @@ export class MyRoom extends Room {
 
     // Load pre-expanded structures (Path B)
     try {
-      // ✅ FIX: Smart path resolution
-      // Automatically detect if we are running in the "server" directory or the root directory.
-      let structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
-      if (!fs.existsSync(structPath)) {
-        structPath = path.join(process.cwd(), "server", "src", "structures", "town_hall.blocks.json");
-      }
+      // ✅ FIX: Use __dirname to get an absolute path relative to this file (MyRoom.ts)
+      // Since this file is in src/rooms, we go up one level (..) to src, then into structures.
+      const structPath = path.resolve(__dirname, "../structures/town_hall.blocks.json");
 
       console.log("========================================");
       console.log(`[STRUCT] Attempting to load JSON from: ${structPath}`);
+
+      if (!fs.existsSync(structPath)) {
+        throw new Error(`FILE NOT FOUND at path: ${structPath}`);
+      }
 
       this.townHall = loadBlockStructure(structPath);
       
       const blockCount = this.townHall?.blocks?.length ?? 0;
       console.log("[STRUCT] TownHall JSON Loaded successfully");
       console.log(`[STRUCT] Total Blocks: ${blockCount}`);
-      console.log(`[STRUCT] Size:`, this.townHall?.size);
-      console.log(`[STRUCT] Anchor:`, this.townHall?.anchor);
       console.log("========================================");
 
     } catch (e) {
       console.error("========================================");
       console.error("[STRUCT] ❌ FATAL: TownHall failed to load!");
-      console.error(e);
+      console.error((e as Error).message);
       console.error("========================================");
       this.townHall = null;
     }
