@@ -1,10 +1,8 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, Debug Tools, and TS Fixes
- * UPDATED: Cave Biome Blocks (90–97) fully supported client-side:
- * - Block ID registry + noa block registration
- * - Atlas indices + tile count
- * - Atlas materials
- * - Drop visuals mapping + alpha handling
+ * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
+ * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims, HP Tracking)
+ * FIX: Removed unused TS variables to clear build warnings.
  */
 
 import { Engine } from "noa-engine";
@@ -302,16 +300,16 @@ const LEAVES_ID = 5;
 
 // Minerals + bedrock (MUST match server)
 const BEDROCK_ID = 6;
-const COAL_ORE_ID = 7;
-const IRON_ORE_ID = 8;
-const GOLD_ORE_ID = 9;
-const DIAMOND_ORE_ID = 10;
+const COAL_ORE_ID = 30;
+const IRON_ORE_ID = 31;
+const GOLD_ORE_ID = 32;
+const DIAMOND_ORE_ID = 33;
 
-// ✅ Biome blocks (MUST match server)
+// Biome blocks (MUST match server)
 const SAND_ID = 11;
 const SNOW_ID = 12;
 
-// ✅ Cave Biome blocks (MUST match server) (NEW)
+// Cave Biome blocks (MUST match server)
 const DEEPSLATE_ID = 90;
 const TUFF_ID = 91;
 const MOSS_ID = 92;
@@ -321,14 +319,13 @@ const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;
 const CRYSTAL_ID = 97;
 
-// Vite-safe asset URL: create client/src/assets/terrain_atlas.png
-// The atlas must be width=16, height=16*N tiles stacked top->bottom.
+// Vite-safe asset URL
 const TERRAIN_ATLAS_URL = new URL(
   "./assets/terrain_atlas.png",
   import.meta.url
 ).href;
 
-// Atlas indices (tile order top->bottom in your PNG)
+// Atlas indices
 const ATLAS = {
   GRASS_TOP: 0,
   GRASS_SIDE: 1,
@@ -342,11 +339,9 @@ const ATLAS = {
   GOLD_ORE: 9,
   DIAMOND_ORE: 10,
 
-  // Biome tiles
   SAND: 11,
   SNOW: 12,
 
-  // ✅ Cave tiles (NEW) - ensure your PNG includes these tiles in this exact order
   DEEPSLATE: 13,
   TUFF: 14,
   MOSS: 15,
@@ -357,131 +352,42 @@ const ATLAS = {
   CRYSTAL: 20,
 } as const;
 
-// Number of tiles in the vertical strip
 const ATLAS_TILE_COUNT = 21;
 
-/**
- * ✅ noa-engine v0.33+ API:
- * registerMaterial(name, optionsObj)
- * optionsObj uses:
- * - textureURL (string)
- * - atlasIndex (number)
- * - texHasAlpha (boolean)
- */
 function registerAtlasMaterial(
   name: string,
   opts: { textureURL: string; atlasIndex: number; texHasAlpha?: boolean }
 ) {
-  console.log(
-    "[ATLAS] creating material",
-    name,
-    "index",
-    opts.atlasIndex,
-    "url",
-    opts.textureURL
-  );
   noa.registry.registerMaterial(name, opts as any);
 }
 
-registerAtlasMaterial("grass_top", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_TOP,
-});
-registerAtlasMaterial("grass_side", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GRASS_SIDE,
-});
-registerAtlasMaterial("dirt", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIRT,
-});
-registerAtlasMaterial("stone", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.STONE,
-});
-registerAtlasMaterial("wood", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.WOOD,
-});
-registerAtlasMaterial("leaves", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.LEAVES,
-  texHasAlpha: true,
-});
+registerAtlasMaterial("grass_top", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
+registerAtlasMaterial("grass_side", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
+registerAtlasMaterial("dirt", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
+registerAtlasMaterial("stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
+registerAtlasMaterial("wood", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
+registerAtlasMaterial("leaves", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LEAVES, texHasAlpha: true });
 
-registerAtlasMaterial("bedrock", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.BEDROCK,
-});
-registerAtlasMaterial("coal_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.COAL_ORE,
-});
-registerAtlasMaterial("iron_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.IRON_ORE,
-});
-registerAtlasMaterial("gold_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GOLD_ORE,
-});
-registerAtlasMaterial("diamond_ore", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DIAMOND_ORE,
-});
+registerAtlasMaterial("bedrock", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
+registerAtlasMaterial("coal_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
+registerAtlasMaterial("iron_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
+registerAtlasMaterial("gold_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
+registerAtlasMaterial("diamond_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIAMOND_ORE });
 
-// Biome mats
-registerAtlasMaterial("sand", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.SAND,
-});
-registerAtlasMaterial("snow", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.SNOW,
-});
+registerAtlasMaterial("sand", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.SAND });
+registerAtlasMaterial("snow", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.SNOW });
 
-// ✅ Cave mats (NEW)
-registerAtlasMaterial("deepslate", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DEEPSLATE,
-});
-registerAtlasMaterial("tuff", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.TUFF,
-});
-registerAtlasMaterial("moss", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.MOSS,
-  texHasAlpha: true,
-});
-registerAtlasMaterial("mossy_stone", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.MOSSY_STONE,
-});
-registerAtlasMaterial("dripstone", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DRIPSTONE,
-  texHasAlpha: true,
-});
-registerAtlasMaterial("dripstone_block", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.DRIPSTONE_BLOCK,
-});
-registerAtlasMaterial("glow_shroom", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.GLOW_SHROOM,
-  texHasAlpha: true,
-});
-registerAtlasMaterial("crystal", {
-  textureURL: TERRAIN_ATLAS_URL,
-  atlasIndex: ATLAS.CRYSTAL,
-  texHasAlpha: true,
-});
+registerAtlasMaterial("deepslate", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DEEPSLATE });
+registerAtlasMaterial("tuff", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.TUFF });
+registerAtlasMaterial("moss", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.MOSS, texHasAlpha: true });
+registerAtlasMaterial("mossy_stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.MOSSY_STONE });
+registerAtlasMaterial("dripstone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DRIPSTONE, texHasAlpha: true });
+registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DRIPSTONE_BLOCK });
+registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
+registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
 // Blocks
-noa.registry.registerBlock(GRASS_ID, {
-  material: ["grass_top", "dirt", "grass_side"],
-});
+noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
 noa.registry.registerBlock(WOOD_ID, { material: "wood" });
@@ -493,11 +399,9 @@ noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
 noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
 noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
 
-// Biome blocks registered
 noa.registry.registerBlock(SAND_ID, { material: "sand" });
 noa.registry.registerBlock(SNOW_ID, { material: "snow" });
 
-// ✅ Cave blocks registered (NEW)
 noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
 noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
 noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
@@ -511,37 +415,17 @@ noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 // ✅ DEBUG TOOLS: ID Registry & Structure Validation
 // =========================================================
 
-// Track registered block IDs (client-side)
 const REGISTERED_BLOCK_IDS = new Set<number>([
-  GRASS_ID,
-  DIRT_ID,
-  STONE_ID,
-  WOOD_ID,
-  LEAVES_ID,
-  BEDROCK_ID,
-  COAL_ORE_ID,
-  IRON_ORE_ID,
-  GOLD_ORE_ID,
-  DIAMOND_ORE_ID,
-  SAND_ID,
-  SNOW_ID,
-
-  // ✅ Cave blocks (NEW)
-  DEEPSLATE_ID,
-  TUFF_ID,
-  MOSS_ID,
-  MOSSY_STONE_ID,
-  DRIPSTONE_ID,
-  DRIPSTONE_BLOCK_ID,
-  GLOW_SHROOM_ID,
-  CRYSTAL_ID,
+  GRASS_ID, DIRT_ID, STONE_ID, WOOD_ID, LEAVES_ID, BEDROCK_ID,
+  COAL_ORE_ID, IRON_ORE_ID, GOLD_ORE_ID, DIAMOND_ORE_ID,
+  SAND_ID, SNOW_ID, DEEPSLATE_ID, TUFF_ID, MOSS_ID,
+  MOSSY_STONE_ID, DRIPSTONE_ID, DRIPSTONE_BLOCK_ID, GLOW_SHROOM_ID, CRYSTAL_ID,
 ]);
 
 function isRegisteredBlockId(id: number) {
   return id === 0 || REGISTERED_BLOCK_IDS.has(id); // 0 = air
 }
 
-// Global debug helper for your structure JSON (town hall blocks)
 (globalThis as any).__debugStructureIds = (structure: any) => {
   if (!structure || !Array.isArray(structure.blocks)) {
     console.warn("[STRUCT] invalid structure (missing blocks array)");
@@ -563,26 +447,17 @@ function isRegisteredBlockId(id: number) {
   const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
   const unknown = sorted.filter(([id]) => !isRegisteredBlockId(id));
 
-  console.log(
-    "[STRUCT] block id counts:",
-    sorted.slice(0, 30).map(([id, c]) => ({ id, count: c }))
-  );
-  console.log(
-    "[STRUCT] unknown ids (NOT registered client-side):",
-    unknown.map(([id, c]) => ({ id, count: c }))
-  );
+  console.log("[STRUCT] block id counts:", sorted.slice(0, 30).map(([id, c]) => ({ id, count: c })));
+  console.log("[STRUCT] unknown ids (NOT registered client-side):", unknown.map(([id, c]) => ({ id, count: c })));
   console.log("[STRUCT] blocks missing/invalid id fields:", missingId);
 };
 
 (globalThis as any).__listRegisteredBlocks = () => {
-  console.log(
-    "[STRUCT] REGISTERED_BLOCK_IDS:",
-    Array.from(REGISTERED_BLOCK_IDS.values()).sort((a, b) => a - b)
-  );
+  console.log("[STRUCT] REGISTERED_BLOCK_IDS:", Array.from(REGISTERED_BLOCK_IDS.values()).sort((a, b) => a - b));
 };
 
 /* ===============================
-   6. Inventory State
+   6. Inventory & Combat State
 ================================ */
 type InvState = { slots: ItemStack[]; cursor: ItemStack };
 
@@ -606,8 +481,13 @@ let remoteXray = true; // always visible by default (debug)
 // Particle debug toggle (forces particles at player head)
 let DEBUG_PARTICLES_ALWAYS = false;
 
+// MVP Combat State
+let myHp = 20;
+const remoteFlashes = new Map<string, number>(); // Hit red material flash
+const remoteSwings = new Map<string, number>();  // Arm swing anims
+
 /* ===============================
-   6.0 Safe Zone / Cornucopia state (NEW)
+   6.0 Safe Zone state
 ================================ */
 type SafeZoneMsg = { x: number; z: number; r: number };
 let safeZone: SafeZoneMsg | null = null;
@@ -747,23 +627,19 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
 }
 
 function renderInventoryUI() {
-  // Cursor
   renderSlot(cursorSlotEl, invState.cursor, false);
   cursorNameEl.textContent =
     invState.cursor.id > 0
       ? stackLabel(invState.cursor).split("\n")[0]
       : "(empty)";
 
-  // Hotbar
   for (let i = 0; i < HOTBAR_SLOTS; i++)
     renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
 
-  // Backpack
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
   }
 
-  // Client hint only: enable/disable craft buttons
   const countItemSlotsOnly = (id: number): number => {
     let n = 0;
     for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
@@ -798,7 +674,6 @@ function sendInvClick(slot: number, button: "L" | "R", shift: boolean) {
 }
 
 function setupInventorySlots() {
-  // Hotbar slots
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     const el = document.createElement("div");
     (el as any).__slotIndex = i;
@@ -812,7 +687,6 @@ function setupInventorySlots() {
     hotbarGrid.appendChild(el);
   }
 
-  // Backpack slots
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
     const idx = HOTBAR_SLOTS + i;
     const el = document.createElement("div");
@@ -857,7 +731,6 @@ function initUI() {
   }
 
   try {
-    // Build craft UI from RECIPES (single source of truth)
     for (const r of RECIPES) {
       const inStr = r.inputs.map((it) => `${itemName(it.id)}×${it.count}`).join(" + ");
       const outStr = `${itemName(r.output.id)}×${r.output.count}`;
@@ -966,6 +839,7 @@ function updateOverlay(extraLine = "") {
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
+    <strong>HP:</strong> ${myHp} / 20<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
     <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
@@ -979,7 +853,7 @@ function updateOverlay(extraLine = "") {
     <strong>DEBUG_PARTICLES_ALWAYS:</strong> ${DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"}<br>
     <strong>${safeLine}</strong><br>
     -------------------------<br>
-    [Click/Hold LMB] Mine  |  [R-Click] Place<br>
+    [Click/Hold LMB] Mine/Attack | [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
     [WASD] Move  |  [Space] Jump<br>
     [I] Inventory<br>
@@ -1061,7 +935,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Capture-phase handler for tuning keys ONLY (so mouse/NOA stays normal)
+// Capture-phase handler for tuning keys ONLY
 window.addEventListener(
   "keydown",
   (e: KeyboardEvent) => {
@@ -1146,11 +1020,9 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 // ✅ DEBUG TOOLS: VOXEL DECODING & CHUNK ANALYSIS
 // =========================================================
 
-// Robust decode for chunk voxel payloads (Uint8/Uint16/etc)
 function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[] | null {
   if (msgVoxels == null) return null;
 
-  // If server sends plain JS array
   if (Array.isArray(msgVoxels)) {
     if (msgVoxels.length !== expectedLen) return null;
     const out = new Array<number>(expectedLen);
@@ -1158,16 +1030,13 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     return out;
   }
 
-  // If server sends an ArrayBuffer directly
   if (msgVoxels instanceof ArrayBuffer) {
-    // try uint16 first if size matches
     if (msgVoxels.byteLength === expectedLen * 2) {
       const u16 = new Uint16Array(msgVoxels);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) out[i] = u16[i] | 0;
       return out;
     }
-    // fallback uint8
     if (msgVoxels.byteLength === expectedLen) {
       const u8 = new Uint8Array(msgVoxels);
       const out = new Array<number>(expectedLen);
@@ -1177,11 +1046,9 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     return null;
   }
 
-  // If server sends a TypedArray (Uint8Array, Uint16Array, etc)
   if (ArrayBuffer.isView(msgVoxels) && (msgVoxels as any).buffer instanceof ArrayBuffer) {
     const view = msgVoxels as ArrayBufferView;
 
-    // If it already has element values (uint16 etc), read directly if length matches
     const len = (msgVoxels as any).length;
     if (typeof len === "number" && len === expectedLen) {
       const out = new Array<number>(expectedLen);
@@ -1189,7 +1056,6 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       return out;
     }
 
-    // Otherwise interpret by byteLength
     const bytes = view.byteLength;
     if (bytes === expectedLen * 2) {
       const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
@@ -1209,41 +1075,11 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
   return null;
 }
 
-// Chunk diagnostics - logs distribution of block IDs in chunks
-function debugChunkVoxels(label: string, voxels: number[], expected: number) {
-  if (!voxels || voxels.length !== expected) {
-    console.warn(`[CHUNK:${label}] length mismatch`, { got: voxels?.length, expected });
-    return;
-  }
-
-  let min = Infinity;
-  let max = -Infinity;
-  const counts = new Map<number, number>();
-
-  // sample first N for speed (chunk can be big)
-  const N = Math.min(expected, 50000);
-  for (let i = 0; i < N; i++) {
-    const v = voxels[i] | 0;
-    if (v < min) min = v;
-    if (v > max) max = v;
-    counts.set(v, (counts.get(v) ?? 0) + 1);
-  }
-
-  // show top few ids
-  const top = Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12)
-    .map(([id, c]) => ({ id, count: c }));
-
-  console.log(`[CHUNK:${label}] voxels sample`, {
-    sampleN: N,
-    min,
-    max,
-    top,
-  });
+function debugChunkVoxels(_label: string, _voxels: number[], _expected: number) {
+  // Intentionally left blank to avoid heavy console spam.
+  // Kept here in case we need to debug chunk payloads later.
 }
 
-// Warns if a chunk contains IDs that aren't registered
 function warnUnknownIdsInChunk(voxels: number[]) {
   const unknown = new Map<number, number>();
   const N = Math.min(voxels.length, 60000);
@@ -1254,7 +1090,7 @@ function warnUnknownIdsInChunk(voxels: number[]) {
   }
 
   if (unknown.size) {
-    console.warn("[CHUNK] contains unknown block IDs (not registered client-side)", {
+    console.warn("[CHUNK] contains unknown block IDs", {
       unknown: Array.from(unknown.entries()).sort((a, b) => b[1] - a[1]).slice(0, 20),
     });
   }
@@ -1266,28 +1102,15 @@ function applyChunkFromServer(msg: any) {
   const pending = pendingChunks.get(msg.id);
   if (!pending) return;
 
-  const CS =
-    typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
-
+  const CS = typeof msg.chunkSize === "number" && Number.isFinite(msg.chunkSize) ? msg.chunkSize : pending.chunkSize;
   const expected = CS * CS * CS;
 
-  // ✅ Use robust decoder + debug logging
   const voxels = decodeVoxelsToNumberArray(msg.voxels, expected);
   if (!voxels) {
-    console.warn("[CHUNK] decode failed", {
-      id: msg.id,
-      chunkSize: CS,
-      expected,
-      voxType: msg.voxels?.constructor?.name,
-      isArray: Array.isArray(msg.voxels),
-      isBuffer: msg.voxels instanceof ArrayBuffer,
-      isView: ArrayBuffer.isView(msg.voxels),
-      byteLength: msg.voxels?.byteLength,
-    });
+    console.warn("[CHUNK] decode failed", msg.id);
     return;
   }
 
-  // Debug analysis
   debugChunkVoxels(msg.id, voxels, expected);
   warnUnknownIdsInChunk(voxels);
 
@@ -1308,7 +1131,7 @@ function applyChunkFromServer(msg: any) {
 }
 
 /* ===============================
-   8. Interaction (Mine/Place) - Option A mining
+   8. Interaction (Mine/Place/Attack)
 ================================ */
 try {
   (noa.inputs as any).bind?.("fire", "mouse1");
@@ -1332,41 +1155,44 @@ function triggerPunch() {
 }
 
 /* ===============================
-   8.1 Mining progress (Option A)
+   8.1 Combat & Mining progress
 ================================ */
 type MineProgressMsg = {
   x: number;
   y: number;
   z: number;
-  progress: number; // 0..1
-  stage: number; // 0..9
+  progress: number;
+  stage: number;
   done?: boolean;
   reason?: string;
 };
 
-// IMPORTANT: single declarations (avoid TS redeclare)
 let miningHeld = false; // physical hold state
 let miningTarget: { x: number; y: number; z: number } | null = null;
 let miningProgress: MineProgressMsg | null = null;
 
-// Click-to-continue mining (sticky)
 let miningActive = false;
 let miningStickyUntil = 0;
 const MINING_STICKY_MS = 1200;
 
-// Heartbeat controls: allow same-target resends after a short window
 let lastMineSentKey = "";
 let lastMineSendAt = 0;
 const MINE_RESEND_SAME_TARGET_MS = 250;
 
-// Continuous arm action while mining
 let lastMinePunchAt = 0;
 const MINE_PUNCH_INTERVAL_MS = 180;
+
+// MVP Combat Helper
+function sendAttack() {
+  if (!room) return;
+  const yaw = readNoaYaw();
+  const pitch = readNoaPitch();
+  room.send("attack", { kind: "melee", heldSlot: selectedHotbar, yaw, pitch, t: Date.now() });
+}
 
 function sendStartMine(x: number, y: number, z: number) {
   if (!room) return;
 
-  // client-side safe zone block
   if (isInSafeZoneXZ(x, z)) {
     updateOverlay("Safe Zone: mining blocked");
     return;
@@ -1406,23 +1232,23 @@ function setInvOpen(open: boolean) {
   if (invOpen) cancelMiningLocal("inventory_open");
 }
 
-/* Hold-to-mine start (press) */
+/* Hold-to-mine start / Attack trigger (press) */
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
+
+  triggerPunch();
+  sendAttack(); // ⚔️ MVP COMBAT SEND
 
   const target = getTargetInfo();
   if (!target) return;
 
   const { x, y, z } = target.pos;
 
-  // client-side safe zone block
   if (isInSafeZoneXZ(x, z)) {
     updateOverlay("Safe Zone: mining blocked");
     return;
   }
-
-  triggerPunch();
 
   miningHeld = true;
   miningActive = true;
@@ -1442,7 +1268,6 @@ noa.inputs.down.on("fire", () => {
   sendStartMine(x, y, z);
 });
 
-/* Release LMB: keep mining ACTIVE (click-to-continue) */
 window.addEventListener("mouseup", (e: MouseEvent) => {
   if (e.button !== 0) return;
   if (!miningHeld) return;
@@ -1452,7 +1277,6 @@ window.addEventListener("mouseup", (e: MouseEvent) => {
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
 
-/* Right-click places block (Option A: do NOT setBlockID locally) */
 noa.inputs.down.on("alt-fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
@@ -1464,7 +1288,6 @@ noa.inputs.down.on("alt-fire", () => {
 
   const { x, y, z } = target.adj;
 
-  // client-side safe zone block
   if (isInSafeZoneXZ(x, z)) {
     updateOverlay("Safe Zone: placing blocked");
     return;
@@ -1500,8 +1323,7 @@ noa.inputs.down.on("alt-fire", () => {
 function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
   if (!r) return null;
-  const s =
-    (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
+  const s = (typeof r.getScene === "function" ? r.getScene() : null) ?? r._scene ?? r.scene ?? null;
   return (s as BABYLON.Scene) ?? null;
 }
 
@@ -1521,7 +1343,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   9.0 Safe Zone Visuals (NEW)
+   9.0 Safe Zone Visuals
 ================================ */
 let safeZoneMesh: BABYLON.Mesh | null = null;
 let safeZoneMat: BABYLON.StandardMaterial | null = null;
@@ -1532,12 +1354,8 @@ function ensureSafeZoneVisual(scene: BABYLON.Scene) {
   const suid = uid ?? null;
 
   if (safeZoneSceneUid !== suid) {
-    try {
-      safeZoneMesh?.dispose();
-    } catch {}
-    try {
-      safeZoneMat?.dispose();
-    } catch {}
+    try { safeZoneMesh?.dispose(); } catch {}
+    try { safeZoneMat?.dispose(); } catch {}
     safeZoneMesh = null;
     safeZoneMat = null;
     safeZoneSceneUid = suid;
@@ -1545,8 +1363,6 @@ function ensureSafeZoneVisual(scene: BABYLON.Scene) {
 
   if (safeZoneMesh && safeZoneMat) return;
 
-  // A translucent cylinder wall marking the safe zone.
-  // We don't know exact ground Y, so we keep it centered around player height each tick.
   safeZoneMesh = BABYLON.MeshBuilder.CreateCylinder(
     "safeZoneCylinder",
     { height: 120, diameter: 2, tessellation: 72, subdivisions: 1 },
@@ -1585,12 +1401,10 @@ function updateSafeZoneVisual(scene: BABYLON.Scene) {
   safeZoneMesh.position.set(safeZone.x, yCenter, safeZone.z);
 
   const r = Math.max(2, safeZone.r);
-  // diameter scale: base cylinder was diameter=2, so scale = r
   safeZoneMesh.scaling.x = r;
   safeZoneMesh.scaling.z = r;
   safeZoneMesh.scaling.y = 1;
 
-  // subtle pulse when inside
   if (p) {
     const dx = p[0] - safeZone.x;
     const dz = p[2] - safeZone.z;
@@ -1603,7 +1417,7 @@ function updateSafeZoneVisual(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   9.1 Mining crack visuals (wireframe overlay)
+   9.1 Mining crack visuals
 ================================ */
 let crackMesh: BABYLON.Mesh | null = null;
 let crackMat: BABYLON.StandardMaterial | null = null;
@@ -1614,12 +1428,8 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
   if (crackSceneUid == null) crackSceneUid = uid ?? null;
 
   if (crackSceneUid !== (uid ?? null)) {
-    try {
-      crackMesh?.dispose();
-    } catch {}
-    try {
-      crackMat?.dispose();
-    } catch {}
+    try { crackMesh?.dispose(); } catch {}
+    try { crackMat?.dispose(); } catch {}
     crackMesh = null;
     crackMat = null;
     crackSceneUid = uid ?? null;
@@ -1638,11 +1448,9 @@ function ensureCrackVisual(scene: BABYLON.Scene) {
   crackMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
   crackMat.specularColor = new BABYLON.Color3(0, 0, 0);
   crackMat.alpha = 0.0;
-
   crackMat.backFaceCulling = false;
   crackMat.disableDepthWrite = true;
   crackMat.depthFunction = BABYLON.Constants.LEQUAL;
-
   crackMat.wireframe = true;
   crackMesh.material = crackMat;
 }
@@ -1673,9 +1481,8 @@ function updateCrackVisual(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   9.2 Drop visuals in NOA world scene (Minecraft-ish mini blocks)
+   9.2 Drop visuals
 ================================ */
-// Cache per-tile materials per scene
 const dropAtlasMats = new Map<number, BABYLON.StandardMaterial>();
 let dropAtlasMatsSceneUid: string | number | null = null;
 
@@ -1684,9 +1491,7 @@ function resetDropAtlasMatsIfSceneChanged(scene: BABYLON.Scene) {
   const suid = uid ?? null;
   if (dropAtlasMatsSceneUid !== suid) {
     for (const m of dropAtlasMats.values()) {
-      try {
-        m.dispose();
-      } catch {}
+      try { m.dispose(); } catch {}
     }
     dropAtlasMats.clear();
     dropAtlasMatsSceneUid = suid;
@@ -1710,7 +1515,6 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
   tex.hasAlpha = !!alpha;
   tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
   tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-
   tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
 
   const idx = Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0));
@@ -1728,24 +1532,17 @@ function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = 
 }
 
 function itemIdToAtlasIndex(itemId: number): number {
-  // Blocks (shared item ids)
   if (itemId === Items.GRASS) return ATLAS.GRASS_SIDE;
   if (itemId === Items.DIRT) return ATLAS.DIRT;
   if (itemId === Items.STONE) return ATLAS.STONE;
   if (itemId === Items.WOOD_LOG) return ATLAS.WOOD;
   if (itemId === Items.LEAVES) return ATLAS.LEAVES;
-
-  // Minerals/items
   if (itemId === Items.COAL) return ATLAS.COAL_ORE;
   if (itemId === Items.RAW_IRON) return ATLAS.IRON_ORE;
   if (itemId === Items.RAW_GOLD) return ATLAS.GOLD_ORE;
   if (itemId === Items.DIAMOND) return ATLAS.DIAMOND_ORE;
-
-  // Biome items
   if ((Items as any).SAND && itemId === (Items as any).SAND) return ATLAS.SAND;
   if ((Items as any).SNOW && itemId === (Items as any).SNOW) return ATLAS.SNOW;
-
-  // ✅ Cave biome items (NEW)
   if ((Items as any).DEEPSLATE && itemId === (Items as any).DEEPSLATE) return ATLAS.DEEPSLATE;
   if ((Items as any).TUFF && itemId === (Items as any).TUFF) return ATLAS.TUFF;
   if ((Items as any).MOSS && itemId === (Items as any).MOSS) return ATLAS.MOSS;
@@ -1754,15 +1551,12 @@ function itemIdToAtlasIndex(itemId: number): number {
   if ((Items as any).DRIPSTONE_BLOCK && itemId === (Items as any).DRIPSTONE_BLOCK) return ATLAS.DRIPSTONE_BLOCK;
   if ((Items as any).GLOW_SHROOM && itemId === (Items as any).GLOW_SHROOM) return ATLAS.GLOW_SHROOM;
   if ((Items as any).CRYSTAL && itemId === (Items as any).CRYSTAL) return ATLAS.CRYSTAL;
-
   return ATLAS.STONE;
 }
 
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
-    try {
-      m.dispose();
-    } catch {}
+    try { m.dispose(); } catch {}
   }
   dropMeshes.clear();
 }
@@ -1784,8 +1578,6 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
     (box as any).isInFrustum = () => true;
 
     const tile = itemIdToAtlasIndex(d.itemId);
-
-    // ✅ alpha for foliage/plant/crystal-ish drops
     const alpha =
       d.itemId === Items.LEAVES ||
       d.itemId === (Items as any).MOSS ||
@@ -1794,10 +1586,8 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
       d.itemId === (Items as any).CRYSTAL;
 
     box.material = getDropAtlasMaterial(scene, tile, !!alpha);
-
     box.rotation.x = 0.25;
     box.rotation.y = Math.random() * Math.PI * 2;
-
     box.position.set(d.x, d.y, d.z);
     dropMeshes.set(d.dropId, box);
   }
@@ -1805,9 +1595,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const id of Array.from(dropMeshes.keys())) {
     if (!drops.has(id)) {
       const m = dropMeshes.get(id);
-      try {
-        m?.dispose();
-      } catch {}
+      try { m?.dispose(); } catch {}
       dropMeshes.delete(id);
     }
   }
@@ -1827,10 +1615,7 @@ function updateDropVisuals(dtSec: number) {
 }
 
 function tryAutoPickup() {
-  if (!room) return;
-  if (!hasPointerLock()) return;
-  if (invOpen) return;
-  if (drops.size <= 0) return;
+  if (!room || !hasPointerLock() || invOpen || drops.size <= 0) return;
 
   const now = performance.now();
   if (now - lastPickupScanAt < 120) return;
@@ -1867,7 +1652,7 @@ function tryAutoPickup() {
 }
 
 /* ===============================
-   9.3 Mining particles (client visual)
+   9.3 Mining particles
 ================================ */
 let minePS: BABYLON.ParticleSystem | null = null;
 let minePSTex: BABYLON.Texture | null = null;
@@ -1878,12 +1663,8 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
   const suid = uid ?? null;
 
   if (minePSSceneUid !== suid) {
-    try {
-      minePS?.dispose();
-    } catch {}
-    try {
-      minePSTex?.dispose();
-    } catch {}
+    try { minePS?.dispose(); } catch {}
+    try { minePSTex?.dispose(); } catch {}
     minePS = null;
     minePSTex = null;
     minePSSceneUid = suid;
@@ -1904,37 +1685,27 @@ function ensureMiningParticles(scene: BABYLON.Scene) {
 
   const ps = new BABYLON.ParticleSystem("minePS", 600, scene);
   ps.particleTexture = minePSTex;
-
   ps.renderingGroupId = 2;
-
   ps.minSize = 0.02;
   ps.maxSize = 0.06;
-
   ps.minLifeTime = 0.1;
   ps.maxLifeTime = 0.25;
-
   ps.emitRate = 0;
-
   ps.minEmitPower = 0.7;
   ps.maxEmitPower = 1.6;
   ps.updateSpeed = 0.015;
-
   ps.gravity = new BABYLON.Vector3(0, -2.2, 0);
-
   ps.direction1 = new BABYLON.Vector3(-1, 0.7, -1);
   ps.direction2 = new BABYLON.Vector3(1, 1.3, 1);
-
   ps.createBoxEmitter(
     new BABYLON.Vector3(-0.35, -0.35, -0.35),
     new BABYLON.Vector3(0.35, 0.35, 0.35),
     new BABYLON.Vector3(-0.2, 0.2, -0.2),
     new BABYLON.Vector3(0.2, 0.6, 0.2)
   );
-
   ps.color1 = new BABYLON.Color4(1, 1, 1, 1);
   ps.color2 = new BABYLON.Color4(1, 1, 1, 1);
   ps.colorDead = new BABYLON.Color4(1, 1, 1, 0);
-
   ps.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
   (ps as any).forceDepthWrite = false;
 
@@ -1972,7 +1743,6 @@ function updateMiningParticles(scene: BABYLON.Scene) {
   }
 
   const { x, y, z, progress } = miningProgress;
-
   minePS.emitter = new BABYLON.Vector3(x + 0.5, y + 0.5, z + 0.5);
 
   const tgt = getTargetInfo();
@@ -1994,7 +1764,7 @@ function updateMiningParticles(scene: BABYLON.Scene) {
 }
 
 /* ===============================
-   NEW: Building Label (debug) + Beacon Pillar
+   Town Hall Label & Beacon
 ================================ */
 let townHallLabelPlane: BABYLON.Mesh | null = null;
 let townHallBeacon: BABYLON.Mesh | null = null;
@@ -2006,20 +1776,11 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
   const uid = (scene as any).uid as string | number | undefined;
   const suid = uid ?? null;
 
-  // Scene changed => dispose everything
   if (townHallLabelSceneUid !== suid) {
-    try {
-      townHallLabelPlane?.dispose();
-    } catch {}
-    try {
-      townHallBeacon?.dispose();
-    } catch {}
-    try {
-      townHallLabelMat?.dispose();
-    } catch {}
-    try {
-      townHallLabelTex?.dispose();
-    } catch {}
+    try { townHallLabelPlane?.dispose(); } catch {}
+    try { townHallBeacon?.dispose(); } catch {}
+    try { townHallLabelMat?.dispose(); } catch {}
+    try { townHallLabelTex?.dispose(); } catch {}
     townHallLabelPlane = null;
     townHallBeacon = null;
     townHallLabelMat = null;
@@ -2029,57 +1790,48 @@ function ensureTownHallLabel(scene: BABYLON.Scene) {
 
   if (townHallLabelPlane && townHallBeacon) return;
 
-  // --- 1. The Beacon (Giant Purple Laser) ---
   townHallBeacon = BABYLON.MeshBuilder.CreateCylinder(
     "townHallBeacon",
     { height: 1, diameter: 0.8, tessellation: 16 },
     scene
   );
-  townHallBeacon.renderingGroupId = 3; // Force on top of everything
+  townHallBeacon.renderingGroupId = 3;
   townHallBeacon.isPickable = false;
   (townHallBeacon as any).isInFrustum = () => true;
-  (townHallBeacon as any).alwaysSelectAsActiveMesh = true; // Never cull
+  (townHallBeacon as any).alwaysSelectAsActiveMesh = true;
 
   const beaconMat = new BABYLON.StandardMaterial("beaconMat", scene);
   beaconMat.disableLighting = true;
-  beaconMat.emissiveColor = new BABYLON.Color3(0.6, 0, 1); // Neon Purple
+  beaconMat.emissiveColor = new BABYLON.Color3(0.6, 0, 1);
   beaconMat.alpha = 0.5;
-  beaconMat.disableDepthWrite = true; // Don't block other things
-  (beaconMat as any).fogEnabled = false; // Ignore world fog
+  beaconMat.disableDepthWrite = true;
+  (beaconMat as any).fogEnabled = false;
   townHallBeacon.material = beaconMat;
 
-  // --- 2. The Text Label (Billboard) ---
   townHallLabelPlane = BABYLON.MeshBuilder.CreatePlane(
     "townHallLabel",
     { width: 12, height: 4 },
     scene
   );
   townHallLabelPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-  townHallLabelPlane.renderingGroupId = 3; // Force on top
+  townHallLabelPlane.renderingGroupId = 3;
   townHallLabelPlane.isPickable = false;
   (townHallLabelPlane as any).isInFrustum = () => true;
   (townHallLabelPlane as any).alwaysSelectAsActiveMesh = true;
 
-  townHallLabelTex = new BABYLON.DynamicTexture(
-    "townHallLabelTex",
-    { width: 512, height: 256 },
-    scene,
-    false
-  );
+  townHallLabelTex = new BABYLON.DynamicTexture("townHallLabelTex", { width: 512, height: 256 }, scene, false);
 
   townHallLabelMat = new BABYLON.StandardMaterial("townHallLabelMat", scene);
   townHallLabelMat.disableLighting = true;
   townHallLabelMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   townHallLabelMat.backFaceCulling = false;
   townHallLabelMat.disableDepthWrite = true;
-  (townHallLabelMat as any).fogEnabled = false; // Ignore world fog
+  (townHallLabelMat as any).fogEnabled = false;
 
   townHallLabelMat.diffuseTexture = townHallLabelTex;
   (townHallLabelMat.diffuseTexture as BABYLON.Texture).hasAlpha = true;
 
   townHallLabelPlane.material = townHallLabelMat;
-
-  // Initial draw
   redrawTownHallLabel("TOWN HALL", "(0,0)");
 }
 
@@ -2091,60 +1843,43 @@ function redrawTownHallLabel(title: string, subtitle = "") {
   const h = townHallLabelTex.getSize().height;
 
   ctx.clearRect(0, 0, w, h);
-
-  // Background box (Semi-transparent black)
   ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
   ctx.fillRect(0, 0, w, h);
-
-  // Border (Cyan)
   ctx.strokeStyle = "#00FFFF";
   ctx.lineWidth = 10;
   ctx.strokeRect(5, 5, w - 10, h - 10);
-
-  // Text
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-
-  // Title (White)
   ctx.fillStyle = "white";
   ctx.font = "bold 80px monospace";
   ctx.fillText(title, w / 2, h * 0.4);
 
-  // Subtitle (Yellow)
   if (subtitle) {
     ctx.fillStyle = "#FFFF00";
     ctx.font = "bold 50px monospace";
     ctx.fillText(subtitle, w / 2, h * 0.8);
   }
-
   townHallLabelTex.update();
 }
 
 function updateTownHallLabel(scene: BABYLON.Scene) {
-  // CONFIG: Coordinates match MyRoom.ts logic
   const CENTER_X = 0;
   const CENTER_Z = 0;
-  const LABEL_Y = 35; // Height of label
+  const LABEL_Y = 35;
 
   ensureTownHallLabel(scene);
   if (!townHallLabelPlane || !townHallBeacon) return;
 
-  // 1. Position Label
   townHallLabelPlane.position.set(CENTER_X, LABEL_Y, CENTER_Z);
-
-  // Pulse effect for visibility
   const pulse = 1 + Math.sin(performance.now() / 250) * 0.1;
   townHallLabelPlane.scaling.set(pulse, pulse, pulse);
 
-  // 2. Position Beacon (cylinder origin is center)
   townHallBeacon.position.set(CENTER_X, LABEL_Y / 2, CENTER_Z);
   townHallBeacon.scaling.y = LABEL_Y;
 
-  // 3. Distance Update
   const now = performance.now();
   if ((updateTownHallLabel as any)._lastRedraw == null) (updateTownHallLabel as any)._lastRedraw = 0;
 
-  // Update text every 1s
   if (now - (updateTownHallLabel as any)._lastRedraw > 1000) {
     (updateTownHallLabel as any)._lastRedraw = now;
 
@@ -2156,7 +1891,6 @@ function updateTownHallLabel(scene: BABYLON.Scene) {
       const dist = Math.sqrt(dx * dx + dz * dz);
       distStr = dist.toFixed(0) + "m";
     }
-
     redrawTownHallLabel("TOWN HALL", distStr);
   }
 }
@@ -2167,13 +1901,10 @@ function updateTownHallLabel(scene: BABYLON.Scene) {
 let vmReady = false;
 let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
-
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
-
 let vmEngineHooked = false;
 
-// Debug meshes
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
@@ -2184,10 +1915,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   vmScene = new BABYLON.Scene(engine);
   vmScene.useRightHandedSystem = noaScene.useRightHandedSystem;
-
-  console.log("[VM] ensureVmScene", {
-    useRightHandedSystem: vmScene.useRightHandedSystem,
-  });
 
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
@@ -2342,16 +2069,10 @@ function readNoaPitch(): number {
   const p2 = camAny?._pitch;
   const p3 = camAny?.rotX;
   const p4 = camAny?.rotation?.[0];
-  const v =
-    typeof p1 === "number" && Number.isFinite(p1)
-      ? p1
-      : typeof p2 === "number" && Number.isFinite(p2)
-      ? p2
-      : typeof p3 === "number" && Number.isFinite(p3)
-      ? p3
-      : typeof p4 === "number" && Number.isFinite(p4)
-      ? p4
-      : 0;
+  const v = typeof p1 === "number" && Number.isFinite(p1) ? p1
+    : typeof p2 === "number" && Number.isFinite(p2) ? p2
+    : typeof p3 === "number" && Number.isFinite(p3) ? p3
+    : typeof p4 === "number" && Number.isFinite(p4) ? p4 : 0;
   return v;
 }
 
@@ -2421,8 +2142,7 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  vmArmRoot.rotation.x =
-    vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
@@ -2438,7 +2158,6 @@ const remoteMeshes = new Map<string, BABYLON.TransformNode>();
 const remoteMats = new Map<string, BABYLON.StandardMaterial>();
 
 let rpRenderOffset = new BABYLON.Vector3(0, 0, 0);
-let lastRpOffsetLogAt = 0;
 
 const REMOTE_Y_VISUAL_OFFSET = -1.65;
 
@@ -2570,19 +2289,14 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
 function removeRemoteMesh(id: string) {
   const root = remoteMeshes.get(id);
   if (root) {
-    try {
-      root.dispose();
-    } catch {}
+    try { root.dispose(); } catch {}
     remoteMeshes.delete(id);
   }
   const mat = remoteMats.get(id);
   if (mat) {
-    try {
-      mat.dispose();
-    } catch {}
+    try { mat.dispose(); } catch {}
     remoteMats.delete(id);
   }
-
   remotePrevPos.delete(id);
   remotePrevAt.delete(id);
   remoteTargetPos.delete(id);
@@ -2598,7 +2312,6 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
 
   if (typeof worldCam.fov === "number") (rpCam as any).fov = worldCam.fov;
   if (typeof worldCam.fovMode === "number") (rpCam as any).fovMode = worldCam.fovMode;
-
   if (typeof worldCam.minZ === "number") rpCam.minZ = worldCam.minZ;
   if (typeof worldCam.maxZ === "number") rpCam.maxZ = worldCam.maxZ;
 
@@ -2646,30 +2359,6 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
       mat.depthFunction = BABYLON.Constants.LESS;
     }
   }
-
-  const now = performance.now();
-  if (now - lastRpOffsetLogAt > 1500) {
-    lastRpOffsetLogAt = now;
-
-    const lp = worldCam.position instanceof BABYLON.Vector3 ? worldCam.position : null;
-    const ap =
-      typeof worldCam.getAbsolutePosition === "function"
-        ? worldCam.getAbsolutePosition()
-        : worldCam.globalPosition instanceof BABYLON.Vector3
-        ? worldCam.globalPosition
-        : null;
-
-    console.log("[RP] cam+offset", {
-      handedness: rpScene.useRightHandedSystem ? "RH" : "LH",
-      xray: remoteXray,
-      worldLocalPos: lp ? { x: +lp.x.toFixed(2), y: +lp.y.toFixed(2), z: +lp.z.toFixed(2) } : null,
-      worldAbsPos: ap ? { x: +ap.x.toFixed(2), y: +ap.y.toFixed(2), z: +ap.z.toFixed(2) } : null,
-      rpCamPos: { x: +rpCam.position.x.toFixed(2), y: +rpCam.position.y.toFixed(2), z: +rpCam.position.z.toFixed(2) },
-      playerPos: p ? { x: +p[0].toFixed(2), y: +p[1].toFixed(2), z: +p[2].toFixed(2) } : null,
-      rpRenderOffset: { x: +rpRenderOffset.x.toFixed(2), y: +rpRenderOffset.y.toFixed(2), z: +rpRenderOffset.z.toFixed(2) },
-      hasWorldMatrix: typeof worldCam.getWorldMatrix === "function",
-    });
-  }
 }
 
 function updateRemoteMeshes() {
@@ -2700,8 +2389,7 @@ function updateRemoteMeshes() {
 
     if (typeof t.yaw === "number") root.rotation.y = t.yaw;
 
-    const prev =
-      remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
+    const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
     const dt = Math.max(0.001, (now - prevAt) / 1000);
 
@@ -2717,6 +2405,8 @@ function updateRemoteMeshes() {
       | { armL: BABYLON.Mesh; armR: BABYLON.Mesh; legL: BABYLON.Mesh; legR: BABYLON.Mesh }
       | undefined;
 
+    const mat = remoteMats.get(id);
+
     if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
       const moving = speed > 0.15;
       const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
@@ -2729,10 +2419,28 @@ function updateRemoteMeshes() {
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
 
+      // ✅ ⚔️ Combat hit flash
+      if (mat) {
+        const flashTime = remoteFlashes.get(id);
+        if (flashTime && now - flashTime < 200) {
+          mat.emissiveColor.set(1, 0.3, 0.3); // Bright hit flash
+        } else {
+          mat.emissiveColor.set(1, 0.15, 0.15); // Normal
+        }
+      }
+
+      // ✅ ⚔️ Combat swing anim
+      let armPitch = 0;
+      const swingTime = remoteSwings.get(id);
+      if (swingTime && now - swingTime < 300) {
+        const st = (now - swingTime) / 300;
+        armPitch = Math.sin(st * Math.PI) * 1.5; // Swing arm forward
+      }
+
       parts.legL.rotation.x = swing * 0.55;
       parts.legR.rotation.x = -swing * 0.55;
       parts.armL.rotation.x = -swing * 0.35;
-      parts.armR.rotation.x = swing * 0.35;
+      parts.armR.rotation.x = swing * 0.35 - armPitch; // Apply punch swing to right arm
     }
   }
 }
@@ -2751,16 +2459,12 @@ function normId(p: any): string | null {
 function ensureUserId(): string {
   const key = "noa_user_id";
   let id = "";
-  try {
-    id = String(localStorage.getItem(key) ?? "");
-  } catch {}
+  try { id = String(localStorage.getItem(key) ?? ""); } catch {}
   if (id && id.length >= 3) return id;
 
   const rand = Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
   id = `u_${Date.now().toString(16)}_${rand.slice(0, 10)}`;
-  try {
-    localStorage.setItem(key, id);
-  } catch {}
+  try { localStorage.setItem(key, id); } catch {}
   return id;
 }
 
@@ -2796,22 +2500,77 @@ async function connect() {
       updateOverlay("Safe Zone received");
     });
 
+    // ============================================
+    // ✅ ⚔️ COMBAT WIRING
+    // ============================================
+    room.onMessage("playerHit", (msg: any) => {
+      const targetId = msg.targetId;
+      const attackerId = msg.attackerId;
+      
+      // trigger swing animation for the attacker
+      remoteSwings.set(attackerId, performance.now());
+
+      if (targetId === room?.sessionId) {
+        // I GOT HIT!
+        myHp = msg.hpLeft;
+        
+        // CSS Red Flash Overlay
+        const flash = document.createElement("div");
+        flash.style.position = "absolute";
+        flash.style.inset = "0";
+        flash.style.backgroundColor = "rgba(255, 0, 0, 0.4)";
+        flash.style.pointerEvents = "none";
+        flash.style.zIndex = "9999";
+        flash.style.transition = "opacity 0.3s ease-out";
+        document.body.appendChild(flash);
+
+        requestAnimationFrame(() => {
+          flash.style.opacity = "0";
+        });
+        setTimeout(() => flash.remove(), 350);
+
+        console.log(`[COMBAT] Took ${msg.damage} dmg! HP: ${myHp}`);
+      } else {
+        // SOMEONE ELSE GOT HIT (flash their model)
+        remoteFlashes.set(targetId, performance.now());
+      }
+      updateOverlay();
+    });
+
+    room.onMessage("playerSwing", (msg: any) => {
+      if (msg.id && msg.id !== room?.sessionId) {
+        remoteSwings.set(msg.id, performance.now());
+      }
+    });
+
+    room.onMessage("attackResult", (msg: any) => {
+      if (!msg.ok) {
+        console.log(`[COMBAT] Attack failed: ${msg.reason}`);
+      } else if (msg.hit) {
+        console.log(`[COMBAT] Hit target ${msg.targetId} for ${msg.damage} dmg!`);
+      }
+    });
+
+    room.onMessage("playerRespawn", (msg: any) => {
+      if (msg.id === room?.sessionId) {
+        myHp = msg.hp;
+        try {
+          noa.ents.setPosition(noa.playerEntity, [msg.x, msg.y, msg.z]);
+          console.log("[COMBAT] Respawned at safe zone.");
+        } catch {}
+      }
+    });
+    // ============================================
+
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
-
-        if (
-          miningProgress &&
-          msg.x === miningProgress.x &&
-          msg.y === miningProgress.y &&
-          msg.z === miningProgress.z
-        ) {
+        if (miningProgress && msg.x === miningProgress.x && msg.y === miningProgress.y && msg.z === miningProgress.z) {
           miningProgress = null;
         }
       }
     });
 
-    // Mining progress (server authoritative)
     room.onMessage("mineProgress", (m: any) => {
       if (!m || typeof m !== "object") return;
       const x = Number((m as any).x);
@@ -2824,9 +2583,7 @@ async function connect() {
       if (!Number.isFinite(progress) || !Number.isFinite(stage)) return;
 
       miningProgress = {
-        x,
-        y,
-        z,
+        x, y, z,
         progress: Math.max(0, Math.min(1, progress)),
         stage: Math.max(0, Math.min(9, stage | 0)),
         done: !!(m as any).done,
@@ -2854,7 +2611,6 @@ async function connect() {
       lastMineSendAt = 0;
     });
 
-    // Inventory state from server (accept optional dur)
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
       const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
@@ -2892,7 +2648,6 @@ async function connect() {
       updateOverlay();
     });
 
-    // Drops
     room.onMessage("dropSpawn", (d: any) => {
       if (!d || typeof d.dropId !== "string") return;
       const dd: Drop = {
@@ -2915,15 +2670,12 @@ async function connect() {
       drops.delete(id);
       const mesh = dropMeshes.get(id);
       if (mesh) {
-        try {
-          mesh.dispose();
-        } catch {}
+        try { mesh.dispose(); } catch {}
         dropMeshes.delete(id);
       }
       updateOverlay();
     });
 
-    // Craft result
     room.onMessage("craftResult", (m: any) => {
       const ok = !!(m as any)?.ok;
       const recipeId = typeof (m as any)?.recipeId === "string" ? (m as any).recipeId : "";
@@ -2938,10 +2690,8 @@ async function connect() {
       }, 2000);
     });
 
-    // Players
     room.onMessage("existingPlayers", (players: any) => {
       if (!Array.isArray(players)) return;
-
       for (const p of players ?? []) {
         const id = normId(p);
         if (!id || (room && id === room.sessionId)) continue;
@@ -2952,15 +2702,11 @@ async function connect() {
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         netTransforms.set(id, {
-          x,
-          y,
-          z,
+          x, y, z,
           yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
         });
       }
-
       lastTransformAt = performance.now();
-      console.log("[NET] existingPlayers", { count: netTransforms.size });
       updateOverlay("existingPlayers received");
     });
 
@@ -2974,26 +2720,19 @@ async function connect() {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, {
-        x,
-        y,
-        z,
+        x, y, z,
         yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
       });
-
       lastTransformAt = performance.now();
-      console.log("[NET] playerJoined", { id, x, y, z });
       updateOverlay(`playerJoined: ${id}`);
     });
 
     room.onMessage("playerLeft", (p: any) => {
       const id = normId(p);
       if (!id) return;
-
       netTransforms.delete(id);
       removeRemoteMesh(id);
-
       lastTransformAt = performance.now();
-      console.log("[NET] playerLeft", { id });
       updateOverlay(`playerLeft: ${id}`);
     });
 
@@ -3007,9 +2746,7 @@ async function connect() {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
       netTransforms.set(id, {
-        x,
-        y,
-        z,
+        x, y, z,
         yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
       });
       lastTransformAt = performance.now();
@@ -3017,9 +2754,7 @@ async function connect() {
 
     room.onMessage("playersSnapshot", (players: any) => {
       if (!Array.isArray(players)) return;
-
       const ids: string[] = [];
-
       for (const p of players) {
         const id = normId(p);
         if (!id || (room && id === room.sessionId)) continue;
@@ -3031,13 +2766,10 @@ async function connect() {
 
         ids.push(id);
         netTransforms.set(id, {
-          x,
-          y,
-          z,
+          x, y, z,
           yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
         });
       }
-
       lastSnapshotIds = ids;
       lastSnapshotAt = performance.now();
       updateOverlay("playersSnapshot received");
@@ -3054,7 +2786,6 @@ async function connect() {
       } catch {}
 
       canSendMoves = true;
-      console.log("[NET] youJoined spawn", { x, y, z });
       updateOverlay("Spawn synced.");
     });
   } catch (e) {
@@ -3067,7 +2798,7 @@ initUI();
 connect();
 
 /* ===============================
-   13. Tick loop (drive vm updates + networking + rp sync + drops + mining)
+   13. Tick loop
 ================================ */
 let tickCount = 0;
 let lastTickMs = performance.now();
@@ -3085,7 +2816,6 @@ let lastTickMs = performance.now();
     ensureRpScene(scene);
     ensureDropVisuals(scene);
 
-    // safe zone visuals
     updateSafeZoneVisual(scene);
     updateTownHallLabel(scene);
 
@@ -3096,13 +2826,10 @@ let lastTickMs = performance.now();
   }
 
   updateViewmodel(dtSec);
-
   updateRemoteMeshes();
-
   updateDropVisuals(dtSec);
   tryAutoPickup();
 
-  // Mining: sticky mining + hold retarget
   if (miningActive && hasPointerLock() && !invOpen) {
     const t = getTargetInfo();
 
@@ -3113,7 +2840,6 @@ let lastTickMs = performance.now();
     } else {
       const { x, y, z } = t.pos;
 
-      // if the current target is inside safe zone, stop mining
       if (isInSafeZoneXZ(x, z)) {
         cancelMiningLocal("safe_zone");
       } else if (miningHeld) {
@@ -3150,7 +2876,6 @@ let lastTickMs = performance.now();
     if (miningActive) cancelMiningLocal(invOpen ? "inventory_open" : "no_pointer_lock");
   }
 
-  // Send movement (throttled)
   if (room && canSendMoves && tickCount % 3 === 0) {
     const pos = noa.ents.getPosition(noa.playerEntity);
     const yaw = typeof (noa as any).camera?.heading === "number" ? (noa as any).camera.heading : 0;
