@@ -54,6 +54,10 @@ type PlayerInfo = {
   yaw: number;
   lastMoveAt: number;
   joinedAt: number;
+  // Combat MVP additions
+  hp: number;
+  lastAttackAt: number;
+  invulnUntil: number;
 };
 
 type ItemStack = SharedItemStack;
@@ -133,6 +137,25 @@ type OreDef = {
   veinSize: [number, number]; // min,max
 };
 
+// =========================
+// Combat MVP Typings
+// =========================
+type AttackMsg = {
+  kind?: "melee";
+  heldSlot?: number;
+  yaw?: number;   // optional if you want to trust client yaw; otherwise use pl.yaw
+  pitch?: number; // optional if you later add pitch to PlayerInfo
+  t?: number;     // client timestamp (optional)
+};
+
+type PlayerHitMsg = {
+  attackerId: string;
+  targetId: string;
+  damage: number;
+  hpLeft: number;
+  knockback?: { x: number; y: number; z: number };
+};
+
 function isFiniteNumber(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n);
 }
@@ -203,10 +226,10 @@ export class MyRoom extends Room {
 
   // Minerals + bedrock (MUST match client)
   private readonly BEDROCK_ID = 6;
-  private readonly COAL_ORE_ID = 7;
-  private readonly IRON_ORE_ID = 8;
-  private readonly GOLD_ORE_ID = 9;
-  private readonly DIAMOND_ORE_ID = 10;
+  private readonly COAL_ORE_ID = 30; // UPDATED TO MATCH Items.COAL
+  private readonly IRON_ORE_ID = 31; // UPDATED TO MATCH Items.RAW_IRON
+  private readonly GOLD_ORE_ID = 32; // UPDATED TO MATCH Items.RAW_GOLD
+  private readonly DIAMOND_ORE_ID = 33; // UPDATED TO MATCH Items.DIAMOND
 
   // Biome surface blocks (MUST match client)
   private readonly SAND_ID = 11;
@@ -316,6 +339,15 @@ export class MyRoom extends Room {
   private readonly TOWN_CLEAR_HEIGHT = 18; // clear above ground inside town (removes trees)
 
   // =========================
+  // Combat (MVP melee)
+  // =========================
+  private readonly ATTACK_COOLDOWN_MS = 450;
+  private readonly ATTACK_RANGE = 3.25;         // blocks
+  private readonly ATTACK_RADIUS = 0.85;        // hit-sphere around ray sample
+  private readonly ATTACK_DAMAGE_BASE = 4;      // 2 hearts
+  private readonly KNOCKBACK_STRENGTH = 1.2;    // tweak or set 0 to disable
+
+  // =========================
   // World meta / seed
   // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
@@ -392,6 +424,8 @@ export class MyRoom extends Room {
       const blockCount = this.townHall?.blocks?.length ?? 0;
       console.log("[STRUCT] TownHall JSON Loaded successfully");
       console.log(`[STRUCT] Total Blocks: ${blockCount}`);
+      console.log(`[STRUCT] Size:`, this.townHall?.size);
+      console.log(`[STRUCT] Anchor:`, this.townHall?.anchor);
       console.log("========================================");
 
     } catch (e) {
@@ -510,6 +544,7 @@ export class MyRoom extends Room {
         { except: client }
       );
 
+      // DEBUG: distToCenter and townHall status
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
         const dist = Math.sqrt((x - this.TOWN_CENTER_X)**2 + (z - this.TOWN_CENTER_Z)**2);
@@ -523,6 +558,113 @@ export class MyRoom extends Room {
           distToCenter: +dist.toFixed(1) + " blocks",
           townHallStatus: this.townHall ? "ACTIVE" : "MISSING"
         });
+      }
+    });
+
+    // =========================
+    // Combat: melee (authoritative)
+    // =========================
+    this.onMessage("attack", (client: Client, payload: unknown) => {
+      const pl = this.players.get(client.sessionId);
+      if (!pl) return;
+
+      const now = Date.now();
+
+      // No combat in safe zone
+      if (!this.isCombatAllowedHere(pl.x, pl.z)) {
+        client.send("attackResult", { ok: false, reason: "safe_zone" });
+        return;
+      }
+
+      // Cooldown
+      if (now - pl.lastAttackAt < this.ATTACK_COOLDOWN_MS) {
+        client.send("attackResult", { ok: false, reason: "cooldown" });
+        return;
+      }
+      pl.lastAttackAt = now;
+
+      // Basic validation
+      const p = (typeof payload === "object" && payload) ? (payload as Partial<AttackMsg>) : {};
+      const heldSlot = isFiniteNumber(p.heldSlot) ? toInt(p.heldSlot) : -1;
+
+      // Direction
+      const yaw = isFiniteNumber(p.yaw) ? Number(p.yaw) : pl.yaw;
+      const pitch = isFiniteNumber(p.pitch) ? clamp(Number(p.pitch), -1.25, 1.25) : 0; // until you track pitch server-side
+      const dir = this.forwardFromYawPitch(yaw, pitch);
+
+      // Find target
+      const target = this.findMeleeTarget(pl, dir);
+      if (!target) {
+        client.send("attackResult", { ok: true, hit: false });
+        // optional broadcast swing to others
+        this.broadcast("playerSwing", { id: pl.id }, { except: client });
+        return;
+      }
+
+      // Target invuln (spawn protect)
+      if (now < target.invulnUntil) {
+        client.send("attackResult", { ok: true, hit: false, reason: "invuln" });
+        return;
+      }
+
+      // Damage
+      const inv = this.getOrLoadInventory(pl.userId);
+      const dmg = this.weaponDamage(inv, heldSlot);
+
+      target.hp = clamp(toInt(target.hp - dmg), 0, 20);
+
+      // Knockback (simple)
+      let kb: { x: number; y: number; z: number } | undefined;
+      if (this.KNOCKBACK_STRENGTH > 0) {
+        const kx = dir.x * this.KNOCKBACK_STRENGTH;
+        const kz = dir.z * this.KNOCKBACK_STRENGTH;
+        const ky = 0.15 * this.KNOCKBACK_STRENGTH;
+
+        target.x = clamp(target.x + kx, -this.maxAbsCoord, this.maxAbsCoord);
+        target.y = clamp(target.y + ky, -this.maxAbsCoord, this.maxAbsCoord);
+        target.z = clamp(target.z + kz, -this.maxAbsCoord, this.maxAbsCoord);
+
+        kb = { x: kx, y: ky, z: kz };
+
+        // sync target move to others immediately
+        this.broadcast(
+          "playerTransformOther",
+          { id: target.id, x: target.x, y: target.y, z: target.z, yaw: target.yaw },
+          { except: undefined as any }
+        );
+      }
+
+      const hitMsg: PlayerHitMsg = {
+        attackerId: pl.id,
+        targetId: target.id,
+        damage: dmg,
+        hpLeft: target.hp,
+        knockback: kb,
+      };
+
+      // Tell everyone for VFX/anim
+      this.broadcast("playerHit", hitMsg);
+
+      // Tell attacker result
+      client.send("attackResult", { ok: true, hit: true, targetId: target.id, damage: dmg, hpLeft: target.hp });
+
+      // Optional: death event
+      if (target.hp <= 0) {
+        this.broadcast("playerDowned", { id: target.id, by: pl.id });
+
+        // respawn in town after short delay (simple)
+        target.invulnUntil = now + 2500;
+        target.hp = 20;
+
+        const sx = this.TOWN_CENTER_X;
+        const sz = this.TOWN_CENTER_Z;
+        const sy = this.heightAt(sx, sz) + 8;
+
+        target.x = sx;
+        target.y = sy;
+        target.z = sz;
+
+        this.broadcast("playerRespawn", { id: target.id, x: sx, y: sy, z: sz, hp: target.hp });
       }
     });
 
@@ -971,6 +1113,9 @@ export class MyRoom extends Room {
       yaw: 0,
       lastMoveAt: 0,
       joinedAt: Date.now(),
+      hp: 20,
+      lastAttackAt: 0,
+      invulnUntil: Date.now() + 1500, // spawn protection
     };
 
     this.players.set(client.sessionId, spawn);
@@ -1514,6 +1659,83 @@ export class MyRoom extends Room {
     const r = this.hash2i(worldX, worldZ, 44444);
     if (biome === this.BIOME_SNOW) return 6 + Math.floor(r * 4);
     return 4 + Math.floor(r * 3);
+  }
+
+  // =========================
+  // Combat Helpers
+  // =========================
+  private dist2(a: Vec3, b: Vec3): number {
+    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return dx*dx + dy*dy + dz*dz;
+  }
+
+  private forwardFromYawPitch(yaw: number, pitch: number): Vec3 {
+    // yaw assumed radians
+    const cp = Math.cos(pitch);
+    return {
+      x: Math.sin(yaw) * cp,
+      y: -Math.sin(pitch),
+      z: Math.cos(yaw) * cp,
+    };
+  }
+
+  private isCombatAllowedHere(x: number, z: number): boolean {
+    // Same policy as mining/placing: no combat in town
+    return !this.isInSafeZoneXZ(toInt(x), toInt(z));
+  }
+
+  private weaponDamage(inv: InvState, heldSlot: number): number {
+    // MVP: use tools as melee weapons (optional)
+    if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
+      const s = inv.slots[heldSlot] as any;
+      const id = toInt(s?.id ?? 0);
+      if (id === Items.WOOD_PICK) return 4;
+      if (id === Items.STONE_PICK) return 5;
+      if (id === Items.IRON_PICK) return 6;
+    }
+    return this.ATTACK_DAMAGE_BASE;
+  }
+
+  private findMeleeTarget(attacker: PlayerInfo, dir: Vec3): PlayerInfo | null {
+    // Eye position
+    const origin = { x: attacker.x, y: attacker.y + 1.55, z: attacker.z };
+
+    // Sample along a short ray and pick nearest player within ATTACK_RADIUS
+    const steps = 6;
+    let best: PlayerInfo | null = null;
+    let bestT = 999;
+
+    for (const p of this.players.values()) {
+      if (p.id === attacker.id) continue;
+      if (p.hp <= 0) continue;
+
+      // quick horizontal safe-zone gate
+      if (!this.isCombatAllowedHere(attacker.x, attacker.z)) return null;
+      if (!this.isCombatAllowedHere(p.x, p.z)) continue;
+
+      // simple nearest-to-ray sampling
+      for (let i = 1; i <= steps; i++) {
+        const t = (i / steps) * this.ATTACK_RANGE;
+        const sx = origin.x + dir.x * t;
+        const sy = origin.y + dir.y * t;
+        const sz = origin.z + dir.z * t;
+
+        const dx = p.x - sx;
+        const dy = (p.y + 1.0) - sy; // mid-body
+        const dz = p.z - sz;
+
+        const r2 = this.ATTACK_RADIUS * this.ATTACK_RADIUS;
+        if (dx*dx + dy*dy + dz*dz <= r2) {
+          if (t < bestT) {
+            bestT = t;
+            best = p;
+          }
+          break;
+        }
+      }
+    }
+
+    return best;
   }
 
   // =========================
