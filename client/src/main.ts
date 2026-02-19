@@ -1,8 +1,9 @@
 /* client/src/main.ts
- * FULL FILE - with Beacon, Debug Tools, and TS Fixes
+ * FULL FILE - with Beacon, Debug Tools, TS Fixes AND HUD FIX
+ * UPDATED: Added Always-Visible Bottom Hotbar
+ * UPDATED: Moved Stats HUD up to accommodate Hotbar
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims)
- * UPDATED: Stats System + 3D Voxel CSS Bottom HUD
  * FIX: Removed unused TS variables to clear build warnings.
  */
 
@@ -87,7 +88,7 @@ document.body.appendChild(coordsHUD);
 // ✅ NEW: 3D Voxel-style bottom HUD for Stats
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
-statsHUD.style.bottom = "30px";
+statsHUD.style.bottom = "90px"; // Moved up to make room for hotbar
 statsHUD.style.left = "50%";
 statsHUD.style.transform = "translateX(-50%)";
 statsHUD.style.display = "flex";
@@ -110,6 +111,18 @@ const manaHUD = document.createElement("div");
 manaHUD.style.display = "flex";
 manaHUD.style.gap = "4px";
 statsHUD.appendChild(manaHUD);
+
+// ✅ NEW: Permanent HUD Hotbar (Always Visible)
+const hudHotbarRoot = document.createElement("div");
+hudHotbarRoot.style.position = "fixed";
+hudHotbarRoot.style.bottom = "10px";
+hudHotbarRoot.style.left = "50%";
+hudHotbarRoot.style.transform = "translateX(-50%)";
+hudHotbarRoot.style.display = "flex";
+hudHotbarRoot.style.gap = "6px";
+hudHotbarRoot.style.zIndex = "150";
+hudHotbarRoot.style.pointerEvents = "auto"; 
+document.body.appendChild(hudHotbarRoot);
 
 // Helper to create a chunky 3D pixel block
 function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
@@ -632,6 +645,7 @@ const pickupSentRecently = new Map<string, number>();
 ================================ */
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
+const hudSlotEls: HTMLDivElement[] = []; // NEW: Array for HUD Hotbar Slots
 
 function itemName(id: number): string {
   const def: ItemDef | undefined = (ITEM_DEFS as any)[id];
@@ -701,11 +715,18 @@ function renderInventoryUI() {
       ? stackLabel(invState.cursor).split("\n")[0]
       : "(empty)";
 
+  // 1. Render Inventory Window Hotbar (inside "I" menu)
   for (let i = 0; i < HOTBAR_SLOTS; i++)
     renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
 
+  // 2. Render Backpack
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
+  }
+
+  // 3. ✅ NEW: Render Always-Visible HUD Hotbar
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    renderSlot(hudSlotEls[i], invState.slots[i], i === selectedHotbar);
   }
 
   const countItemSlotsOnly = (id: number): number => {
@@ -774,6 +795,20 @@ function setupInventorySlots() {
     };
     backpackEls.push(el);
     backpackGrid.appendChild(el);
+  }
+
+  // ✅ NEW: Setup HUD Hotbar Slots (Click to Select)
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    const el = document.createElement("div");
+    el.onmousedown = (e) => {
+      e.preventDefault();
+      // Clicking HUD selects that slot
+      selectedHotbar = i;
+      renderInventoryUI();
+      updateOverlay();
+    };
+    hudSlotEls.push(el);
+    hudHotbarRoot.appendChild(el);
   }
 }
 
