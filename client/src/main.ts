@@ -2,7 +2,7 @@
  * FULL FILE - with Beacon, Debug Tools, and TS Fixes
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims)
- * UPDATED: Stats System (HP, MaxHP, Mana, MaxMana) + Heart UI
+ * UPDATED: Stats System (HP, MaxHP, Mana, MaxMana) + Minecraft-style Bottom HUD
  * FIX: Removed unused TS variables to clear build warnings.
  */
 
@@ -83,6 +83,36 @@ coordsHUD.style.userSelect = "none";
 coordsHUD.style.zIndex = "150"; // above overlay
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
+
+// ✅ NEW: Minecraft-style bottom HUD for Stats
+const statsHUD = document.createElement("div");
+statsHUD.style.position = "fixed";
+statsHUD.style.bottom = "40px"; // Sits right above where a hotbar would be
+statsHUD.style.left = "50%";
+statsHUD.style.transform = "translateX(-50%)";
+statsHUD.style.width = "420px";
+statsHUD.style.display = "flex";
+statsHUD.style.justifyContent = "space-between";
+statsHUD.style.pointerEvents = "none";
+statsHUD.style.userSelect = "none";
+statsHUD.style.zIndex = "150";
+document.body.appendChild(statsHUD);
+
+// Left side: Hearts
+const healthHUD = document.createElement("div");
+healthHUD.style.color = "#ff3333";
+healthHUD.style.fontSize = "26px";
+healthHUD.style.textShadow = "2px 2px 0px rgba(0,0,0,0.8)";
+healthHUD.style.fontFamily = "monospace";
+statsHUD.appendChild(healthHUD);
+
+// Right side: Mana (Stars)
+const manaHUD = document.createElement("div");
+manaHUD.style.color = "#3366ff";
+manaHUD.style.fontSize = "26px";
+manaHUD.style.textShadow = "2px 2px 0px rgba(0,0,0,0.8)";
+manaHUD.style.fontFamily = "monospace";
+statsHUD.appendChild(manaHUD);
 
 /* ===============================
    3.1 Inventory UI
@@ -825,17 +855,29 @@ function updateCoordsHUD() {
   `;
 }
 
-function getHeartsString(hp: number, maxHp: number) {
-  const total = Math.max(1, Math.floor(maxHp / 2));
-  const current = Math.max(0, Math.floor(hp / 2));
-  let str = "";
-  for (let i = 0; i < total; i++) {
-    str += i < current ? "♥" : "♡";
+function updateStatsHUD() {
+  // Health (1 heart per 2 HP)
+  const hpTotal = Math.max(1, Math.floor(myMaxHp / 2));
+  const hpCur = Math.max(0, Math.floor(myHp / 2));
+  let hpStr = "";
+  for (let i = 0; i < hpTotal; i++) {
+    hpStr += i < hpCur ? "♥" : "♡";
   }
-  return str;
+  healthHUD.textContent = hpStr;
+
+  // Mana (1 star per 10 Mana)
+  const mTotal = Math.max(1, Math.floor(myMaxMana / 10));
+  const mCur = Math.max(0, Math.floor(myMana / 10));
+  let mStr = "";
+  for (let i = 0; i < mTotal; i++) {
+    mStr += i < mCur ? "★" : "☆";
+  }
+  manaHUD.textContent = mStr;
 }
 
 function updateOverlay(extraLine = "") {
+  updateStatsHUD();
+
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
 
   const snapAge = lastSnapshotAt
@@ -863,14 +905,9 @@ function updateOverlay(extraLine = "") {
     : "PS: (none)";
 
   const safeLine = getSafeZoneLine();
-  
-  // Calculate hearts string
-  const heartsStr = getHeartsString(myHp, myMaxHp);
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
-    <strong style="color: #ff5555;">HP:</strong> ${myHp}/${myMaxHp} <span style="color: #ff5555; font-size: 16px;">${heartsStr}</span><br>
-    <strong style="color: #5555ff;">Mana:</strong> ${Math.floor(myMana)}/${myMaxMana}<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
     <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
