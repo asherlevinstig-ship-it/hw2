@@ -3291,7 +3291,7 @@ export class MyRoom extends Room {
       return;
     }
 
-    // different item: do nothing on RMB for stackables
+    // different item: do nothing on RMB fors stackables
   }
 
   private moveStackBetweenRanges(inv: InvState, fromIndex: number, toStart: number, toEnd: number): boolean {
