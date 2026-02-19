@@ -6,6 +6,7 @@
 // Path B: Pre-expanded structure stamping (.blocks.json) seam-safe, deterministic anchor placement
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
+// COMBAT & STATS: HP, Max HP (Hearts), Mana, Max Mana, Regen, and Persistence
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -54,17 +55,29 @@ type PlayerInfo = {
   yaw: number;
   lastMoveAt: number;
   joinedAt: number;
-  // Combat MVP additions
+  
+  // Combat MVP + Stats additions
   hp: number;
+  maxHp: number;
+  mana: number;
+  maxMana: number;
   lastAttackAt: number;
   invulnUntil: number;
 };
 
 type ItemStack = SharedItemStack;
 
+type PlayerStats = {
+  hp: number;
+  maxHp: number;      // in hp units (2 per heart)
+  mana: number;
+  maxMana: number;
+};
+
 type InvState = {
   slots: ItemStack[]; // HOTBAR + BACKPACK
   cursor: ItemStack;
+  stats: PlayerStats;
 };
 
 type Drop = {
@@ -153,7 +166,18 @@ type PlayerHitMsg = {
   targetId: string;
   damage: number;
   hpLeft: number;
+  maxHp: number;
   knockback?: { x: number; y: number; z: number };
+};
+
+type UseManaMsg = {
+  amount: number;
+  reason?: string;
+};
+
+type AddContainerMsg = {
+  kind: "heart" | "mana";
+  amount?: number; // default 1 container
 };
 
 function isFiniteNumber(n: unknown): n is number {
@@ -348,6 +372,16 @@ export class MyRoom extends Room {
   private readonly KNOCKBACK_STRENGTH = 1.2;    // tweak or set 0 to disable
 
   // =========================
+  // Stats & Mana Constants
+  // =========================
+  private readonly HP_PER_HEART = 2;
+  private readonly DEFAULT_HEARTS = 10;          // 10 hearts -> 20 hp
+  private readonly DEFAULT_MANA_CONTAINERS = 5;  // tune
+  private readonly MANA_PER_CONTAINER = 10;      // 5 containers -> 50 mana
+  private readonly MANA_REGEN_PER_SEC = 3;       // tune or 0 to disable
+  private readonly MANA_REGEN_TICK_MS = 250;
+
+  // =========================
   // World meta / seed
   // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
@@ -465,6 +499,9 @@ export class MyRoom extends Room {
       () => this.cleanupDrops(),
       this.DROP_CLEANUP_EVERY_MS
     );
+
+    // mana regen
+    this.clock.setInterval(() => this.tickManaRegen(), this.MANA_REGEN_TICK_MS);
 
     // =========================
     // Chunk streaming
@@ -611,7 +648,7 @@ export class MyRoom extends Room {
       const inv = this.getOrLoadInventory(pl.userId);
       const dmg = this.weaponDamage(inv, heldSlot);
 
-      target.hp = clamp(toInt(target.hp - dmg), 0, 20);
+      target.hp = clamp(toInt(target.hp - dmg), 0, target.maxHp);
 
       // Knockback (simple)
       let kb: { x: number; y: number; z: number } | undefined;
@@ -634,11 +671,20 @@ export class MyRoom extends Room {
         );
       }
 
+      // Persist target stats back to their inventory file
+      const tInv = this.getOrLoadInventory(target.userId);
+      tInv.stats.hp = target.hp;
+      tInv.stats.maxHp = target.maxHp;
+      tInv.stats.mana = target.mana;
+      tInv.stats.maxMana = target.maxMana;
+      this.saveInventory(target.userId, tInv);
+
       const hitMsg: PlayerHitMsg = {
         attackerId: pl.id,
         targetId: target.id,
         damage: dmg,
         hpLeft: target.hp,
+        maxHp: target.maxHp,
         knockback: kb,
       };
 
@@ -654,7 +700,8 @@ export class MyRoom extends Room {
 
         // respawn in town after short delay (simple)
         target.invulnUntil = now + 2500;
-        target.hp = 20;
+        target.hp = target.maxHp;
+        target.mana = target.maxMana;
 
         const sx = this.TOWN_CENTER_X;
         const sz = this.TOWN_CENTER_Z;
@@ -664,8 +711,73 @@ export class MyRoom extends Room {
         target.y = sy;
         target.z = sz;
 
-        this.broadcast("playerRespawn", { id: target.id, x: sx, y: sy, z: sz, hp: target.hp });
+        this.broadcast("playerRespawn", { 
+          id: target.id, 
+          x: sx, y: sy, z: sz, 
+          hp: target.hp, 
+          maxHp: target.maxHp, 
+          mana: target.mana, 
+          maxMana: target.maxMana 
+        });
       }
+    });
+
+    // =========================
+    // Stats: Use Mana
+    // =========================
+    this.onMessage("useMana", (client: Client, payload: unknown) => {
+      const pl = this.players.get(client.sessionId);
+      if (!pl) return;
+
+      const p = (typeof payload === "object" && payload) ? (payload as Partial<UseManaMsg>) : {};
+      const amount = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 0, 999999) : 0;
+      if (amount <= 0) return;
+
+      if (pl.mana < amount) {
+        client.send("useManaResult", { ok: false, reason: "not_enough_mana", mana: pl.mana, maxMana: pl.maxMana });
+        return;
+      }
+
+      pl.mana -= amount;
+
+      const inv = this.getOrLoadInventory(pl.userId);
+      inv.stats.mana = pl.mana;
+      this.saveInventory(pl.userId, inv);
+
+      client.send("useManaResult", { ok: true, mana: pl.mana, maxMana: pl.maxMana });
+      client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
+    });
+
+    // =========================
+    // Stats: Add Container (Heart/Mana)
+    // =========================
+    this.onMessage("addContainer", (client: Client, payload: unknown) => {
+      const pl = this.players.get(client.sessionId);
+      if (!pl) return;
+
+      const p = (typeof payload === "object" && payload) ? (payload as Partial<AddContainerMsg>) : {};
+      const kind = p.kind === "mana" ? "mana" : "heart";
+      const amt = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 1, 99) : 1;
+
+      if (kind === "heart") {
+        const addHp = amt * this.HP_PER_HEART;
+        pl.maxHp = clamp(pl.maxHp + addHp, 2, 9999);
+        pl.hp = pl.maxHp; // classic “container heals you”
+      } else {
+        const addMana = amt * this.MANA_PER_CONTAINER;
+        pl.maxMana = clamp(pl.maxMana + addMana, 0, 999999);
+        pl.mana = pl.maxMana;
+      }
+
+      const inv = this.getOrLoadInventory(pl.userId);
+      inv.stats.hp = pl.hp;
+      inv.stats.maxHp = pl.maxHp;
+      inv.stats.mana = pl.mana;
+      inv.stats.maxMana = pl.maxMana;
+      this.saveInventory(pl.userId, inv);
+
+      client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
+      client.send("addContainerResult", { ok: true, kind, hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
     });
 
     // =========================
@@ -1104,6 +1216,8 @@ export class MyRoom extends Room {
     const surfaceY = this.heightAt(spawnX, spawnZ);
     const spawnY = surfaceY + 8;
 
+    const inv = this.getOrLoadInventory(userId);
+
     const spawn: PlayerInfo = {
       id: client.sessionId,
       userId,
@@ -1113,14 +1227,16 @@ export class MyRoom extends Room {
       yaw: 0,
       lastMoveAt: 0,
       joinedAt: Date.now(),
-      hp: 20,
+      hp: inv.stats.hp,
+      maxHp: inv.stats.maxHp,
+      mana: inv.stats.mana,
+      maxMana: inv.stats.maxMana,
       lastAttackAt: 0,
       invulnUntil: Date.now() + 1500, // spawn protection
     };
 
     this.players.set(client.sessionId, spawn);
 
-    const inv = this.getOrLoadInventory(userId);
     this.sendInvStateToClient(client, inv);
     client.send("worldMeta", { worldSeed: this.worldSeed });
 
@@ -1333,7 +1449,7 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Persistence: inventories
+  // Persistence: inventories & stats
   // =========================
   private invFilePath(userId: string): string {
     return path.join(this.invDir, `inv_${userId}.json`);
@@ -1349,6 +1465,8 @@ export class MyRoom extends Room {
       const slotsIn = Array.isArray(j?.slots) ? j.slots : null;
       const cursorIn =
         typeof j?.cursor === "object" && j?.cursor ? j.cursor : null;
+      const statsIn =
+        typeof j?.stats === "object" && j?.stats ? j.stats : null;
 
       const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({
         id: 0,
@@ -1389,8 +1507,16 @@ export class MyRoom extends Room {
             : ({ id: cId, count: cCount } as any)
           : ({ id: 0, count: 0 } as any);
 
+      const defaultMaxHp = this.DEFAULT_HEARTS * this.HP_PER_HEART;
+      const defaultMaxMana = this.DEFAULT_MANA_CONTAINERS * this.MANA_PER_CONTAINER;
+      
+      const maxHp = toInt(clamp(Number((statsIn as any)?.maxHp ?? defaultMaxHp), 2, 9999));
+      const hp = toInt(clamp(Number((statsIn as any)?.hp ?? maxHp), 0, maxHp));
+      const maxMana = toInt(clamp(Number((statsIn as any)?.maxMana ?? defaultMaxMana), 0, 999999));
+      const mana = toInt(clamp(Number((statsIn as any)?.mana ?? maxMana), 0, maxMana));
+
       console.log("[INV] loaded", { userId, fp });
-      return { slots, cursor };
+      return { slots, cursor, stats: { hp, maxHp, mana, maxMana } };
     } catch (e) {
       console.warn("[INV] read failed", { userId, fp, e });
       return null;
@@ -1411,6 +1537,12 @@ export class MyRoom extends Room {
         count: toInt((inv.cursor as any).count || 0),
         dur: toInt((inv.cursor as any).dur || 0),
       },
+      stats: {
+        hp: toInt(inv.stats.hp),
+        maxHp: toInt(inv.stats.maxHp),
+        mana: toInt(inv.stats.mana),
+        maxMana: toInt(inv.stats.maxMana),
+      }
     };
     fs.writeFileSync(tmp, JSON.stringify(safe));
     fs.renameSync(tmp, fp);
@@ -1427,12 +1559,20 @@ export class MyRoom extends Room {
       return fromDisk;
     }
 
+    const defaultMaxHp = this.DEFAULT_HEARTS * this.HP_PER_HEART;
+    const defaultMaxMana = this.DEFAULT_MANA_CONTAINERS * this.MANA_PER_CONTAINER;
     const inv: InvState = {
       slots: Array.from({ length: this.INV_SLOTS }, () => ({
         id: 0,
         count: 0,
       })) as any,
       cursor: { id: 0, count: 0 } as any,
+      stats: {
+        hp: defaultMaxHp,
+        maxHp: defaultMaxHp,
+        mana: defaultMaxMana,
+        maxMana: defaultMaxMana,
+      }
     };
 
     // starter kit (tune as desired)
@@ -1453,7 +1593,40 @@ export class MyRoom extends Room {
   }
 
   private sendInvStateToClient(client: Client, inv: InvState): void {
-    client.send("invState", { slots: inv.slots, cursor: inv.cursor });
+    client.send("invState", { 
+      slots: inv.slots, 
+      cursor: inv.cursor,
+      stats: inv.stats 
+    });
+  }
+
+  // =========================
+  // Stats Helpers (Mana)
+  // =========================
+  private tickManaRegen(): void {
+    if (this.MANA_REGEN_PER_SEC <= 0) return;
+
+    const dt = this.MANA_REGEN_TICK_MS / 1000;
+    const add = this.MANA_REGEN_PER_SEC * dt;
+
+    for (const pl of this.players.values()) {
+      if (pl.mana >= pl.maxMana) continue;
+
+      pl.mana = clamp(pl.mana + add, 0, pl.maxMana);
+
+      // persist when crossing an integer boundary
+      const manaInt = Math.floor(pl.mana);
+      const inv = this.getOrLoadInventory(pl.userId);
+      if (Math.floor(inv.stats.mana) !== manaInt) {
+        inv.stats.mana = pl.mana;
+        this.saveInventory(pl.userId, inv);
+
+        const client = this.clients.find(c => c.sessionId === pl.id);
+        if (client) {
+          client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
+        }
+      }
+    }
   }
 
   // =========================

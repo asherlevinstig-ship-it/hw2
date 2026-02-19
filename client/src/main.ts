@@ -1,7 +1,8 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, Debug Tools, and TS Fixes
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
- * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims, HP Tracking)
+ * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims)
+ * UPDATED: Stats System (HP, MaxHP, Mana, MaxMana) + Heart UI
  * FIX: Removed unused TS variables to clear build warnings.
  */
 
@@ -457,9 +458,20 @@ function isRegisteredBlockId(id: number) {
 };
 
 /* ===============================
-   6. Inventory & Combat State
+   6. Inventory & Combat/Stats State
 ================================ */
-type InvState = { slots: ItemStack[]; cursor: ItemStack };
+type PlayerStats = {
+  hp: number;
+  maxHp: number;
+  mana: number;
+  maxMana: number;
+};
+
+type InvState = { 
+  slots: ItemStack[]; 
+  cursor: ItemStack;
+  stats: PlayerStats; 
+};
 
 const HOTBAR_SLOTS = 5;
 const BACKPACK_SLOTS = 20;
@@ -469,6 +481,7 @@ let invOpen = false;
 let invState: InvState = {
   slots: Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 })),
   cursor: { id: 0, count: 0 },
+  stats: { hp: 20, maxHp: 20, mana: 50, maxMana: 50 }
 };
 
 let selectedHotbar = 0;
@@ -483,6 +496,10 @@ let DEBUG_PARTICLES_ALWAYS = false;
 
 // MVP Combat State
 let myHp = 20;
+let myMaxHp = 20;
+let myMana = 50;
+let myMaxMana = 50;
+
 const remoteFlashes = new Map<string, number>(); // Hit red material flash
 const remoteSwings = new Map<string, number>();  // Arm swing anims
 
@@ -808,6 +825,16 @@ function updateCoordsHUD() {
   `;
 }
 
+function getHeartsString(hp: number, maxHp: number) {
+  const total = Math.max(1, Math.floor(maxHp / 2));
+  const current = Math.max(0, Math.floor(hp / 2));
+  let str = "";
+  for(let i=0; i<total; i++) {
+    str += i < current ? "♥" : "♡";
+  }
+  return str;
+}
+
 function updateOverlay(extraLine = "") {
   const status = room ? `Online (${room.sessionId})` : "Connecting...";
 
@@ -836,10 +863,13 @@ function updateOverlay(extraLine = "") {
     : "PS: (none)";
 
   const safeLine = getSafeZoneLine();
+  
+  const heartsStr = getHeartsString(myHp, myMaxHp);
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
-    <strong>HP:</strong> ${myHp} / 20<br>
+    <strong style="color: #ff5555;">HP:</strong> ${myHp}/${myMaxHp} <span style="color: #ff5555;">${heartsStr}</span><br>
+    <strong style="color: #5555ff;">Mana:</strong> ${Math.floor(myMana)}/${myMaxMana}<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
     <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
     <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
@@ -2501,8 +2531,20 @@ async function connect() {
     });
 
     // ============================================
-    // ✅ ⚔️ COMBAT WIRING
+    // ✅ ⚔️ COMBAT WIRING & STATS UPDATE
     // ============================================
+    room.onMessage("statsUpdate", (msg: any) => {
+      myHp = Number(msg.hp ?? myHp);
+      myMaxHp = Number(msg.maxHp ?? myMaxHp);
+      myMana = Number(msg.mana ?? myMana);
+      myMaxMana = Number(msg.maxMana ?? myMaxMana);
+      updateOverlay();
+    });
+
+    room.onMessage("useManaResult", (msg: any) => {
+      if (!msg.ok) console.log("[MANA] Failed:", msg.reason);
+    });
+
     room.onMessage("playerHit", (msg: any) => {
       const targetId = msg.targetId;
       const attackerId = msg.attackerId;
@@ -2513,6 +2555,7 @@ async function connect() {
       if (targetId === room?.sessionId) {
         // I GOT HIT!
         myHp = msg.hpLeft;
+        myMaxHp = msg.maxHp ?? myMaxHp;
         
         // CSS Red Flash Overlay
         const flash = document.createElement("div");
@@ -2554,6 +2597,9 @@ async function connect() {
     room.onMessage("playerRespawn", (msg: any) => {
       if (msg.id === room?.sessionId) {
         myHp = msg.hp;
+        myMaxHp = msg.maxHp ?? myMaxHp;
+        myMana = msg.mana ?? myMana;
+        myMaxMana = msg.maxMana ?? myMaxMana;
         try {
           noa.ents.setPosition(noa.playerEntity, [msg.x, msg.y, msg.z]);
           console.log("[COMBAT] Respawned at safe zone.");
@@ -2611,10 +2657,12 @@ async function connect() {
       lastMineSendAt = 0;
     });
 
+    // Handle new stats in invState
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
       const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
       const cursor = (msg as any).cursor ?? null;
+      const stats = (msg as any).stats ?? {};
       if (!slots) return;
 
       const outSlots: ItemStack[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
@@ -2643,7 +2691,17 @@ async function connect() {
             : ({ id: cId, count: cCount } as any)
           : ({ id: 0, count: 0 } as any);
 
-      invState = { slots: outSlots, cursor: outCursor };
+      myHp = Number(stats.hp ?? 20);
+      myMaxHp = Number(stats.maxHp ?? 20);
+      myMana = Number(stats.mana ?? 50);
+      myMaxMana = Number(stats.maxMana ?? 50);
+
+      invState = { 
+        slots: outSlots, 
+        cursor: outCursor,
+        stats: { hp: myHp, maxHp: myMaxHp, mana: myMana, maxMana: myMaxMana }
+      };
+      
       renderInventoryUI();
       updateOverlay();
     });
