@@ -90,8 +90,10 @@ type Drop = {
   createdAt: number;
 };
 
+// ✅ UPGRADED: Structured Inventory Click Protocol
 type InvClickMsg = {
-  slot: number;
+  area: "inv" | "hotbar";
+  index: number;
   button: "L" | "R";
   shift?: boolean;
 };
@@ -1060,9 +1062,18 @@ export class MyRoom extends Room {
     this.onMessage("invClick", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<InvClickMsg>;
-      if (!isFiniteNumber(p.slot)) return;
+      if (!isFiniteNumber(p.index)) return;
 
-      const slot = toInt(p.slot);
+      const index = toInt(p.index);
+      let slot = -1;
+
+      // Translate logical areas into the unified 1D slots array
+      if (p.area === "hotbar" && index >= 0 && index < this.HOTBAR_SLOTS) {
+        slot = index;
+      } else if (p.area === "inv" && index >= 0 && index < this.BACKPACK_SLOTS) {
+        slot = this.HOTBAR_SLOTS + index;
+      }
+
       if (slot < 0 || slot >= this.INV_SLOTS) return;
 
       const button = p.button === "R" ? "R" : "L";

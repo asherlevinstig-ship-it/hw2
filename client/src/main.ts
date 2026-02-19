@@ -738,7 +738,14 @@ function renderInventoryUI() {
 
 function sendInvClick(slot: number, button: "L" | "R", shift: boolean) {
   if (!room) return;
-  room.send("invClick", { slot, button, shift });
+  // Use the new structured addressing protocol requested
+  const isHotbar = slot < HOTBAR_SLOTS;
+  room.send("invClick", { 
+    area: isHotbar ? "hotbar" : "inv", 
+    index: isHotbar ? slot : slot - HOTBAR_SLOTS, 
+    button, 
+    shift 
+  });
 }
 
 function setupInventorySlots() {
@@ -818,7 +825,7 @@ function initUI() {
 }
 
 /* ===============================
-   6.5 Overlay
+   6.5 Overlay & Stats HUD
 ================================ */
 function getClosestRemoteDistance(): number | null {
   if (!room) return null;
@@ -2268,6 +2275,10 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   rpScene = new BABYLON.Scene(engine);
   rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
+
+  console.log("[RP] ensureRpScene", {
+    useRightHandedSystem: rpScene.useRightHandedSystem,
+  });
 
   rpScene.autoClear = false;
   rpScene.autoClearDepthAndStencil = false;
