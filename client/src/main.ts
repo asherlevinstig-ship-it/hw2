@@ -829,7 +829,7 @@ function getHeartsString(hp: number, maxHp: number) {
   const total = Math.max(1, Math.floor(maxHp / 2));
   const current = Math.max(0, Math.floor(hp / 2));
   let str = "";
-  for(let i=0; i<total; i++) {
+  for (let i = 0; i < total; i++) {
     str += i < current ? "♥" : "♡";
   }
   return str;
@@ -864,11 +864,12 @@ function updateOverlay(extraLine = "") {
 
   const safeLine = getSafeZoneLine();
   
+  // Calculate hearts string
   const heartsStr = getHeartsString(myHp, myMaxHp);
 
   overlay.innerHTML = `
     <strong>Status:</strong> ${status}<br>
-    <strong style="color: #ff5555;">HP:</strong> ${myHp}/${myMaxHp} <span style="color: #ff5555;">${heartsStr}</span><br>
+    <strong style="color: #ff5555;">HP:</strong> ${myHp}/${myMaxHp} <span style="color: #ff5555; font-size: 16px;">${heartsStr}</span><br>
     <strong style="color: #5555ff;">Mana:</strong> ${Math.floor(myMana)}/${myMaxMana}<br>
     <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
     <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
