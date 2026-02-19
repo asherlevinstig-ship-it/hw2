@@ -6,6 +6,7 @@
 //
 // Updated for biome work:
 // ✅ Add SAND + SNOW items (placeable blocks)
+// ✅ Add CAVE BIOME blocks (Deepslate, Tuff, Moss, etc.)
 // ✅ Keep durability-safe semantics: tools are maxStack=1 and carry dur
 
 export const Items = {
@@ -16,9 +17,19 @@ export const Items = {
   WOOD_LOG: 4,
   LEAVES: 5,
 
-  // Biome blocks as items (NEW)
+  // Biome blocks as items
   SAND: 6,
   SNOW: 7,
+
+  // Cave Biome Blocks (NEW)
+  DEEPSLATE: 90,
+  TUFF: 91,
+  MOSS: 92,
+  MOSSY_STONE: 93,
+  DRIPSTONE: 94,
+  DRIPSTONE_BLOCK: 95,
+  GLOW_SHROOM: 96,
+  CRYSTAL: 97,
 
   // Basic crafted
   PLANK: 10,
@@ -64,9 +75,19 @@ const STONE_ID = 3;
 const WOOD_ID = 4;
 const LEAVES_ID = 5;
 
-// Biome surface blocks (MUST match server+client block IDs)
+// Biome surface blocks
 const SAND_ID = 11;
 const SNOW_ID = 12;
+
+// Cave Biome Blocks (Must match server MyRoom generation & Client registry)
+const DEEPSLATE_ID = 90;
+const TUFF_ID = 91;
+const MOSS_ID = 92;
+const MOSSY_STONE_ID = 93;
+const DRIPSTONE_ID = 94;        
+const DRIPSTONE_BLOCK_ID = 95;  
+const GLOW_SHROOM_ID = 96;      
+const CRYSTAL_ID = 97;
 
 export const ITEM_DEFS: Record<number, ItemDef> = {
   // Blocks
@@ -76,9 +97,19 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
   5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
 
-  // Biome blocks (NEW)
+  // Biome blocks
   6: { id: 6, name: "Sand", maxStack: 64, placeBlockId: SAND_ID },
   7: { id: 7, name: "Snow", maxStack: 64, placeBlockId: SNOW_ID },
+
+  // Cave Biome Blocks (NEW)
+  90: { id: 90, name: "Deepslate", maxStack: 64, placeBlockId: DEEPSLATE_ID },
+  91: { id: 91, name: "Tuff", maxStack: 64, placeBlockId: TUFF_ID },
+  92: { id: 92, name: "Moss", maxStack: 64, placeBlockId: MOSS_ID },
+  93: { id: 93, name: "Mossy Stone", maxStack: 64, placeBlockId: MOSSY_STONE_ID },
+  94: { id: 94, name: "Pointed Dripstone", maxStack: 64, placeBlockId: DRIPSTONE_ID },
+  95: { id: 95, name: "Dripstone Block", maxStack: 64, placeBlockId: DRIPSTONE_BLOCK_ID },
+  96: { id: 96, name: "Glow Shroom", maxStack: 64, placeBlockId: GLOW_SHROOM_ID },
+  97: { id: 97, name: "Cave Crystal", maxStack: 64, placeBlockId: CRYSTAL_ID },
 
   // Crafted
   10: { id: 10, name: "Planks", maxStack: 64 },

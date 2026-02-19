@@ -5,7 +5,7 @@
 // Town of Beginnings (central safe zone) stamped per-chunk (deterministic, seam-safe)
 // Path B: Pre-expanded structure stamping (.blocks.json) seam-safe, deterministic anchor placement
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
-// NOTE: No match phase yet (always-on safe zone rules)
+// CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -119,6 +119,20 @@ type MiningState = {
   lastBlockId: number;
 };
 
+// =========================
+// Cave Biome Typings
+// =========================
+type CaveBiome = "LUSH" | "DRIPSTONE" | "DEEP_DARKISH" | "CRYSTAL" | "TUFFY";
+
+type OreDef = {
+  id: number;
+  minY: number;
+  peakY: number;
+  maxY: number;
+  baseChance: number; // chance per solid block *at peak*
+  veinSize: [number, number]; // min,max
+};
+
 function isFiniteNumber(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n);
 }
@@ -197,6 +211,65 @@ export class MyRoom extends Room {
   // Biome surface blocks (MUST match client)
   private readonly SAND_ID = 11;
   private readonly SNOW_ID = 12;
+
+  // ===== CAVE BIOME BLOCKS =====
+  private readonly DEEPSLATE_ID = 90;
+  private readonly TUFF_ID = 91;
+  private readonly MOSS_ID = 92;
+  private readonly MOSSY_STONE_ID = 93;
+  private readonly DRIPSTONE_ID = 94;
+  private readonly DRIPSTONE_BLOCK_ID = 95;
+  private readonly GLOW_SHROOM_ID = 96;
+  private readonly CRYSTAL_ID = 97;
+
+  private readonly CaveBiomeRules: Record<
+    CaveBiome,
+    {
+      wall: number;
+      floor: number;
+      ceil: number;
+      deco?: {
+        chance: number;
+        place: (ctx: { x: number; y: number; z: number; rand: () => number }) => number | null;
+      }[];
+    }
+  > = {
+    LUSH: {
+      wall: this.MOSSY_STONE_ID,
+      floor: this.MOSS_ID,
+      ceil: this.MOSSY_STONE_ID,
+      deco: [{ chance: 0.03, place: ({ rand }) => (rand() < 0.5 ? this.GLOW_SHROOM_ID : null) }],
+    },
+    DRIPSTONE: {
+      wall: this.DRIPSTONE_BLOCK_ID,
+      floor: this.DRIPSTONE_BLOCK_ID,
+      ceil: this.DRIPSTONE_BLOCK_ID,
+      deco: [{ chance: 0.06, place: ({ rand }) => (rand() < 0.7 ? this.DRIPSTONE_ID : null) }],
+    },
+    DEEP_DARKISH: {
+      wall: this.DEEPSLATE_ID,
+      floor: this.DEEPSLATE_ID,
+      ceil: this.DEEPSLATE_ID,
+    },
+    CRYSTAL: {
+      wall: this.STONE_ID,
+      floor: this.STONE_ID,
+      ceil: this.STONE_ID,
+      deco: [{ chance: 0.02, place: ({ rand }) => (rand() < 0.8 ? this.CRYSTAL_ID : null) }],
+    },
+    TUFFY: {
+      wall: this.TUFF_ID,
+      floor: this.TUFF_ID,
+      ceil: this.TUFF_ID,
+    },
+  };
+
+  private readonly ORES: OreDef[] = [
+    { id: this.COAL_ORE_ID, minY: 15, peakY: 45, maxY: 90, baseChance: 0.06, veinSize: [6, 14] },
+    { id: this.IRON_ORE_ID, minY: 10, peakY: 28, maxY: 70, baseChance: 0.05, veinSize: [4, 10] },
+    { id: this.GOLD_ORE_ID, minY: 5, peakY: 16, maxY: 35, baseChance: 0.025, veinSize: [3, 8] },
+    { id: this.DIAMOND_ORE_ID, minY: -10, peakY: 5, maxY: 18, baseChance: 0.012, veinSize: [2, 6] },
+  ];
 
   // Drops cleanup
   private readonly DROP_TTL_MS = 3 * 60 * 1000; // 3 minutes
@@ -301,9 +374,11 @@ export class MyRoom extends Room {
 
     // Load pre-expanded structures (Path B)
     try {
-      // ✅ FIX: Safe ES Module path resolution using process.cwd()
-      // Since PM2 runs from the server folder, we use this exact path:
-      const structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
+      // Safe ES Module path resolution using process.cwd()
+      let structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
+      if (!fs.existsSync(structPath)) {
+        structPath = path.join(process.cwd(), "server", "src", "structures", "town_hall.blocks.json");
+      }
 
       console.log("========================================");
       console.log(`[STRUCT] Attempting to load JSON from: ${structPath}`);
@@ -435,7 +510,6 @@ export class MyRoom extends Room {
         { except: client }
       );
 
-      // ✅ DEBUG: Added distToCenter and townHall status
       if (now - this.lastMoveLogAt > 2000) {
         this.lastMoveLogAt = now;
         const dist = Math.sqrt((x - this.TOWN_CENTER_X)**2 + (z - this.TOWN_CENTER_Z)**2);
@@ -1313,6 +1387,57 @@ export class MyRoom extends Room {
     return norm > 0 ? sum / norm : 0.5;
   }
 
+  // 3D value noise for caves
+  private valueNoise3(x: number, y: number, z: number, cellSize: number, salt = 0): number {
+    const cx = floorDiv(x, cellSize);
+    const cy = floorDiv(y, cellSize);
+    const cz = floorDiv(z, cellSize);
+
+    const fx = (x - cx * cellSize) / cellSize;
+    const fy = (y - cy * cellSize) / cellSize;
+    const fz = (z - cz * cellSize) / cellSize;
+
+    const sx = this.smoothstep(clamp(fx, 0, 1));
+    const sy = this.smoothstep(clamp(fy, 0, 1));
+    const sz = this.smoothstep(clamp(fz, 0, 1));
+
+    const h = (ix: number, iy: number, iz: number) => this.hash3i(ix, iy, iz + salt);
+
+    const v000 = h(cx, cy, cz);
+    const v100 = h(cx + 1, cy, cz);
+    const v010 = h(cx, cy + 1, cz);
+    const v110 = h(cx + 1, cy + 1, cz);
+    const v001 = h(cx, cy, cz + 1);
+    const v101 = h(cx + 1, cy, cz + 1);
+    const v011 = h(cx, cy + 1, cz + 1);
+    const v111 = h(cx + 1, cy + 1, cz + 1);
+
+    const ix00 = v000 + (v100 - v000) * sx;
+    const ix10 = v010 + (v110 - v010) * sx;
+    const ix01 = v001 + (v101 - v001) * sx;
+    const ix11 = v011 + (v111 - v011) * sx;
+
+    const iy0 = ix00 + (ix10 - ix00) * sy;
+    const iy1 = ix01 + (ix11 - ix01) * sy;
+
+    return iy0 + (iy1 - iy0) * sz;
+  }
+
+  private fbm3(x: number, y: number, z: number, baseCell: number, octaves: number, salt = 0): number {
+    let sum = 0;
+    let amp = 1;
+    let norm = 0;
+    let cell = baseCell;
+    for (let i = 0; i < octaves; i++) {
+      const n = this.valueNoise3(x, y, z, Math.max(4, cell), salt + i * 1013);
+      sum += n * amp;
+      norm += amp;
+      amp *= 0.5;
+      cell = Math.floor(cell * 0.5);
+    }
+    return norm > 0 ? sum / norm : 0.5;
+  }
+
   private getBiome(worldX: number, worldZ: number): number {
     // Bias town center area to FOREST for a pleasant hub look
     const dx = worldX - this.TOWN_CENTER_X;
@@ -1806,7 +1931,7 @@ export class MyRoom extends Room {
       const worldY = baseY - this.townHall.anchor.y;
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
 
-      // ✅ DEBUG: Log when generating the center chunk (where the building lives)
+      // DEBUG: Log when generating the center chunk (where the building lives)
       if (cx === 0 && cz === 0) {
         console.log(`[STRUCT] 🔨 Stamping TownHall into Chunk [${cx}, ${cy}, ${cz}]`);
         console.log(`[STRUCT] Placed at World Pos: ${worldX}, ${worldY}, ${worldZ}`);
@@ -1814,7 +1939,7 @@ export class MyRoom extends Room {
 
       this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
     } else {
-      // ✅ DEBUG: Warn if missing during generation
+      // DEBUG: Warn if missing during generation
       if (cx === 0 && cz === 0) {
         console.warn(`[STRUCT] ⚠️ Skipping TownHall stamp on Chunk [0,0] (Structure is null)`);
       }
@@ -1876,12 +2001,83 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Chunk generation (biomes + ores + bedrock + trees + POIs + Town)
+  // Cave Generation Utilities
+  // =========================
+  private pickCaveBiome(y: number, biomeNoise: number): CaveBiome {
+    // Deep layer default
+    if (y < 18) return "DEEP_DARKISH";
+
+    // Mid-depth variation
+    if (biomeNoise > 0.55) return "DRIPSTONE";
+    if (biomeNoise < -0.55) return "LUSH";
+
+    // Rare special pockets
+    if (y > 25 && biomeNoise > 0.35 && biomeNoise < 0.45) return "CRYSTAL";
+    if (biomeNoise < -0.2 && biomeNoise > -0.35) return "TUFFY";
+
+    return "DEEP_DARKISH";
+  }
+
+  private baseStoneForDepth(y: number): number {
+    return y < 18 ? this.DEEPSLATE_ID : this.STONE_ID;
+  }
+
+  private triCurve(y: number, minY: number, peakY: number, maxY: number) {
+    if (y <= minY || y >= maxY) return 0;
+    if (y === peakY) return 1;
+    return y < peakY ? (y - minY) / (peakY - minY) : (maxY - y) / (maxY - peakY);
+  }
+
+  private chooseOreForY(y: number, rand: () => number): number | null {
+    for (const ore of this.ORES) {
+      const t = this.triCurve(y, ore.minY, ore.peakY, ore.maxY);
+      const p = ore.baseChance * t;
+      if (rand() < p) return ore.id;
+    }
+    return null;
+  }
+
+  private carveVein(
+    vox: Uint8Array,
+    startX: number,
+    startY: number,
+    startZ: number,
+    oreId: number,
+    size: number,
+    rand: () => number
+  ) {
+    let x = startX,
+      y = startY,
+      z = startZ;
+    for (let i = 0; i < size; i++) {
+      if (x >= 0 && x < this.chunkSize && y >= 0 && y < this.chunkSize && z >= 0 && z < this.chunkSize) {
+        const idx = this.idx(x, y, z);
+        const current = vox[idx];
+        if (current === this.STONE_ID || current === this.DEEPSLATE_ID || current === this.TUFF_ID) {
+          vox[idx] = oreId;
+        }
+      }
+
+      // random walk (biased slightly horizontal)
+      const r = rand();
+      if (r < 0.25) x++;
+      else if (r < 0.5) x--;
+      else if (r < 0.7) z++;
+      else if (r < 0.9) z--;
+      else y += rand() < 0.5 ? 1 : -1;
+    }
+  }
+
+  // =========================
+  // Chunk generation (biomes + ores + bedrock + trees + POIs + Town + CAVES)
   // =========================
   private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const CS = this.chunkSize;
     const vox = new Uint8Array(CS * CS * CS);
 
+    // ----------------------------------------------------
+    // PHASE 1: Base Terrain & Cave Carving
+    // ----------------------------------------------------
     for (let i = 0; i < CS; i++) {
       for (let k = 0; k < CS; k++) {
         const worldX = cx * CS + i;
@@ -1899,45 +2095,162 @@ export class MyRoom extends Room {
 
         const subsurfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
 
-        const hasTree = this.shouldPlaceTreeAt(worldX, worldZ, biome);
-        const tH = hasTree ? this.treeHeight(worldX, worldZ, biome) : 0;
-
         for (let j = 0; j < CS; j++) {
           const worldY = cy * CS + j;
+          const idx = this.idx(i, j, k);
 
-          let id = this.AIR_ID;
-          if (worldY > height) id = this.AIR_ID;
-          else if (worldY === height) id = surfaceId;
-          else if (worldY > height - 4) id = subsurfaceId;
-          else id = this.STONE_ID;
-
-          // bedrock at worldY <= 4
+          // 1. Bedrock Layer
           if (worldY <= 4) {
             const rr = this.hash3i(worldX, worldY, worldZ);
             const threshold = 0.95 - worldY * 0.18;
             if (rr < threshold) {
-              vox[this.idx(i, j, k)] = this.BEDROCK_ID;
+              vox[idx] = this.BEDROCK_ID;
               continue;
             }
           }
 
-          // ores only replace stone
-          if (id === this.STONE_ID) {
-            const n = this.veinNoise(worldX, worldY, worldZ);
-
-            if (worldY <= 16 && n > 0.985) id = this.DIAMOND_ORE_ID;
-            else if (worldY <= 32 && n > 0.975) id = this.GOLD_ORE_ID;
-            else if (worldY <= 64 && n > 0.965) id = this.IRON_ORE_ID;
-            else if (worldY <= 128 && n > 0.955) id = this.COAL_ORE_ID;
+          // 2. Air above surface
+          if (worldY > height) {
+            vox[idx] = this.AIR_ID;
+            continue;
           }
 
-          // tree trunk + canopy
-          if (hasTree && biome !== this.BIOME_DESERT) {
-            const trunkBaseY = height + 1;
-            const trunkTopY = height + tH;
+          // 3. Surface & Subsurface
+          if (worldY === height) {
+            vox[idx] = surfaceId;
+            continue;
+          }
+          if (worldY > height - 4) {
+            vox[idx] = subsurfaceId;
+            continue;
+          }
+
+          // 4. Solid Underground (Stone or Deepslate)
+          let block = this.baseStoneForDepth(worldY);
+
+          // 5. Cave Carving (3D Noise)
+          if (worldY < height - 5 && worldY > 5) {
+            const cNoise = this.fbm3(worldX, worldY, worldZ, 24, 2, 8888);
+            if (cNoise < 0.45) {
+              block = this.AIR_ID;
+            }
+          }
+
+          vox[idx] = block;
+        }
+      }
+    }
+
+    // ----------------------------------------------------
+    // PHASE 2: Cave Skinning & Decorators
+    // ----------------------------------------------------
+    const skinnedVox = new Uint8Array(vox); // Temporary buffer to prevent cascading replacements
+    for (let x = 0; x < CS; x++) {
+      for (let y = 0; y < CS; y++) {
+        for (let z = 0; z < CS; z++) {
+          const idx = this.idx(x, y, z);
+          const current = vox[idx];
+
+          if (current === this.STONE_ID || current === this.DEEPSLATE_ID) {
+            const worldX = cx * CS + x;
+            const worldY = cy * CS + y;
+            const worldZ = cz * CS + z;
+
+            // Check neighbors for exposed cave air
+            const up = y < CS - 1 ? vox[this.idx(x, y + 1, z)] : this.AIR_ID;
+            const down = y > 0 ? vox[this.idx(x, y - 1, z)] : this.STONE_ID;
+            const left = x > 0 ? vox[this.idx(x - 1, y, z)] : this.STONE_ID;
+            const right = x < CS - 1 ? vox[this.idx(x + 1, y, z)] : this.STONE_ID;
+            const front = z > 0 ? vox[this.idx(x, y, z - 1)] : this.STONE_ID;
+            const back = z < CS - 1 ? vox[this.idx(x, y, z + 1)] : this.STONE_ID;
+
+            const isCeil = down === this.AIR_ID;
+            const isFloor = up === this.AIR_ID;
+            const isWall =
+              !isCeil &&
+              !isFloor &&
+              (left === this.AIR_ID || right === this.AIR_ID || front === this.AIR_ID || back === this.AIR_ID);
+
+            if (isFloor || isCeil || isWall) {
+              const biomeNoise = this.fbm2(worldX, worldZ, 120, 2, 7777);
+              const biome = this.pickCaveBiome(worldY, biomeNoise);
+              const rules = this.CaveBiomeRules[biome];
+
+              if (isFloor) skinnedVox[idx] = rules.floor;
+              else if (isCeil) skinnedVox[idx] = rules.ceil;
+              else if (isWall) skinnedVox[idx] = rules.wall;
+
+              // Place Decorators in adjacent air
+              if (rules.deco) {
+                let rSalt = 0;
+                const rand = () => this.hash3i(worldX, worldY, worldZ + rSalt++);
+                for (const d of rules.deco) {
+                  if (rand() < d.chance) {
+                    const decoId = d.place({ x: worldX, y: worldY, z: worldZ, rand });
+                    if (decoId !== null) {
+                      if (isFloor && y < CS - 1) skinnedVox[this.idx(x, y + 1, z)] = decoId;
+                      else if (isCeil && y > 0) skinnedVox[this.idx(x, y - 1, z)] = decoId;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    vox.set(skinnedVox); // Commit skinning
+
+    // ----------------------------------------------------
+    // PHASE 3: Ores (Veins)
+    // ----------------------------------------------------
+    let oreSalt = 0;
+    for (let x = 0; x < CS; x++) {
+      for (let y = 0; y < CS; y++) {
+        for (let z = 0; z < CS; z++) {
+          const idx = this.idx(x, y, z);
+          const current = vox[idx];
+
+          if (current === this.STONE_ID || current === this.DEEPSLATE_ID || current === this.TUFF_ID) {
+            const worldY = cy * CS + y;
+            const rand = () => this.hash3i(cx * CS + x, worldY, cz * CS + z + oreSalt++);
+            
+            const oreId = this.chooseOreForY(worldY, rand);
+            if (oreId) {
+              const def = this.ORES.find((o) => o.id === oreId);
+              if (def) {
+                const veinSize = Math.floor(def.veinSize[0] + (def.veinSize[1] - def.veinSize[0] + 1) * rand());
+                this.carveVein(vox, x, y, z, oreId, veinSize, rand);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ----------------------------------------------------
+    // PHASE 4: Trees
+    // ----------------------------------------------------
+    for (let i = 0; i < CS; i++) {
+      for (let k = 0; k < CS; k++) {
+        const worldX = cx * CS + i;
+        const worldZ = cz * CS + k;
+        const biome = this.getBiome(worldX, worldZ);
+        const height = this.heightAt(worldX, worldZ);
+
+        const hasTree = this.shouldPlaceTreeAt(worldX, worldZ, biome);
+        const tH = hasTree ? this.treeHeight(worldX, worldZ, biome) : 0;
+
+        if (hasTree && biome !== this.BIOME_DESERT) {
+          const trunkBaseY = height + 1;
+          const trunkTopY = height + tH;
+
+          for (let j = 0; j < CS; j++) {
+            const worldY = cy * CS + j;
+            const idx = this.idx(i, j, k);
 
             if (worldY >= trunkBaseY && worldY <= trunkTopY) {
-              id = this.WOOD_ID;
+              vox[idx] = this.WOOD_ID;
             } else {
               const canopyY0 = trunkTopY - 1;
               const canopyY1 = trunkTopY + 2;
@@ -1945,19 +2258,20 @@ export class MyRoom extends Room {
               if (worldY >= canopyY0 && worldY <= canopyY1) {
                 const rr = this.hash3i(worldX, worldY, worldZ);
                 const allow = rr > (biome === this.BIOME_SNOW ? 0.42 : 0.22);
-                if (allow && id === this.AIR_ID) id = this.LEAVES_ID;
+                if (allow && vox[idx] === this.AIR_ID) {
+                  vox[idx] = this.LEAVES_ID;
+                }
               }
             }
           }
-
-          vox[this.idx(i, j, k)] = id;
         }
       }
     }
 
+    // ----------------------------------------------------
+    // PHASE 5: Structures & Town
+    // ----------------------------------------------------
     this.stampPoiIntoChunk(vox, cx, cy, cz);
-
-    // Town stamp LAST so it overrides terrain/trees/POIs near center
     this.stampTownIntoChunk(vox, cx, cy, cz);
 
     console.log("[WORLD] generated chunk:", { cx, cy, cz, seed: this.worldSeed });
@@ -2098,7 +2412,11 @@ export class MyRoom extends Room {
       blockId === this.COAL_ORE_ID ||
       blockId === this.IRON_ORE_ID ||
       blockId === this.GOLD_ORE_ID ||
-      blockId === this.DIAMOND_ORE_ID
+      blockId === this.DIAMOND_ORE_ID ||
+      blockId === this.DEEPSLATE_ID ||
+      blockId === this.TUFF_ID ||
+      blockId === this.MOSSY_STONE_ID ||
+      blockId === this.DRIPSTONE_BLOCK_ID
     );
   }
 
@@ -2151,6 +2469,8 @@ export class MyRoom extends Room {
     if (blockId === this.STONE_ID) return 1;
     if (blockId === this.COAL_ORE_ID) return 1;
     if (blockId === this.IRON_ORE_ID) return 1;
+    if (blockId === this.DEEPSLATE_ID) return 1;
+    if (blockId === this.TUFF_ID) return 1;
     if (blockId === this.GOLD_ORE_ID) return 3;
     if (blockId === this.DIAMOND_ORE_ID) return 3;
     return 0;
@@ -2178,7 +2498,9 @@ export class MyRoom extends Room {
     else if (blockId === this.SNOW_ID) base = 360;
     else if (blockId === this.WOOD_ID) base = 950;
     else if (blockId === this.STONE_ID) base = 1250;
+    else if (blockId === this.TUFF_ID) base = 1350;
     else if (blockId === this.COAL_ORE_ID) base = 1400;
+    else if (blockId === this.DEEPSLATE_ID) base = 1800;
     else if (blockId === this.IRON_ORE_ID) base = 1650;
     else if (blockId === this.GOLD_ORE_ID) base = 2200;
     else if (blockId === this.DIAMOND_ORE_ID) base = 2850;
