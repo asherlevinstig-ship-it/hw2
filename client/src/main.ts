@@ -2,7 +2,7 @@
  * FULL FILE - with Beacon, Debug Tools, and TS Fixes
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims)
- * UPDATED: Stats System (HP, MaxHP, Mana, MaxMana) + Minecraft-style Bottom HUD
+ * UPDATED: Stats System + 3D Voxel CSS Bottom HUD
  * FIX: Removed unused TS variables to clear build warnings.
  */
 
@@ -84,35 +84,56 @@ coordsHUD.style.zIndex = "150"; // above overlay
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
 
-// ✅ NEW: Minecraft-style bottom HUD for Stats
+// ✅ NEW: 3D Voxel-style bottom HUD for Stats
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
-statsHUD.style.bottom = "40px"; // Sits right above where a hotbar would be
+statsHUD.style.bottom = "30px";
 statsHUD.style.left = "50%";
 statsHUD.style.transform = "translateX(-50%)";
-statsHUD.style.width = "420px";
 statsHUD.style.display = "flex";
-statsHUD.style.justifyContent = "space-between";
+statsHUD.style.flexDirection = "column";
+statsHUD.style.gap = "6px";
+statsHUD.style.alignItems = "center";
 statsHUD.style.pointerEvents = "none";
 statsHUD.style.userSelect = "none";
 statsHUD.style.zIndex = "150";
 document.body.appendChild(statsHUD);
 
-// Left side: Hearts
+// Health Bar Container
 const healthHUD = document.createElement("div");
-healthHUD.style.color = "#ff3333";
-healthHUD.style.fontSize = "26px";
-healthHUD.style.textShadow = "2px 2px 0px rgba(0,0,0,0.8)";
-healthHUD.style.fontFamily = "monospace";
+healthHUD.style.display = "flex";
+healthHUD.style.gap = "4px";
 statsHUD.appendChild(healthHUD);
 
-// Right side: Mana (Stars)
+// Mana Bar Container
 const manaHUD = document.createElement("div");
-manaHUD.style.color = "#3366ff";
-manaHUD.style.fontSize = "26px";
-manaHUD.style.textShadow = "2px 2px 0px rgba(0,0,0,0.8)";
-manaHUD.style.fontFamily = "monospace";
+manaHUD.style.display = "flex";
+manaHUD.style.gap = "4px";
 statsHUD.appendChild(manaHUD);
+
+// Helper to create a chunky 3D pixel block
+function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
+  const el = document.createElement("div");
+  el.style.width = "18px";
+  el.style.height = "18px";
+  el.style.border = "2px solid #111";
+  el.style.borderRadius = "2px";
+  
+  if (fillState === "full") {
+    el.style.backgroundColor = color;
+    // 3D Bevel effect
+    el.style.boxShadow = "inset -3px -3px 0px rgba(0,0,0,0.3), inset 3px 3px 0px rgba(255,255,255,0.4), 2px 2px 4px rgba(0,0,0,0.5)";
+  } else if (fillState === "half") {
+    // Half-filled using a hard CSS gradient
+    el.style.background = `linear-gradient(to right, ${color} 50%, rgba(0,0,0,0.6) 50%)`;
+    el.style.boxShadow = "inset 2px 2px 0px rgba(255,255,255,0.3), 2px 2px 4px rgba(0,0,0,0.5)"; 
+  } else {
+    // Empty socket
+    el.style.backgroundColor = "rgba(0,0,0,0.6)";
+    el.style.boxShadow = "inset 2px 2px 5px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.5)";
+  }
+  return el;
+}
 
 /* ===============================
    3.1 Inventory UI
@@ -856,23 +877,30 @@ function updateCoordsHUD() {
 }
 
 function updateStatsHUD() {
-  // Health (1 heart per 2 HP)
-  const hpTotal = Math.max(1, Math.floor(myMaxHp / 2));
-  const hpCur = Math.max(0, Math.floor(myHp / 2));
-  let hpStr = "";
-  for (let i = 0; i < hpTotal; i++) {
-    hpStr += i < hpCur ? "♥" : "♡";
-  }
-  healthHUD.textContent = hpStr;
+  healthHUD.innerHTML = "";
+  manaHUD.innerHTML = "";
 
-  // Mana (1 star per 10 Mana)
-  const mTotal = Math.max(1, Math.floor(myMaxMana / 10));
-  const mCur = Math.max(0, Math.floor(myMana / 10));
-  let mStr = "";
-  for (let i = 0; i < mTotal; i++) {
-    mStr += i < mCur ? "★" : "☆";
+  // Health (1 block per 2 HP)
+  const hpContainers = Math.max(1, Math.floor(myMaxHp / 2));
+  for (let i = 0; i < hpContainers; i++) {
+    const hpVal = myHp - (i * 2);
+    let state: "full" | "half" | "empty" = "empty";
+    if (hpVal >= 2) state = "full";
+    else if (hpVal === 1) state = "half";
+    
+    healthHUD.appendChild(createStatBlock(state, "#ff2222")); // Vibrant Red
   }
-  manaHUD.textContent = mStr;
+
+  // Mana (1 block per 10 Mana)
+  const manaContainers = Math.max(1, Math.floor(myMaxMana / 10));
+  for (let i = 0; i < manaContainers; i++) {
+    const mVal = myMana - (i * 10);
+    let state: "full" | "half" | "empty" = "empty";
+    if (mVal >= 10) state = "full";
+    else if (mVal >= 5) state = "half"; // Shows half-mana chunks!
+    
+    manaHUD.appendChild(createStatBlock(state, "#2277ff")); // Bright Blue
+  }
 }
 
 function updateOverlay(extraLine = "") {
@@ -2240,10 +2268,6 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   rpScene = new BABYLON.Scene(engine);
   rpScene.useRightHandedSystem = noaScene.useRightHandedSystem;
-
-  console.log("[RP] ensureRpScene", {
-    useRightHandedSystem: rpScene.useRightHandedSystem,
-  });
 
   rpScene.autoClear = false;
   rpScene.autoClearDepthAndStencil = false;
