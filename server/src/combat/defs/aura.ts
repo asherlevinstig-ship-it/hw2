@@ -51,6 +51,31 @@ export const AuraDefs: Record<AuraArchetypeId, AuraDef> = {
   },
 
   // ------------------------------------------------------------------------
+  // ASTRAL (Control / Caster)
+  // Highly efficient skills and boosted regen at high intensity, but very squishy.
+  // ------------------------------------------------------------------------
+  ASTRAL: {
+    id: "ASTRAL",
+    name: "Astral Essence",
+    intensityDecayPerSec: 0.06,
+    burnoutBuildPerSecAtMax: 0.12,     // Builds burnout slowly
+    burnoutDecayPerSec: 0.10,
+    berserkBurnoutPerSec: 0.25,
+    computeMods: (t, i, b) => {
+      const burnoutPenalty = 1 - 0.30 * b; 
+      return {
+        damageMul: (1 + 0.25 * i + Math.min(0.15, t * 0.02)) * burnoutPenalty,
+        poiseMul: (1 + 0.50 * i) * burnoutPenalty, // Great at breaking guard/staggering
+        costMul: 1 + 0.10 * i,           // UNIQUE: Barely any cost penalty for flaring
+        takenMul: 1 + 0.40 * i,          // Very squishy when flaring
+        critBonus: Math.min(0.04, t * 0.004) + 0.05 * i,
+        // UNIQUE: Flaring actually boosts regeneration slightly
+        regenMul: Math.max(0, (1 + 0.50 * i) * (1 - 0.40 * b)),
+      };
+    },
+  },
+
+  // ------------------------------------------------------------------------
   // IRON (Tank / Juggernaut)
   // Intensity makes you an immovable wall, but slows your regen heavily.
   // ------------------------------------------------------------------------
