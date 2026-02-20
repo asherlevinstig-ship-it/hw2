@@ -8,6 +8,7 @@
 // ✅ Add SAND + SNOW items (placeable blocks)
 // ✅ Add CAVE BIOME blocks (Deepslate, Tuff, Moss, etc.)
 // ✅ Keep durability-safe semantics: tools are maxStack=1 and carry dur
+// ✅ ADDED: Awakening Stones & Virtual Skill Gems
 
 export const Items = {
   // Blocks as items
@@ -45,6 +46,17 @@ export const Items = {
   RAW_IRON: 31,
   RAW_GOLD: 32,
   DIAMOND: 33,
+
+  // --- AWAKENING STONES ---
+  STONE_IRON: 200,
+  STONE_SHADOW: 201,
+  STONE_BLOOD: 202,
+  STONE_ASTRAL: 203,
+
+  // --- VIRTUAL SKILLS ---
+  SKILL_AURA_SLASH: 1001,
+  SKILL_AURA_HEAVY: 1002,
+  SKILL_AURA_THRUST: 1003,
 } as const;
 
 export type ItemStack = { id: number; count: number; dur?: number };
@@ -140,6 +152,17 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   31: { id: 31, name: "Raw Iron", maxStack: 64 },
   32: { id: 32, name: "Raw Gold", maxStack: 64 },
   33: { id: 33, name: "Diamond", maxStack: 64 },
+
+  // --- AWAKENING STONES ---
+  200: { id: 200, name: "Iron Awakening Stone", maxStack: 10 },
+  201: { id: 201, name: "Shadow Awakening Stone", maxStack: 10 },
+  202: { id: 202, name: "Blood Awakening Stone", maxStack: 10 },
+  203: { id: 203, name: "Astral Awakening Stone", maxStack: 10 },
+
+  // --- VIRTUAL SKILLS --- (Only stack to 1)
+  1001: { id: 1001, name: "[Skill] Aura Slash", maxStack: 1 },
+  1002: { id: 1002, name: "[Skill] Aura Heavy", maxStack: 1 },
+  1003: { id: 1003, name: "[Skill] Aura Thrust", maxStack: 1 },
 };
 
 export type Recipe = {

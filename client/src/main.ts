@@ -3,8 +3,8 @@
  * UPDATED: Added Always-Visible Bottom Hotbar
  * UPDATED: Moved Stats HUD up to accommodate Hotbar
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
- * UPDATED: MVP Combat Client Wiring (Attack sending, Hit Flashes, Swing Anims)
- * FIX: Removed unused TS variables to clear build warnings.
+ * UPDATED: Component-based Combat System Wiring
+ * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  */
 
 import { Engine } from "noa-engine";
@@ -85,10 +85,10 @@ coordsHUD.style.zIndex = "150"; // above overlay
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
 
-// ✅ NEW: 3D Voxel-style bottom HUD for Stats
+// 3D Voxel-style bottom HUD for Stats
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
-statsHUD.style.bottom = "90px"; // Moved up to make room for hotbar
+statsHUD.style.bottom = "90px"; 
 statsHUD.style.left = "50%";
 statsHUD.style.transform = "translateX(-50%)";
 statsHUD.style.display = "flex";
@@ -112,7 +112,7 @@ manaHUD.style.display = "flex";
 manaHUD.style.gap = "4px";
 statsHUD.appendChild(manaHUD);
 
-// ✅ NEW: Permanent HUD Hotbar (Always Visible)
+// Permanent HUD Hotbar (Always Visible)
 const hudHotbarRoot = document.createElement("div");
 hudHotbarRoot.style.position = "fixed";
 hudHotbarRoot.style.bottom = "10px";
@@ -189,8 +189,7 @@ invHeader.appendChild(invTitle);
 const invHint = document.createElement("div");
 invHint.style.opacity = "0.85";
 invHint.style.fontSize = "12px";
-invHint.textContent =
-  "LMB: pick/place/stack | RMB: half/place-one | Shift+LMB: quick move";
+invHint.textContent = "LMB: pick/place/stack | RMB: half/place-one | Shift+LMB: quick move | Dbl-Click: Use";
 invHeader.appendChild(invHint);
 
 const invMain = document.createElement("div");
@@ -645,7 +644,7 @@ const pickupSentRecently = new Map<string, number>();
 ================================ */
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
-const hudSlotEls: HTMLDivElement[] = []; // NEW: Array for HUD Hotbar Slots
+const hudSlotEls: HTMLDivElement[] = []; // Array for HUD Hotbar Slots
 
 function itemName(id: number): string {
   const def: ItemDef | undefined = (ITEM_DEFS as any)[id];
@@ -674,6 +673,15 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.style.cursor = "pointer";
 
   if (stack && stack.id > 0 && stack.count > 0) {
+    // Determine if it is a Skill Gem vs a physical item
+    const isSkill = stack.id >= 1000 && stack.id <= 2000;
+    
+    // Style skill gems differently
+    if (isSkill) {
+      el.style.border = isSelected ? "2px solid #00FFFF" : "1px solid rgba(0,255,255,0.4)";
+      el.style.background = "radial-gradient(circle, rgba(0,100,150,0.6) 0%, rgba(0,0,0,0.4) 100%)";
+    }
+
     const name = document.createElement("div");
     name.textContent = itemName(stack.id);
     name.style.fontSize = "11px";
@@ -681,19 +689,26 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     name.style.padding = "0 6px";
     name.style.opacity = "0.95";
     name.style.wordBreak = "break-word";
-
-    const count = document.createElement("div");
-    count.textContent = `×${stack.count}`;
-    count.style.position = "absolute";
-    count.style.right = "6px";
-    count.style.bottom = "4px";
-    count.style.fontSize = "12px";
-    count.style.opacity = "0.95";
-
+    
+    if (isSkill) {
+      name.style.color = "#00FFFF";
+    }
+    
     el.appendChild(name);
-    el.appendChild(count);
 
-    // (optional) show durability if present
+    // Only show stack count for physical items
+    if (!isSkill) {
+      const count = document.createElement("div");
+      count.textContent = `×${stack.count}`;
+      count.style.position = "absolute";
+      count.style.right = "6px";
+      count.style.bottom = "4px";
+      count.style.fontSize = "12px";
+      count.style.opacity = "0.95";
+      el.appendChild(count);
+    }
+
+    // Show durability if present
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
@@ -716,22 +731,27 @@ function renderInventoryUI() {
       : "(empty)";
 
   // 1. Render Inventory Window Hotbar (inside "I" menu)
-  for (let i = 0; i < HOTBAR_SLOTS; i++)
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
     renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
+  }
 
   // 2. Render Backpack
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
   }
 
-  // 3. ✅ NEW: Render Always-Visible HUD Hotbar
+  // 3. Render Always-Visible HUD Hotbar
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     renderSlot(hudSlotEls[i], invState.slots[i], i === selectedHotbar);
   }
 
   const countItemSlotsOnly = (id: number): number => {
     let n = 0;
-    for (const s of invState.slots) if (s.id === id && s.count > 0) n += s.count;
+    for (const s of invState.slots) {
+      if (s.id === id && s.count > 0) {
+        n += s.count;
+      }
+    }
     return n;
   };
 
@@ -779,6 +799,11 @@ function setupInventorySlots() {
       const btn = e.button === 2 ? "R" : "L";
       sendInvClick(i, btn, e.shiftKey);
     };
+    el.ondblclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (room) room.send("useItem", { slot: (el as any).__slotIndex });
+    };
     slotEls.push(el);
     hotbarGrid.appendChild(el);
   }
@@ -793,11 +818,16 @@ function setupInventorySlots() {
       const btn = e.button === 2 ? "R" : "L";
       sendInvClick(idx, btn, e.shiftKey);
     };
+    el.ondblclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (room) room.send("useItem", { slot: (el as any).__slotIndex });
+    };
     backpackEls.push(el);
     backpackGrid.appendChild(el);
   }
 
-  // ✅ NEW: Setup HUD Hotbar Slots (Click to Select)
+  // Setup HUD Hotbar Slots (Click to Select)
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     const el = document.createElement("div");
     el.onmousedown = (e) => {
@@ -1164,7 +1194,9 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
   if (Array.isArray(msgVoxels)) {
     if (msgVoxels.length !== expectedLen) return null;
     const out = new Array<number>(expectedLen);
-    for (let i = 0; i < expectedLen; i++) out[i] = (msgVoxels[i] as any) | 0;
+    for (let i = 0; i < expectedLen; i++) {
+      out[i] = (msgVoxels[i] as any) | 0;
+    }
     return out;
   }
 
@@ -1172,13 +1204,17 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     if (msgVoxels.byteLength === expectedLen * 2) {
       const u16 = new Uint16Array(msgVoxels);
       const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = u16[i] | 0;
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u16[i] | 0;
+      }
       return out;
     }
     if (msgVoxels.byteLength === expectedLen) {
       const u8 = new Uint8Array(msgVoxels);
       const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = u8[i] | 0;
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u8[i] | 0;
+      }
       return out;
     }
     return null;
@@ -1190,7 +1226,9 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     const len = (msgVoxels as any).length;
     if (typeof len === "number" && len === expectedLen) {
       const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = (msgVoxels as any)[i] | 0;
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = (msgVoxels as any)[i] | 0;
+      }
       return out;
     }
 
@@ -1198,13 +1236,17 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     if (bytes === expectedLen * 2) {
       const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = u16[i] | 0;
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u16[i] | 0;
+      }
       return out;
     }
     if (bytes === expectedLen) {
       const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = u8[i] | 0;
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u8[i] | 0;
+      }
       return out;
     }
     return null;
@@ -1224,7 +1266,9 @@ function warnUnknownIdsInChunk(voxels: number[]) {
 
   for (let i = 0; i < N; i++) {
     const v = voxels[i] | 0;
-    if (!isRegisteredBlockId(v)) unknown.set(v, (unknown.get(v) ?? 0) + 1);
+    if (!isRegisteredBlockId(v)) {
+      unknown.set(v, (unknown.get(v) ?? 0) + 1);
+    }
   }
 
   if (unknown.size) {
@@ -1325,7 +1369,7 @@ function sendAttack() {
   if (!room) return;
   const yaw = readNoaYaw();
   const pitch = readNoaPitch();
-  room.send("attack", { kind: "melee", heldSlot: selectedHotbar, yaw, pitch, t: Date.now() });
+  room.send("attack", { attackId: undefined, heldSlot: selectedHotbar, yaw, pitch, t: Date.now() });
 }
 
 function sendStartMine(x: number, y: number, z: number) {
@@ -1376,7 +1420,7 @@ noa.inputs.down.on("fire", () => {
   if (invOpen) return;
 
   triggerPunch();
-  sendAttack(); // ⚔️ MVP COMBAT SEND
+  sendAttack(); // ⚔️ COMPONENT COMBAT SEND
 
   const target = getTargetInfo();
   if (!target) return;
@@ -2016,7 +2060,9 @@ function updateTownHallLabel(scene: BABYLON.Scene) {
   townHallBeacon.scaling.y = LABEL_Y;
 
   const now = performance.now();
-  if ((updateTownHallLabel as any)._lastRedraw == null) (updateTownHallLabel as any)._lastRedraw = 0;
+  if ((updateTownHallLabel as any)._lastRedraw == null) {
+    (updateTownHallLabel as any)._lastRedraw = 0;
+  }
 
   if (now - (updateTownHallLabel as any)._lastRedraw > 1000) {
     (updateTownHallLabel as any)._lastRedraw = now;
@@ -2122,7 +2168,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   fore.material = armMat;
   hand.material = armMat;
 
-  upper.isPickable = fore.isPickable = hand.isPickable = false;
+  upper.isPickable = false;
+  fore.isPickable = false; 
+  hand.isPickable = false;
 
   (upper as any).isInFrustum = () => true;
   (fore as any).isInFrustum = () => true;
@@ -2557,7 +2605,7 @@ function updateRemoteMeshes() {
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
 
-      // ✅ ⚔️ Combat hit flash
+      // Combat hit flash
       if (mat) {
         const flashTime = remoteFlashes.get(id);
         if (flashTime && now - flashTime < 200) {
@@ -2567,7 +2615,7 @@ function updateRemoteMeshes() {
         }
       }
 
-      // ✅ ⚔️ Combat swing anim
+      // Combat swing anim
       let armPitch = 0;
       const swingTime = remoteSwings.get(id);
       if (swingTime && now - swingTime < 300) {
@@ -2639,7 +2687,7 @@ async function connect() {
     });
 
     // ============================================
-    // ✅ ⚔️ COMBAT WIRING & STATS UPDATE
+    // COMBAT WIRING & STATS UPDATE
     // ============================================
     room.onMessage("statsUpdate", (msg: any) => {
       myHp = Number(msg.hp ?? myHp);
@@ -2812,6 +2860,13 @@ async function connect() {
       
       renderInventoryUI();
       updateOverlay();
+    });
+
+    // Chat Message Event Listener for Awakening Stone
+    room.onMessage("chatMessage", (msg: any) => {
+      if (msg && typeof msg.msg === "string") {
+        updateOverlay(`<span style="color: #00FFFF; font-weight: bold; text-shadow: 0 0 5px #00FFFF;">*** ${msg.msg} ***</span>`);
+      }
     });
 
     room.onMessage("dropSpawn", (d: any) => {

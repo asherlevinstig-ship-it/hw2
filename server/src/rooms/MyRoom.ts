@@ -6,7 +6,7 @@
 // Path B: Pre-expanded structure stamping (.blocks.json) seam-safe, deterministic anchor placement
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
-// COMBAT & STATS: HP, Max HP (Hearts), Mana, Max Mana, Regen, and Persistence
+// COMBAT & STATS: Fully integrated Component-Based Authoritative Combat Engine & Awakening System
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -25,6 +25,22 @@ import {
   loadBlockStructure,
   type BlockStructure,
 } from "../shared/structureLoader.js";
+
+// Combat System Imports
+import { 
+  CombatSystem, 
+  type CombatEvent, 
+  type CombatSnapshot, 
+  type Combatant,
+  type AttackRequest
+} from "../combat/CombatSystem.js";
+import { HealthComponent } from "../combat/components/HealthComponent.js";
+import { ResourceComponent } from "../combat/components/ResourceComponent.js";
+import { AuraComponent } from "../combat/components/AuraComponent.js";
+import { StatusComponent } from "../combat/components/StatusComponent.js";
+import { CooldownComponent } from "../combat/components/CooldownComponent.js";
+import { StateComponent } from "../combat/components/StateComponent.js";
+import { EquipmentComponent } from "../combat/components/EquipmentComponent.js";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -56,12 +72,11 @@ type PlayerInfo = {
   lastMoveAt: number;
   joinedAt: number;
   
-  // Combat MVP + Stats additions
+  // Stats (Authoritative truth synced from Combatant)
   hp: number;
   maxHp: number;
   mana: number;
   maxMana: number;
-  lastAttackAt: number;
   invulnUntil: number;
 };
 
@@ -72,6 +87,7 @@ type PlayerStats = {
   maxHp: number;      // in hp units (2 per heart)
   mana: number;
   maxMana: number;
+  auraArchetype: string; // Added for Awakening System
 };
 
 type InvState = {
@@ -90,7 +106,7 @@ type Drop = {
   createdAt: number;
 };
 
-// ✅ UPGRADED: Structured Inventory Click Protocol
+// Structured Inventory Click Protocol
 type InvClickMsg = {
   area: "inv" | "hotbar";
   index: number;
@@ -153,25 +169,8 @@ type OreDef = {
 };
 
 // =========================
-// Combat MVP Typings
+// Client Message Typings
 // =========================
-type AttackMsg = {
-  kind?: "melee";
-  heldSlot?: number;
-  yaw?: number;   // optional if you want to trust client yaw; otherwise use pl.yaw
-  pitch?: number; // optional if you later add pitch to PlayerInfo
-  t?: number;     // client timestamp (optional)
-};
-
-type PlayerHitMsg = {
-  attackerId: string;
-  targetId: string;
-  damage: number;
-  hpLeft: number;
-  maxHp: number;
-  knockback?: { x: number; y: number; z: number };
-};
-
 type UseManaMsg = {
   amount: number;
   reason?: string;
@@ -185,18 +184,23 @@ type AddContainerMsg = {
 function isFiniteNumber(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n);
 }
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
+
 function toInt(n: number): number {
   return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
 }
+
 function floorDiv(a: number, b: number): number {
   return Math.floor(a / b);
 }
+
 function mod(a: number, b: number): number {
   return ((a % b) + b) % b;
 }
+
 function safeUserId(v: unknown): string {
   const s = typeof v === "string" ? v : "";
   const trimmed = s.slice(0, 80);
@@ -252,10 +256,10 @@ export class MyRoom extends Room {
 
   // Minerals + bedrock (MUST match client)
   private readonly BEDROCK_ID = 6;
-  private readonly COAL_ORE_ID = 30; // UPDATED TO MATCH Items.COAL
-  private readonly IRON_ORE_ID = 31; // UPDATED TO MATCH Items.RAW_IRON
-  private readonly GOLD_ORE_ID = 32; // UPDATED TO MATCH Items.RAW_GOLD
-  private readonly DIAMOND_ORE_ID = 33; // UPDATED TO MATCH Items.DIAMOND
+  private readonly COAL_ORE_ID = 30; 
+  private readonly IRON_ORE_ID = 31; 
+  private readonly GOLD_ORE_ID = 32; 
+  private readonly DIAMOND_ORE_ID = 33; 
 
   // Biome surface blocks (MUST match client)
   private readonly SAND_ID = 11;
@@ -360,28 +364,17 @@ export class MyRoom extends Room {
 
   // Town “blueprint” dimensions (procedural)
   private readonly TOWN_PLAZA_RADIUS = 10;
-  private readonly TOWN_RING_RADIUS = 24; // decorative ring/wall radius
-  private readonly TOWN_PATH_HALF_W = 2; // path half-width (total ~5)
-  private readonly TOWN_CLEAR_HEIGHT = 18; // clear above ground inside town (removes trees)
-
-  // =========================
-  // Combat (MVP melee)
-  // =========================
-  private readonly ATTACK_COOLDOWN_MS = 450;
-  private readonly ATTACK_RANGE = 3.25;         // blocks
-  private readonly ATTACK_RADIUS = 0.85;        // hit-sphere around ray sample
-  private readonly ATTACK_DAMAGE_BASE = 4;      // 2 hearts
-  private readonly KNOCKBACK_STRENGTH = 1.2;    // tweak or set 0 to disable
+  private readonly TOWN_RING_RADIUS = 24; 
+  private readonly TOWN_PATH_HALF_W = 2; 
+  private readonly TOWN_CLEAR_HEIGHT = 18; 
 
   // =========================
   // Stats & Mana Constants
   // =========================
   private readonly HP_PER_HEART = 2;
-  private readonly DEFAULT_HEARTS = 10;          // 10 hearts -> 20 hp
-  private readonly DEFAULT_MANA_CONTAINERS = 5;  // tune
-  private readonly MANA_PER_CONTAINER = 10;      // 5 containers -> 50 mana
-  private readonly MANA_REGEN_PER_SEC = 3;       // tune or 0 to disable
-  private readonly MANA_REGEN_TICK_MS = 250;
+  private readonly DEFAULT_HEARTS = 10;          
+  private readonly DEFAULT_MANA_CONTAINERS = 5;  
+  private readonly MANA_PER_CONTAINER = 10;      
 
   // =========================
   // World meta / seed
@@ -424,6 +417,12 @@ export class MyRoom extends Room {
   private townHall: BlockStructure | null = null;
 
   // =========================
+  // Combat System
+  // =========================
+  private combat!: CombatSystem;
+  private combatants = new Map<string, Combatant>();
+
+  // =========================
   // onCreate
   // =========================
   onCreate(options: any) {
@@ -439,6 +438,24 @@ export class MyRoom extends Room {
 
     this.worldSeed = this.loadOrCreateWorldSeed(options);
     console.log("[WORLD] worldSeed =", this.worldSeed);
+
+    // Initialize Component-Based Combat Engine
+    this.combat = new CombatSystem({
+      isSafeZoneXZ: (x, z) => this.isInSafeZoneXZ(x, z),
+      getBlockAt: (x, y, z) => this.getBlockAt(x, y, z),
+      isCombatAllowedXZ: (x, z) => this.isCombatAllowedHere(x, z),
+      emit: (e) => this.handleCombatEvent(e),
+      getAllCombatants: () => Array.from(this.combatants.values()),
+      AIR_ID: this.AIR_ID
+    });
+
+    // Start Combat Tick Loop
+    let lastCombatTick = Date.now();
+    this.clock.setInterval(() => {
+      const now = Date.now();
+      this.combat.tick(now - lastCombatTick);
+      lastCombatTick = now;
+    }, 50);
 
     // Load pre-expanded structures (Path B)
     try {
@@ -501,9 +518,6 @@ export class MyRoom extends Room {
       () => this.cleanupDrops(),
       this.DROP_CLEANUP_EVERY_MS
     );
-
-    // mana regen
-    this.clock.setInterval(() => this.tickManaRegen(), this.MANA_REGEN_TICK_MS);
 
     // =========================
     // Chunk streaming
@@ -577,6 +591,15 @@ export class MyRoom extends Room {
       pl.yaw = yaw;
       pl.lastMoveAt = now;
 
+      // Sync physical location to Combatant wrapper
+      const c = this.combatants.get(client.sessionId);
+      if (c) {
+        c.pos.x = x;
+        c.pos.y = y;
+        c.pos.z = z;
+        c.yaw = yaw;
+      }
+
       this.broadcast(
         "playerTransformOther",
         { id: client.sessionId, x, y, z, yaw },
@@ -601,127 +624,28 @@ export class MyRoom extends Room {
     });
 
     // =========================
-    // Combat: melee (authoritative)
+    // Combat Listeners
     // =========================
     this.onMessage("attack", (client: Client, payload: unknown) => {
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
+      const req = (payload as Partial<AttackRequest>) || {};
+      this.combat.requestAttack(client.sessionId, {
+        attackId: req.attackId,
+        heldSlot: isFiniteNumber(req.heldSlot) ? toInt(req.heldSlot as number) : undefined,
+        yaw: req.yaw,
+        pitch: req.pitch
+      });
+    });
 
-      const now = Date.now();
-
-      // No combat in safe zone
-      if (!this.isCombatAllowedHere(pl.x, pl.z)) {
-        client.send("attackResult", { ok: false, reason: "safe_zone" });
-        return;
+    this.onMessage("dodge", (client: Client, payload: unknown) => {
+      const p = (payload as { dir?: Vec3 }) || {};
+      if (p.dir && isFiniteNumber(p.dir.x) && isFiniteNumber(p.dir.y) && isFiniteNumber(p.dir.z)) {
+        this.combat.requestDodge(client.sessionId, p.dir);
       }
+    });
 
-      // Cooldown
-      if (now - pl.lastAttackAt < this.ATTACK_COOLDOWN_MS) {
-        client.send("attackResult", { ok: false, reason: "cooldown" });
-        return;
-      }
-      pl.lastAttackAt = now;
-
-      // Basic validation
-      const p = (typeof payload === "object" && payload) ? (payload as Partial<AttackMsg>) : {};
-      const heldSlot = isFiniteNumber(p.heldSlot) ? toInt(p.heldSlot) : -1;
-
-      // Direction
-      const yaw = isFiniteNumber(p.yaw) ? Number(p.yaw) : pl.yaw;
-      const pitch = isFiniteNumber(p.pitch) ? clamp(Number(p.pitch), -1.25, 1.25) : 0; // until you track pitch server-side
-      const dir = this.forwardFromYawPitch(yaw, pitch);
-
-      // Find target
-      const target = this.findMeleeTarget(pl, dir);
-      if (!target) {
-        client.send("attackResult", { ok: true, hit: false });
-        // optional broadcast swing to others
-        this.broadcast("playerSwing", { id: pl.id }, { except: client });
-        return;
-      }
-
-      // Target invuln (spawn protect)
-      if (now < target.invulnUntil) {
-        client.send("attackResult", { ok: true, hit: false, reason: "invuln" });
-        return;
-      }
-
-      // Damage
-      const inv = this.getOrLoadInventory(pl.userId);
-      const dmg = this.weaponDamage(inv, heldSlot);
-
-      target.hp = clamp(toInt(target.hp - dmg), 0, target.maxHp);
-
-      // Knockback (simple)
-      let kb: { x: number; y: number; z: number } | undefined;
-      if (this.KNOCKBACK_STRENGTH > 0) {
-        const kx = dir.x * this.KNOCKBACK_STRENGTH;
-        const kz = dir.z * this.KNOCKBACK_STRENGTH;
-        const ky = 0.15 * this.KNOCKBACK_STRENGTH;
-
-        target.x = clamp(target.x + kx, -this.maxAbsCoord, this.maxAbsCoord);
-        target.y = clamp(target.y + ky, -this.maxAbsCoord, this.maxAbsCoord);
-        target.z = clamp(target.z + kz, -this.maxAbsCoord, this.maxAbsCoord);
-
-        kb = { x: kx, y: ky, z: kz };
-
-        // sync target move to others immediately
-        this.broadcast(
-          "playerTransformOther",
-          { id: target.id, x: target.x, y: target.y, z: target.z, yaw: target.yaw },
-          { except: undefined as any }
-        );
-      }
-
-      // Persist target stats back to their inventory file
-      const tInv = this.getOrLoadInventory(target.userId);
-      tInv.stats.hp = target.hp;
-      tInv.stats.maxHp = target.maxHp;
-      tInv.stats.mana = target.mana;
-      tInv.stats.maxMana = target.maxMana;
-      this.saveInventory(target.userId, tInv);
-
-      const hitMsg: PlayerHitMsg = {
-        attackerId: pl.id,
-        targetId: target.id,
-        damage: dmg,
-        hpLeft: target.hp,
-        maxHp: target.maxHp,
-        knockback: kb,
-      };
-
-      // Tell everyone for VFX/anim
-      this.broadcast("playerHit", hitMsg);
-
-      // Tell attacker result
-      client.send("attackResult", { ok: true, hit: true, targetId: target.id, damage: dmg, hpLeft: target.hp });
-
-      // Optional: death event
-      if (target.hp <= 0) {
-        this.broadcast("playerDowned", { id: target.id, by: pl.id });
-
-        // respawn in town after short delay (simple)
-        target.invulnUntil = now + 2500;
-        target.hp = target.maxHp;
-        target.mana = target.maxMana;
-
-        const sx = this.TOWN_CENTER_X;
-        const sz = this.TOWN_CENTER_Z;
-        const sy = this.heightAt(sx, sz) + 8;
-
-        target.x = sx;
-        target.y = sy;
-        target.z = sz;
-
-        this.broadcast("playerRespawn", { 
-          id: target.id, 
-          x: sx, y: sy, z: sz, 
-          hp: target.hp, 
-          maxHp: target.maxHp, 
-          mana: target.mana, 
-          maxMana: target.maxMana 
-        });
-      }
+    this.onMessage("block", (client: Client, payload: unknown) => {
+      const active = !!(payload as any)?.active;
+      this.combat.setBlocking(client.sessionId, active);
     });
 
     // =========================
@@ -729,25 +653,21 @@ export class MyRoom extends Room {
     // =========================
     this.onMessage("useMana", (client: Client, payload: unknown) => {
       const pl = this.players.get(client.sessionId);
-      if (!pl) return;
+      const c = this.combatants.get(client.sessionId);
+      if (!pl || !c) return;
 
       const p = (typeof payload === "object" && payload) ? (payload as Partial<UseManaMsg>) : {};
       const amount = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 0, 999999) : 0;
       if (amount <= 0) return;
 
-      if (pl.mana < amount) {
-        client.send("useManaResult", { ok: false, reason: "not_enough_mana", mana: pl.mana, maxMana: pl.maxMana });
+      if (!c.resources.canPay(amount, 0)) {
+        client.send("useManaResult", { ok: false, reason: "not_enough_mana", mana: c.resources.mana, maxMana: c.resources.maxMana });
         return;
       }
 
-      pl.mana -= amount;
-
-      const inv = this.getOrLoadInventory(pl.userId);
-      inv.stats.mana = pl.mana;
-      this.saveInventory(pl.userId, inv);
-
-      client.send("useManaResult", { ok: true, mana: pl.mana, maxMana: pl.maxMana });
-      client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
+      c.resources.pay(amount, 0);
+      c.onSync?.(c.snapshot()); 
+      client.send("useManaResult", { ok: true, mana: c.resources.mana, maxMana: c.resources.maxMana });
     });
 
     // =========================
@@ -755,7 +675,8 @@ export class MyRoom extends Room {
     // =========================
     this.onMessage("addContainer", (client: Client, payload: unknown) => {
       const pl = this.players.get(client.sessionId);
-      if (!pl) return;
+      const c = this.combatants.get(client.sessionId);
+      if (!pl || !c) return;
 
       const p = (typeof payload === "object" && payload) ? (payload as Partial<AddContainerMsg>) : {};
       const kind = p.kind === "mana" ? "mana" : "heart";
@@ -763,23 +684,61 @@ export class MyRoom extends Room {
 
       if (kind === "heart") {
         const addHp = amt * this.HP_PER_HEART;
-        pl.maxHp = clamp(pl.maxHp + addHp, 2, 9999);
-        pl.hp = pl.maxHp; // classic “container heals you”
+        c.health.setMax(c.health.maxHp + addHp, true); // true = fill HP
       } else {
         const addMana = amt * this.MANA_PER_CONTAINER;
-        pl.maxMana = clamp(pl.maxMana + addMana, 0, 999999);
-        pl.mana = pl.maxMana;
+        c.resources.maxMana = clamp(c.resources.maxMana + addMana, 0, 999999);
+        c.resources.mana = c.resources.maxMana;
       }
 
-      const inv = this.getOrLoadInventory(pl.userId);
-      inv.stats.hp = pl.hp;
-      inv.stats.maxHp = pl.maxHp;
-      inv.stats.mana = pl.mana;
-      inv.stats.maxMana = pl.maxMana;
-      this.saveInventory(pl.userId, inv);
+      c.onSync?.(c.snapshot()); 
+      client.send("addContainerResult", { ok: true, kind, hp: c.health.hp, maxHp: c.health.maxHp, mana: c.resources.mana, maxMana: c.resources.maxMana });
+    });
 
-      client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
-      client.send("addContainerResult", { ok: true, kind, hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
+    // =========================
+    // Item Consumption & Awakening System
+    // =========================
+    this.onMessage("useItem", (client: Client, payload: unknown) => {
+      const pl = this.players.get(client.sessionId);
+      const c = this.combatants.get(client.sessionId);
+      if (!pl || !c) return;
+
+      const p = (typeof payload === "object" && payload) ? (payload as any) : {};
+      const slot = isFiniteNumber(p.slot) ? toInt(p.slot) : -1;
+      if (slot < 0 || slot >= this.INV_SLOTS) return;
+
+      const inv = this.getOrLoadInventory(pl.userId);
+      const stack = inv.slots[slot] as any;
+      if (!stack || stack.id <= 0 || stack.count <= 0) return;
+
+      let newArchetype: string | null = null;
+      if (stack.id === Items.STONE_IRON) newArchetype = "IRON";
+      else if (stack.id === Items.STONE_SHADOW) newArchetype = "SHADOW";
+      else if (stack.id === Items.STONE_BLOOD) newArchetype = "BLOOD";
+      else if (stack.id === Items.STONE_ASTRAL) newArchetype = "ASTRAL";
+
+      if (newArchetype) {
+        // 1. Consume the stone
+        stack.count -= 1;
+        if (stack.count <= 0) inv.slots[slot] = { id: 0, count: 0 } as any;
+
+        // 2. Set the Archetype
+        inv.stats.auraArchetype = newArchetype;
+        c.aura.setArchetype(newArchetype as any);
+
+        // 3. Grant basic Skill Gems to inventory
+        this.inventoryAdd(inv, { id: Items.SKILL_AURA_SLASH, count: 1 } as any);
+        this.inventoryAdd(inv, { id: Items.SKILL_AURA_HEAVY, count: 1 } as any);
+        this.inventoryAdd(inv, { id: Items.SKILL_AURA_THRUST, count: 1 } as any);
+
+        // 4. Save & Sync
+        this.saveInventory(pl.userId, inv);
+        this.sendInvStateToClient(client, inv);
+        c.onSync?.(c.snapshot());
+
+        // Send confirmation popup to client
+        client.send("chatMessage", { msg: `AWAKENED! You are now bound to the ${newArchetype} Essence.` });
+      }
     });
 
     // =========================
@@ -1178,6 +1137,174 @@ export class MyRoom extends Room {
   }
 
   // =========================
+  // Combat Event Router
+  // =========================
+  private handleCombatEvent(e: CombatEvent): void {
+    if (e.type === "ATTACK_START") {
+      this.broadcast("playerSwing", { id: e.attackerId, attackId: e.attackId });
+    } 
+    else if (e.type === "HIT") {
+      const target = this.players.get(e.targetId);
+      if (target) {
+        if (e.knockback) {
+          target.x = clamp(target.x + e.knockback.x, -this.maxAbsCoord, this.maxAbsCoord);
+          target.y = clamp(target.y + e.knockback.y, -this.maxAbsCoord, this.maxAbsCoord);
+          target.z = clamp(target.z + e.knockback.z, -this.maxAbsCoord, this.maxAbsCoord);
+          
+          const c = this.combatants.get(target.id);
+          if (c) {
+            c.pos.x = target.x;
+            c.pos.y = target.y;
+            c.pos.z = target.z;
+          }
+          
+          this.broadcast("playerTransformOther", { id: target.id, x: target.x, y: target.y, z: target.z, yaw: target.yaw });
+        }
+        
+        this.broadcast("playerHit", {
+          attackerId: e.attackerId,
+          targetId: e.targetId,
+          damage: e.damage,
+          hpLeft: target.hp,
+          maxHp: target.maxHp,
+          knockback: e.knockback,
+          kind: e.kind,
+          crit: e.crit
+        });
+      }
+    } 
+    else if (e.type === "DEATH") {
+      const target = this.players.get(e.targetId);
+      const tc = this.combatants.get(e.targetId);
+      if (target && tc) {
+        this.broadcast("playerDowned", { id: target.id, by: e.sourceId });
+        
+        tc.health.setMax(tc.health.maxHp, true); // Fill HP
+        tc.resources.mana = tc.resources.maxMana;
+        tc.invulnUntil = Date.now() + 2500;
+        tc.state.state = "IDLE";
+
+        const sx = this.TOWN_CENTER_X;
+        const sz = this.TOWN_CENTER_Z;
+        const sy = this.heightAt(sx, sz) + 8;
+
+        target.x = sx;
+        target.y = sy;
+        target.z = sz;
+        tc.pos.x = sx;
+        tc.pos.y = sy;
+        tc.pos.z = sz;
+
+        this.broadcast("playerRespawn", { 
+          id: target.id, 
+          x: sx, y: sy, z: sz, 
+          hp: tc.health.hp, maxHp: tc.health.maxHp, 
+          mana: tc.resources.mana, maxMana: tc.resources.maxMana 
+        });
+        
+        tc.onSync?.(tc.snapshot());
+      }
+    } 
+    else if (e.type === "DODGE") {
+      this.broadcast("playerDodge", { id: e.id, dir: e.dir });
+    } 
+    else if (e.type === "BLOCK") {
+      this.broadcast("playerBlock", { id: e.id, active: e.active });
+    }
+  }
+
+  // =========================
+  // Combatant Factory
+  // =========================
+  private buildCombatant(client: Client, pl: PlayerInfo, inv: InvState): Combatant {
+    const health = new HealthComponent(inv.stats.hp, inv.stats.maxHp);
+    const resources = new ResourceComponent(inv.stats.mana, inv.stats.maxMana, 0, 100);
+    
+    const archetype = (inv.stats.auraArchetype as any) || "BASIC";
+    const aura = new AuraComponent(archetype, 0, 0, 0);
+    
+    const status = new StatusComponent();
+    const cooldowns = new CooldownComponent();
+    const state = new StateComponent();
+    const equipment = new EquipmentComponent((slot) => {
+      const currentInv = this.inventories.get(pl.userId);
+      if (!currentInv) return 0;
+      const s = currentInv.slots[slot ?? -1] || null;
+      return s ? (s as any).id || 0 : 0;
+    });
+
+    const c: Combatant = {
+      id: client.sessionId,
+      faction: "PLAYER",
+      pos: { x: pl.x, y: pl.y, z: pl.z },
+      yaw: pl.yaw,
+      radius: 0.4,
+      height: 1.8,
+      
+      health, resources, aura, status, cooldowns, state, equipment,
+      
+      armor: 0,
+      resist: {},
+      critChance: 0.05,
+      critMult: 1.5,
+      maxPoise: 100,
+      poise: 100,
+      blockAngleDeg: 120,
+      blockMitigation: 0.5,
+      dodgeIframesMs: 400,
+      moveSpeedMul: 1.0,
+      invulnUntil: pl.invulnUntil,
+      
+      snapshot() {
+        return {
+          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
+          radius: this.radius, height: this.height, state: this.state.state,
+          hp: this.health.hp, maxHp: this.health.maxHp,
+          mana: this.resources.mana, maxMana: this.resources.maxMana,
+          aura: this.resources.aura, maxAura: this.resources.maxAura,
+          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
+          poise: this.poise, maxPoise: this.maxPoise,
+          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
+          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
+        };
+      },
+
+      onSync: (snap) => {
+        let changed = false;
+        
+        if (pl.hp !== snap.hp || pl.maxHp !== snap.maxHp || pl.mana !== snap.mana || pl.maxMana !== snap.maxMana) {
+          pl.hp = snap.hp;
+          pl.maxHp = snap.maxHp;
+          pl.mana = snap.mana;
+          pl.maxMana = snap.maxMana;
+          changed = true;
+        }
+
+        if (changed) {
+           const currentInv = this.getOrLoadInventory(pl.userId);
+           currentInv.stats.hp = pl.hp;
+           currentInv.stats.maxHp = pl.maxHp;
+           currentInv.stats.mana = pl.mana;
+           currentInv.stats.maxMana = pl.maxMana;
+           
+           this.saveInventory(pl.userId, currentInv);
+
+           const cl = this.clients.find(cli => cli.sessionId === pl.id);
+           if (cl) {
+             cl.send("statsUpdate", { 
+               hp: pl.hp, maxHp: pl.maxHp, 
+               mana: pl.mana, maxMana: pl.maxMana,
+               aura: snap.aura, maxAura: snap.maxAura, burnout: snap.burnout
+             });
+           }
+        }
+      }
+    };
+    
+    return c;
+  }
+
+  // =========================
   // Join/Leave
   // =========================
   onJoin(client: Client, options: any) {
@@ -1242,11 +1369,13 @@ export class MyRoom extends Room {
       maxHp: inv.stats.maxHp,
       mana: inv.stats.mana,
       maxMana: inv.stats.maxMana,
-      lastAttackAt: 0,
       invulnUntil: Date.now() + 1500, // spawn protection
     };
 
     this.players.set(client.sessionId, spawn);
+
+    const combatant = this.buildCombatant(client, spawn, inv);
+    this.combatants.set(client.sessionId, combatant);
 
     this.sendInvStateToClient(client, inv);
     client.send("worldMeta", { worldSeed: this.worldSeed });
@@ -1309,6 +1438,7 @@ export class MyRoom extends Room {
   onLeave(client: Client, code?: number) {
     console.log("➖ onLeave", client.sessionId, "code:", code);
     this.cancelMiningFor(client, "leave");
+    this.combatants.delete(client.sessionId);
     const existed = this.players.delete(client.sessionId);
     if (existed) this.broadcast("playerLeft", { id: client.sessionId });
   }
@@ -1317,6 +1447,7 @@ export class MyRoom extends Room {
     console.log("🧹 MyRoom disposed");
     this.players.clear();
     this.mining.clear();
+    this.combatants.clear();
   }
 
   // =========================
@@ -1526,8 +1657,10 @@ export class MyRoom extends Room {
       const maxMana = toInt(clamp(Number((statsIn as any)?.maxMana ?? defaultMaxMana), 0, 999999));
       const mana = toInt(clamp(Number((statsIn as any)?.mana ?? maxMana), 0, maxMana));
 
+      const auraArchetype = String((statsIn as any)?.auraArchetype ?? "BASIC");
+
       console.log("[INV] loaded", { userId, fp });
-      return { slots, cursor, stats: { hp, maxHp, mana, maxMana } };
+      return { slots, cursor, stats: { hp, maxHp, mana, maxMana, auraArchetype } };
     } catch (e) {
       console.warn("[INV] read failed", { userId, fp, e });
       return null;
@@ -1553,6 +1686,7 @@ export class MyRoom extends Room {
         maxHp: toInt(inv.stats.maxHp),
         mana: toInt(inv.stats.mana),
         maxMana: toInt(inv.stats.maxMana),
+        auraArchetype: String(inv.stats.auraArchetype),
       }
     };
     fs.writeFileSync(tmp, JSON.stringify(safe));
@@ -1583,11 +1717,14 @@ export class MyRoom extends Room {
         maxHp: defaultMaxHp,
         mana: defaultMaxMana,
         maxMana: defaultMaxMana,
+        auraArchetype: "BASIC"
       }
     };
 
-    // starter kit (tune as desired)
+    // starter kit
     inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
+    inv.slots[1] = { id: Items.STONE_SHADOW, count: 1 } as any;
+    inv.slots[2] = { id: Items.STONE_IRON, count: 1 } as any;
 
     this.inventories.set(userId, inv);
     this.saveInventory(userId, inv);
@@ -1609,35 +1746,6 @@ export class MyRoom extends Room {
       cursor: inv.cursor,
       stats: inv.stats 
     });
-  }
-
-  // =========================
-  // Stats Helpers (Mana)
-  // =========================
-  private tickManaRegen(): void {
-    if (this.MANA_REGEN_PER_SEC <= 0) return;
-
-    const dt = this.MANA_REGEN_TICK_MS / 1000;
-    const add = this.MANA_REGEN_PER_SEC * dt;
-
-    for (const pl of this.players.values()) {
-      if (pl.mana >= pl.maxMana) continue;
-
-      pl.mana = clamp(pl.mana + add, 0, pl.maxMana);
-
-      // persist when crossing an integer boundary
-      const manaInt = Math.floor(pl.mana);
-      const inv = this.getOrLoadInventory(pl.userId);
-      if (Math.floor(inv.stats.mana) !== manaInt) {
-        inv.stats.mana = pl.mana;
-        this.saveInventory(pl.userId, inv);
-
-        const client = this.clients.find(c => c.sessionId === pl.id);
-        if (client) {
-          client.send("statsUpdate", { hp: pl.hp, maxHp: pl.maxHp, mana: pl.mana, maxMana: pl.maxMana });
-        }
-      }
-    }
   }
 
   // =========================
@@ -1848,78 +1956,10 @@ export class MyRoom extends Room {
   // =========================
   // Combat Helpers
   // =========================
-  private dist2(a: Vec3, b: Vec3): number {
-    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-    return dx*dx + dy*dy + dz*dz;
-  }
-
-  private forwardFromYawPitch(yaw: number, pitch: number): Vec3 {
-    // yaw assumed radians
-    const cp = Math.cos(pitch);
-    return {
-      x: Math.sin(yaw) * cp,
-      y: -Math.sin(pitch),
-      z: Math.cos(yaw) * cp,
-    };
-  }
 
   private isCombatAllowedHere(x: number, z: number): boolean {
     // Same policy as mining/placing: no combat in town
     return !this.isInSafeZoneXZ(toInt(x), toInt(z));
-  }
-
-  private weaponDamage(inv: InvState, heldSlot: number): number {
-    // MVP: use tools as melee weapons (optional)
-    if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
-      const s = inv.slots[heldSlot] as any;
-      const id = toInt(s?.id ?? 0);
-      if (id === Items.WOOD_PICK) return 4;
-      if (id === Items.STONE_PICK) return 5;
-      if (id === Items.IRON_PICK) return 6;
-    }
-    return this.ATTACK_DAMAGE_BASE;
-  }
-
-  private findMeleeTarget(attacker: PlayerInfo, dir: Vec3): PlayerInfo | null {
-    // Eye position
-    const origin = { x: attacker.x, y: attacker.y + 1.55, z: attacker.z };
-
-    // Sample along a short ray and pick nearest player within ATTACK_RADIUS
-    const steps = 6;
-    let best: PlayerInfo | null = null;
-    let bestT = 999;
-
-    for (const p of this.players.values()) {
-      if (p.id === attacker.id) continue;
-      if (p.hp <= 0) continue;
-
-      // quick horizontal safe-zone gate
-      if (!this.isCombatAllowedHere(attacker.x, attacker.z)) return null;
-      if (!this.isCombatAllowedHere(p.x, p.z)) continue;
-
-      // simple nearest-to-ray sampling
-      for (let i = 1; i <= steps; i++) {
-        const t = (i / steps) * this.ATTACK_RANGE;
-        const sx = origin.x + dir.x * t;
-        const sy = origin.y + dir.y * t;
-        const sz = origin.z + dir.z * t;
-
-        const dx = p.x - sx;
-        const dy = (p.y + 1.0) - sy; // mid-body
-        const dz = p.z - sz;
-
-        const r2 = this.ATTACK_RADIUS * this.ATTACK_RADIUS;
-        if (dx*dx + dy*dy + dz*dz <= r2) {
-          if (t < bestT) {
-            bestT = t;
-            best = p;
-          }
-          break;
-        }
-      }
-    }
-
-    return best;
   }
 
   // =========================
@@ -3057,7 +3097,6 @@ export class MyRoom extends Room {
                 id: (picked.stack as any).id,
                 tier: picked.tool.tier,
                 slot: picked.slotIndex,
-                dur: (inv.slots[picked.slotIndex] as any)?.dur ?? 0,
               }
             : null,
           breakTimeMs: st.breakTimeMs,
