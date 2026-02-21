@@ -5,8 +5,7 @@
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects with Debug Logging and Culling Failsafes
- * FIXED: addCraftButton mkButton reference and dy distance calculation
+ * UPDATED: Visual Effects - Additive Blending & Depth Sorting Fixes
  */
 
 import { Engine } from "noa-engine";
@@ -811,8 +810,8 @@ function setupInventorySlots() {
   }
 }
 
-function addCraftButton(title: string, recipeId: string) {
-  const b = mkButton(title);
+function addCraftButton(titleText: string, recipeId: string) {
+  const b = mkButton(titleText);
   (b as any).__recipeId = recipeId;
 
   b.onclick = (e) => {
@@ -3006,10 +3005,10 @@ connect();
 /* ===============================
    12.5 Visual Effects (VFX)
 ================================ */
-const activeVFX: Array<{ mesh: BABYLON.Mesh; mat: BABYLON.StandardMaterial; life: number; maxLife: number }> = [];
+const activeVFX: Array<{ type: string; mesh: BABYLON.Mesh; mat: BABYLON.StandardMaterial; life: number; maxLife: number }> = [];
 
 function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: number) {
-  console.log("[VFX-DEBUG] spawnSkillVFX called for:", attackId, "at", x, y, z);
+  console.log("[VFX-DEBUG] Spawning magic:", attackId, "at", x, y, z);
   
   const scene = getStableScene();
   if (!scene) {
@@ -3020,19 +3019,23 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
   let mesh: BABYLON.Mesh;
   const mat = new BABYLON.StandardMaterial("vfxMat", scene);
   mat.disableLighting = true;
-  mat.alpha = 0.8;
   mat.backFaceCulling = false;
+  mat.alphaMode = BABYLON.Engine.ALPHA_ADD;
+  mat.alpha = 0.9;
   (mat as any).disableDepthWrite = true;
+  
+  let maxLife = 0.6;
 
   if (attackId === "AURA_SLASH") {
-    mesh = BABYLON.MeshBuilder.CreateTorus("slashVFX", { diameter: 4, thickness: 0.1, tessellation: 16 }, scene);
+    mesh = BABYLON.MeshBuilder.CreateTorus("slashVFX", { diameter: 4, thickness: 0.2, tessellation: 24 }, scene);
     mesh.scaling.y = 0.1; 
     mat.emissiveColor = new BABYLON.Color3(0, 1, 1); 
   } else if (attackId === "AURA_HEAVY") {
     mesh = BABYLON.MeshBuilder.CreateSphere("heavyVFX", { diameter: 3, segments: 16 }, scene);
     mat.emissiveColor = new BABYLON.Color3(1, 0, 1); 
+    maxLife = 0.8;
   } else if (attackId === "AURA_THRUST") {
-    mesh = BABYLON.MeshBuilder.CreateCylinder("thrustVFX", { height: 6, diameter: 0.4 }, scene);
+    mesh = BABYLON.MeshBuilder.CreateCylinder("thrustVFX", { height: 6, diameter: 0.6 }, scene);
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
   } else {
@@ -3042,7 +3045,7 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
 
   mesh.material = mat;
   mesh.isPickable = false;
-  
+  mesh.renderingGroupId = 2; 
   (mesh as any).isInFrustum = () => true;
   (mesh as any).alwaysSelectAsActiveMesh = true;
   
@@ -3057,7 +3060,7 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
   }
 
   console.log("[VFX-DEBUG] Mesh fully created and pushed to active array.");
-  activeVFX.push({ mesh, mat, life: 0, maxLife: 0.3 }); 
+  activeVFX.push({ type: attackId, mesh, mat, life: 0, maxLife }); 
 }
 
 /* ===============================
@@ -3093,17 +3096,20 @@ let lastTickMs = performance.now();
     vfx.life += dtSec;
     
     const progress = Math.min(1, vfx.life / vfx.maxLife);
-    vfx.mat.alpha = 0.8 * (1 - progress);
     
-    if (vfx.mesh.name === "slashVFX") {
-      vfx.mesh.scaling.x += dtSec * 15;
-      vfx.mesh.scaling.z += dtSec * 15;
-    } else if (vfx.mesh.name === "heavyVFX") {
+    if (progress > 0.5) {
+      vfx.mat.alpha = 0.9 * (1 - ((progress - 0.5) * 2));
+    }
+    
+    if (vfx.type === "AURA_SLASH") {
       vfx.mesh.scaling.x += dtSec * 8;
-      vfx.mesh.scaling.y += dtSec * 8;
       vfx.mesh.scaling.z += dtSec * 8;
-    } else if (vfx.mesh.name === "thrustVFX") {
+    } else if (vfx.type === "AURA_HEAVY") {
+      vfx.mesh.scaling.x += dtSec * 5;
+      vfx.mesh.scaling.y += dtSec * 5;
       vfx.mesh.scaling.z += dtSec * 5;
+    } else if (vfx.type === "AURA_THRUST") {
+      vfx.mesh.scaling.y += dtSec * 8; 
     }
 
     if (vfx.life >= vfx.maxLife) {
