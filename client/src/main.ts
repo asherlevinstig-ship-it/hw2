@@ -5,15 +5,14 @@
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects for Aura Skills
  */
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
-/*
- * IMPORTANT:
+/**
+ * ✅ IMPORTANT:
  * Put your shared items file INSIDE client/src so Vite can resolve it:
  * client/src/shared/items.ts
  */
@@ -82,10 +81,11 @@ coordsHUD.style.fontFamily = "monospace";
 coordsHUD.style.fontSize = "14px";
 coordsHUD.style.pointerEvents = "none";
 coordsHUD.style.userSelect = "none";
-coordsHUD.style.zIndex = "150";
+coordsHUD.style.zIndex = "150"; // above overlay
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
 
+// 3D Voxel-style bottom HUD for Stats
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
 statsHUD.style.bottom = "90px"; 
@@ -100,16 +100,19 @@ statsHUD.style.userSelect = "none";
 statsHUD.style.zIndex = "150";
 document.body.appendChild(statsHUD);
 
+// Health Bar Container
 const healthHUD = document.createElement("div");
 healthHUD.style.display = "flex";
 healthHUD.style.gap = "4px";
 statsHUD.appendChild(healthHUD);
 
+// Mana Bar Container
 const manaHUD = document.createElement("div");
 manaHUD.style.display = "flex";
 manaHUD.style.gap = "4px";
 statsHUD.appendChild(manaHUD);
 
+// Permanent HUD Hotbar (Always Visible)
 const hudHotbarRoot = document.createElement("div");
 hudHotbarRoot.style.position = "fixed";
 hudHotbarRoot.style.bottom = "10px";
@@ -121,6 +124,7 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
+// Helper to create a chunky 3D pixel block
 function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
   const el = document.createElement("div");
   el.style.width = "18px";
@@ -130,11 +134,14 @@ function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
   
   if (fillState === "full") {
     el.style.backgroundColor = color;
+    // 3D Bevel effect
     el.style.boxShadow = "inset -3px -3px 0px rgba(0,0,0,0.3), inset 3px 3px 0px rgba(255,255,255,0.4), 2px 2px 4px rgba(0,0,0,0.5)";
   } else if (fillState === "half") {
+    // Half-filled using a hard CSS gradient
     el.style.background = `linear-gradient(to right, ${color} 50%, rgba(0,0,0,0.6) 50%)`;
     el.style.boxShadow = "inset 2px 2px 0px rgba(255,255,255,0.3), 2px 2px 4px rgba(0,0,0,0.5)"; 
   } else {
+    // Empty socket
     el.style.backgroundColor = "rgba(0,0,0,0.6)";
     el.style.boxShadow = "inset 2px 2px 5px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.5)";
   }
@@ -348,21 +355,25 @@ function hasPointerLock(): boolean {
 /* ===============================
    5. Register Blocks & Materials (16x16 VERTICAL STRIP ATLAS)
 ================================ */
+// Block IDs (MUST match server)
 const GRASS_ID = 1;
 const DIRT_ID = 2;
 const STONE_ID = 3;
 const WOOD_ID = 4;
 const LEAVES_ID = 5;
 
+// Minerals + bedrock (MUST match server)
 const BEDROCK_ID = 6;
 const COAL_ORE_ID = 30;
 const IRON_ORE_ID = 31;
 const GOLD_ORE_ID = 32;
 const DIAMOND_ORE_ID = 33;
 
+// Biome blocks (MUST match server)
 const SAND_ID = 11;
 const SNOW_ID = 12;
 
+// Cave Biome blocks (MUST match server)
 const DEEPSLATE_ID = 90;
 const TUFF_ID = 91;
 const MOSS_ID = 92;
@@ -372,11 +383,13 @@ const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;
 const CRYSTAL_ID = 97;
 
+// Vite-safe asset URL
 const TERRAIN_ATLAS_URL = new URL(
   "./assets/terrain_atlas.png",
   import.meta.url
 ).href;
 
+// Atlas indices
 const ATLAS = {
   GRASS_TOP: 0,
   GRASS_SIDE: 1,
@@ -437,6 +450,7 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
+// Blocks
 noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
@@ -461,9 +475,10 @@ noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
 noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
 noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 
-/* ===============================
-   5.1 Debug Tools: ID Registry & Structure Validation
-================================ */
+// =========================================================
+// ✅ DEBUG TOOLS: ID Registry & Structure Validation
+// =========================================================
+
 const REGISTERED_BLOCK_IDS = new Set<number>([
   GRASS_ID, DIRT_ID, STONE_ID, WOOD_ID, LEAVES_ID, BEDROCK_ID,
   COAL_ORE_ID, IRON_ORE_ID, GOLD_ORE_ID, DIAMOND_ORE_ID,
@@ -472,7 +487,7 @@ const REGISTERED_BLOCK_IDS = new Set<number>([
 ]);
 
 function isRegisteredBlockId(id: number) {
-  return id === 0 || REGISTERED_BLOCK_IDS.has(id); 
+  return id === 0 || REGISTERED_BLOCK_IDS.has(id); // 0 = air
 }
 
 (globalThis as any).__debugStructureIds = (structure: any) => {
@@ -535,18 +550,21 @@ let invState: InvState = {
 let selectedHotbar = 0;
 let viewModelEnabled = true;
 
+// Remote overlay toggles
 let remotePlayersEnabled = true;
-let remoteXray = true; 
+let remoteXray = true; // always visible by default (debug)
 
+// Particle debug toggle (forces particles at player head)
 let DEBUG_PARTICLES_ALWAYS = false;
 
+// MVP Combat State
 let myHp = 20;
 let myMaxHp = 20;
 let myMana = 50;
 let myMaxMana = 50;
 
-const remoteFlashes = new Map<string, number>(); 
-const remoteSwings = new Map<string, number>();  
+const remoteFlashes = new Map<string, number>(); // Hit red material flash
+const remoteSwings = new Map<string, number>();  // Arm swing anims
 
 /* ===============================
    6.0 Safe Zone state
@@ -572,6 +590,7 @@ let vmDebug = true;
 let vmTuning = false;
 let vmMirrorX = true;
 
+// Tunable base placement & pose
 let vmBaseXMul = 0.74;
 let vmBaseY = -0.68;
 
@@ -579,6 +598,7 @@ let vmRotX = 0.22;
 let vmRotY = 0.1;
 let vmRotZ = -0.58;
 
+// responsiveness multipliers
 let vmPitchMul = 0.45;
 let vmPunchRotMul = 0.75;
 let vmTurnSwayMulY = 0.35;
@@ -587,7 +607,7 @@ let vmPunchMoveX = 0.12;
 let vmPunchMoveY = 0.08;
 
 /* ===============================
-   6.2 Remote state
+   6.2 Remote state (DECLARED EARLY to avoid TDZ)
 ================================ */
 type NetTransform = { x: number; y: number; z: number; yaw?: number };
 const netTransforms = new Map<string, NetTransform>();
@@ -597,7 +617,7 @@ let lastSnapshotAt = 0;
 let lastTransformAt = 0;
 
 /* ===============================
-   6.3 Drops state
+   6.3 Drops state (server authoritative)
 ================================ */
 type Drop = {
   dropId: string;
@@ -610,9 +630,11 @@ type Drop = {
 };
 const drops = new Map<string, Drop>();
 
+// Visual meshes for drops
 const dropMeshes = new Map<string, BABYLON.AbstractMesh>();
 let dropSceneUid: string | number | null = null;
 
+// Pickup throttling
 let lastPickupScanAt = 0;
 let lastPickupSentAt = 0;
 const pickupSentRecently = new Map<string, number>();
@@ -622,7 +644,7 @@ const pickupSentRecently = new Map<string, number>();
 ================================ */
 const slotEls: HTMLDivElement[] = [];
 const backpackEls: HTMLDivElement[] = [];
-const hudSlotEls: HTMLDivElement[] = []; 
+const hudSlotEls: HTMLDivElement[] = []; // Array for HUD Hotbar Slots
 
 function itemName(id: number): string {
   const def: ItemDef | undefined = (ITEM_DEFS as any)[id];
@@ -651,8 +673,10 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.style.cursor = "pointer";
 
   if (stack && stack.id > 0 && stack.count > 0) {
+    // Determine if it is a Skill Gem vs a physical item
     const isSkill = stack.id >= 1000 && stack.id <= 2000;
     
+    // Style skill gems differently
     if (isSkill) {
       el.style.border = isSelected ? "2px solid #00FFFF" : "1px solid rgba(0,255,255,0.4)";
       el.style.background = "radial-gradient(circle, rgba(0,100,150,0.6) 0%, rgba(0,0,0,0.4) 100%)";
@@ -672,6 +696,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     
     el.appendChild(name);
 
+    // Only show stack count for physical items
     if (!isSkill) {
       const count = document.createElement("div");
       count.textContent = `×${stack.count}`;
@@ -683,6 +708,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       el.appendChild(count);
     }
 
+    // Show durability if present
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
@@ -704,14 +730,17 @@ function renderInventoryUI() {
       ? stackLabel(invState.cursor).split("\n")[0]
       : "(empty)";
 
+  // 1. Render Inventory Window Hotbar (inside "I" menu)
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     renderSlot(slotEls[i], invState.slots[i], i === selectedHotbar);
   }
 
+  // 2. Render Backpack
   for (let i = 0; i < BACKPACK_SLOTS; i++) {
     renderSlot(backpackEls[i], invState.slots[HOTBAR_SLOTS + i], false);
   }
 
+  // 3. Render Always-Visible HUD Hotbar
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     renderSlot(hudSlotEls[i], invState.slots[i], i === selectedHotbar);
   }
@@ -750,6 +779,7 @@ function renderInventoryUI() {
 
 function sendInvClick(slot: number, button: "L" | "R", shift: boolean) {
   if (!room) return;
+  // Use the new structured addressing protocol requested
   const isHotbar = slot < HOTBAR_SLOTS;
   room.send("invClick", { 
     area: isHotbar ? "hotbar" : "inv", 
@@ -797,10 +827,12 @@ function setupInventorySlots() {
     backpackGrid.appendChild(el);
   }
 
+  // Setup HUD Hotbar Slots (Click to Select)
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     const el = document.createElement("div");
     el.onmousedown = (e) => {
       e.preventDefault();
+      // Clicking HUD selects that slot
       selectedHotbar = i;
       renderInventoryUI();
       updateOverlay();
@@ -920,6 +952,7 @@ function updateStatsHUD() {
   healthHUD.innerHTML = "";
   manaHUD.innerHTML = "";
 
+  // Health (1 block per 2 HP)
   const hpContainers = Math.max(1, Math.floor(myMaxHp / 2));
   for (let i = 0; i < hpContainers; i++) {
     const hpVal = myHp - (i * 2);
@@ -927,17 +960,18 @@ function updateStatsHUD() {
     if (hpVal >= 2) state = "full";
     else if (hpVal === 1) state = "half";
     
-    healthHUD.appendChild(createStatBlock(state, "#ff2222")); 
+    healthHUD.appendChild(createStatBlock(state, "#ff2222")); // Vibrant Red
   }
 
+  // Mana (1 block per 10 Mana)
   const manaContainers = Math.max(1, Math.floor(myMaxMana / 10));
   for (let i = 0; i < manaContainers; i++) {
     const mVal = myMana - (i * 10);
     let state: "full" | "half" | "empty" = "empty";
     if (mVal >= 10) state = "full";
-    else if (mVal >= 5) state = "half"; 
+    else if (mVal >= 5) state = "half"; // Shows half-mana chunks!
     
-    manaHUD.appendChild(createStatBlock(state, "#2277ff")); 
+    manaHUD.appendChild(createStatBlock(state, "#2277ff")); // Bright Blue
   }
 }
 
@@ -1011,6 +1045,7 @@ function updateOverlay(extraLine = "") {
    6.6 Key handling
 ================================ */
 document.addEventListener("keydown", (e) => {
+  // Hotbar 1-5
   const key = Number.parseInt(e.key, 10);
   if (Number.isFinite(key) && key >= 1 && key <= HOTBAR_SLOTS) {
     selectedHotbar = key - 1;
@@ -1068,6 +1103,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// Capture-phase handler for tuning keys ONLY
 window.addEventListener(
   "keydown",
   (e: KeyboardEvent) => {
@@ -1095,11 +1131,13 @@ window.addEventListener(
 
     const fineMove = e.shiftKey ? 0.003 : 0.01;
 
+    // Move anchor
     if (e.key === "ArrowLeft") vmBaseXMul -= fineMove;
     if (e.key === "ArrowRight") vmBaseXMul += fineMove;
     if (e.key === "ArrowUp") vmBaseY += fineMove;
     if (e.key === "ArrowDown") vmBaseY -= fineMove;
 
+    // Rotate base pose
     const rStep = e.shiftKey ? 0.02 : 0.05;
     if (e.key === "7") vmRotX -= rStep;
     if (e.key === "8") vmRotX += rStep;
@@ -1118,7 +1156,7 @@ window.addEventListener(
 );
 
 /* ===============================
-   7. World Streaming
+   7. World Streaming (Path B)
 ================================ */
 type PendingChunk = {
   data: any;
@@ -1146,9 +1184,10 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
   sendChunkRequest({ id, chunkSize: CS, x, y, z });
 });
 
-/* ===============================
-   7.1 Voxel Decoding
-================================ */
+// =========================================================
+// ✅ DEBUG TOOLS: VOXEL DECODING & CHUNK ANALYSIS
+// =========================================================
+
 function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[] | null {
   if (msgVoxels == null) return null;
 
@@ -1217,6 +1256,8 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
 }
 
 function debugChunkVoxels(_label: string, _voxels: number[], _expected: number) {
+  // Intentionally left blank to avoid heavy console spam.
+  // Kept here in case we need to debug chunk payloads later.
 }
 
 function warnUnknownIdsInChunk(voxels: number[]) {
@@ -1289,7 +1330,8 @@ function getTargetInfo() {
   };
 }
 
-let punchT = 1; 
+/* ---- Viewmodel punch ---- */
+let punchT = 1; // 0..1
 function triggerPunch() {
   punchT = 0;
 }
@@ -1307,7 +1349,7 @@ type MineProgressMsg = {
   reason?: string;
 };
 
-let miningHeld = false; 
+let miningHeld = false; // physical hold state
 let miningTarget: { x: number; y: number; z: number } | null = null;
 let miningProgress: MineProgressMsg | null = null;
 
@@ -1322,6 +1364,7 @@ const MINE_RESEND_SAME_TARGET_MS = 250;
 let lastMinePunchAt = 0;
 const MINE_PUNCH_INTERVAL_MS = 180;
 
+// MVP Combat Helper
 function sendAttack() {
   if (!room) return;
   const yaw = readNoaYaw();
@@ -1371,12 +1414,13 @@ function setInvOpen(open: boolean) {
   if (invOpen) cancelMiningLocal("inventory_open");
 }
 
+/* Hold-to-mine start / Attack trigger (press) */
 noa.inputs.down.on("fire", () => {
   if (!hasPointerLock()) return;
   if (invOpen) return;
 
   triggerPunch();
-  sendAttack(); 
+  sendAttack(); // ⚔️ COMPONENT COMBAT SEND
 
   const target = getTargetInfo();
   if (!target) return;
@@ -1456,7 +1500,7 @@ noa.inputs.down.on("alt-fire", () => {
 });
 
 /* ===============================
-   9. Babylon scene access
+   9. Babylon scene access (NOA scene)
 ================================ */
 function getNoaScene(): BABYLON.Scene | null {
   const r = (noa as any).rendering as any;
@@ -2193,7 +2237,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 }
 
 /* ===============================
-   10.1 Viewmodel animation
+   10.1 Viewmodel animation (screenspace)
 ================================ */
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
@@ -2561,26 +2605,28 @@ function updateRemoteMeshes() {
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
 
+      // Combat hit flash
       if (mat) {
         const flashTime = remoteFlashes.get(id);
         if (flashTime && now - flashTime < 200) {
-          mat.emissiveColor.set(1, 0.3, 0.3); 
+          mat.emissiveColor.set(1, 0.3, 0.3); // Bright hit flash
         } else {
-          mat.emissiveColor.set(1, 0.15, 0.15); 
+          mat.emissiveColor.set(1, 0.15, 0.15); // Normal
         }
       }
 
+      // Combat swing anim
       let armPitch = 0;
       const swingTime = remoteSwings.get(id);
       if (swingTime && now - swingTime < 300) {
         const st = (now - swingTime) / 300;
-        armPitch = Math.sin(st * Math.PI) * 1.5; 
+        armPitch = Math.sin(st * Math.PI) * 1.5; // Swing arm forward
       }
 
       parts.legL.rotation.x = swing * 0.55;
       parts.legR.rotation.x = -swing * 0.55;
       parts.armL.rotation.x = -swing * 0.35;
-      parts.armR.rotation.x = swing * 0.35 - armPitch; 
+      parts.armR.rotation.x = swing * 0.35 - armPitch; // Apply punch swing to right arm
     }
   }
 }
@@ -2628,6 +2674,7 @@ async function connect() {
 
     room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
 
+    // safe zone settings from server
     room.onMessage("safeZone", (m: any) => {
       if (!m || typeof m !== "object") return;
       const x = Number((m as any).x);
@@ -2639,6 +2686,9 @@ async function connect() {
       updateOverlay("Safe Zone received");
     });
 
+    // ============================================
+    // COMBAT WIRING & STATS UPDATE
+    // ============================================
     room.onMessage("statsUpdate", (msg: any) => {
       myHp = Number(msg.hp ?? myHp);
       myMaxHp = Number(msg.maxHp ?? myMaxHp);
@@ -2655,12 +2705,15 @@ async function connect() {
       const targetId = msg.targetId;
       const attackerId = msg.attackerId;
       
+      // trigger swing animation for the attacker
       remoteSwings.set(attackerId, performance.now());
 
       if (targetId === room?.sessionId) {
+        // I GOT HIT!
         myHp = msg.hpLeft;
         myMaxHp = msg.maxHp ?? myMaxHp;
         
+        // CSS Red Flash Overlay
         const flash = document.createElement("div");
         flash.style.position = "absolute";
         flash.style.inset = "0";
@@ -2677,40 +2730,15 @@ async function connect() {
 
         console.log(`[COMBAT] Took ${msg.damage} dmg! HP: ${myHp}`);
       } else {
+        // SOMEONE ELSE GOT HIT (flash their model)
         remoteFlashes.set(targetId, performance.now());
       }
       updateOverlay();
     });
 
     room.onMessage("playerSwing", (msg: any) => {
-      let x = 0;
-      let y = 0;
-      let z = 0;
-      let yaw = 0;
-
-      if (msg.id === room?.sessionId) {
-        const pos = noa.ents.getPosition(noa.playerEntity);
-        if (pos) {
-          x = pos[0];
-          y = pos[1];
-          z = pos[2];
-          yaw = readNoaYaw();
-        }
-      } else {
-        if (msg.id) {
-          remoteSwings.set(msg.id, performance.now());
-          const t = netTransforms.get(msg.id);
-          if (t) {
-            x = t.x;
-            y = t.y;
-            z = t.z;
-            yaw = t.yaw ?? 0;
-          }
-        }
-      }
-
-      if (msg.attackId) {
-        spawnSkillVFX(msg.attackId, x, y, z, yaw);
+      if (msg.id && msg.id !== room?.sessionId) {
+        remoteSwings.set(msg.id, performance.now());
       }
     });
 
@@ -2734,6 +2762,7 @@ async function connect() {
         } catch {}
       }
     });
+    // ============================================
 
     room.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
@@ -2784,6 +2813,7 @@ async function connect() {
       lastMineSendAt = 0;
     });
 
+    // Handle new stats in invState
     room.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
       const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
@@ -2832,6 +2862,7 @@ async function connect() {
       updateOverlay();
     });
 
+    // Chat Message Event Listener for Awakening Stone
     room.onMessage("chatMessage", (msg: any) => {
       if (msg && typeof msg.msg === "string") {
         updateOverlay(`<span style="color: #00FFFF; font-weight: bold; text-shadow: 0 0 5px #00FFFF;">*** ${msg.msg} ***</span>`);
@@ -2988,54 +3019,6 @@ initUI();
 connect();
 
 /* ===============================
-   12.5 Visual Effects (VFX)
-================================ */
-const activeVFX: Array<{ mesh: BABYLON.Mesh; mat: BABYLON.StandardMaterial; life: number; maxLife: number }> = [];
-
-function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: number) {
-  const scene = getStableScene();
-  if (!scene) return;
-
-  let mesh: BABYLON.Mesh;
-  const mat = new BABYLON.StandardMaterial("vfxMat", scene);
-  mat.disableLighting = true;
-  mat.alpha = 0.8;
-  mat.backFaceCulling = false;
-  (mat as any).disableDepthWrite = true;
-
-  if (attackId === "AURA_SLASH") {
-    mesh = BABYLON.MeshBuilder.CreateTorus("slashVFX", { diameter: 4, thickness: 0.1, tessellation: 16 }, scene);
-    mesh.scaling.y = 0.1; 
-    mat.emissiveColor = new BABYLON.Color3(0, 1, 1); 
-  } else if (attackId === "AURA_HEAVY") {
-    mesh = BABYLON.MeshBuilder.CreateSphere("heavyVFX", { diameter: 3, segments: 16 }, scene);
-    mat.emissiveColor = new BABYLON.Color3(1, 0, 1); 
-  } else if (attackId === "AURA_THRUST") {
-    mesh = BABYLON.MeshBuilder.CreateCylinder("thrustVFX", { height: 6, diameter: 0.4 }, scene);
-    mesh.rotation.x = Math.PI / 2; 
-    mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
-  } else {
-    return; 
-  }
-
-  mesh.material = mat;
-  mesh.isPickable = false;
-  
-  const forwardX = Math.sin(yaw);
-  const forwardZ = Math.cos(yaw);
-  
-  mesh.position.set(x + forwardX * 1.5, y + 1.2, z + forwardZ * 1.5);
-  
-  if (attackId === "AURA_THRUST") {
-    mesh.rotation.y = yaw;
-    mesh.position.set(x + forwardX * 3, y + 1.2, z + forwardZ * 3);
-  }
-
-  activeVFX.push({ mesh, mat, life: 0, maxLife: 0.3 }); 
-}
-
-
-/* ===============================
    13. Tick loop
 ================================ */
 let tickCount = 0;
@@ -3061,31 +3044,6 @@ let lastTickMs = performance.now();
 
     updateCrackVisual(scene);
     updateMiningParticles(scene);
-  }
-
-  for (let i = activeVFX.length - 1; i >= 0; i--) {
-    const vfx = activeVFX[i];
-    vfx.life += dtSec;
-    
-    const progress = Math.min(1, vfx.life / vfx.maxLife);
-    vfx.mat.alpha = 0.8 * (1 - progress);
-    
-    if (vfx.mesh.name === "slashVFX") {
-      vfx.mesh.scaling.x += dtSec * 15;
-      vfx.mesh.scaling.z += dtSec * 15;
-    } else if (vfx.mesh.name === "heavyVFX") {
-      vfx.mesh.scaling.x += dtSec * 8;
-      vfx.mesh.scaling.y += dtSec * 8;
-      vfx.mesh.scaling.z += dtSec * 8;
-    } else if (vfx.mesh.name === "thrustVFX") {
-      vfx.mesh.scaling.z += dtSec * 5;
-    }
-
-    if (vfx.life >= vfx.maxLife) {
-      vfx.mat.dispose();
-      vfx.mesh.dispose();
-      activeVFX.splice(i, 1);
-    }
   }
 
   updateViewmodel(dtSec);
