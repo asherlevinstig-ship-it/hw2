@@ -6,6 +6,7 @@
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
+ * NEW: Procedural Blocky Mobs with GlowLayer, Emissive Eyes, and Rage Mode
  */
 
 import { Engine } from "noa-engine";
@@ -589,7 +590,14 @@ let vmPunchMoveY = 0.08;
 /* ===============================
    6.2 Remote state
 ================================ */
-type NetTransform = { x: number; y: number; z: number; yaw?: number };
+type NetTransform = { 
+  x: number; 
+  y: number; 
+  z: number; 
+  yaw?: number;
+  hp?: number;
+  maxHp?: number;
+};
 const netTransforms = new Map<string, NetTransform>();
 
 let lastSnapshotIds: string[] = [];
@@ -2271,6 +2279,7 @@ function updateViewmodel(dtSec: number) {
 let rpReady = false;
 let rpScene: BABYLON.Scene | null = null;
 let rpCam: BABYLON.FreeCamera | null = null;
+let rpGlowLayer: BABYLON.GlowLayer | null = null;
 
 const remoteMeshes = new Map<string, BABYLON.TransformNode>();
 const remoteMats = new Map<string, BABYLON.StandardMaterial>();
@@ -2301,18 +2310,12 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
   rpCam.rotationQuaternion = new BABYLON.Quaternion();
   rpScene.activeCamera = rpCam;
 
-  rpReady = true;
-}
+  if (!rpGlowLayer) {
+    rpGlowLayer = new BABYLON.GlowLayer("rpGlow", rpScene);
+    rpGlowLayer.intensity = 1.0;
+  }
 
-function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardMaterial {
-  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, scene);
-  mat.disableLighting = true;
-  mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
-  mat.diffuseColor = mat.emissiveColor.clone();
-  mat.specularColor = new BABYLON.Color3(0, 0, 0);
-  mat.backFaceCulling = false;
-  (mat as any).fogEnabled = false;
-  return mat;
+  rpReady = true;
 }
 
 function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
@@ -2321,28 +2324,35 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
+  const isMob = id.includes("dummy") || id.includes("mob");
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
+  (root as any).__isMob = isMob;
 
-  const BODY_W = 0.65;
-  const BODY_H = 0.95;
-  const BODY_D = 0.32;
-
-  const HEAD = 0.55;
-
-  const ARM_W = 0.2;
-  const ARM_H = 0.85;
-  const ARM_D = 0.2;
-
-  const LEG_W = 0.22;
-  const LEG_H = 0.9;
-  const LEG_D = 0.22;
+  // Modulate dimensions based on whether it is a player or mob
+  const BODY_W = isMob ? 0.8 : 0.65;
+  const BODY_H = isMob ? 1.0 : 0.95;
+  const BODY_D = isMob ? 0.6 : 0.32;
+  const HEAD   = isMob ? 0.6 : 0.55;
+  const ARM_W  = isMob ? 0.25 : 0.2;
+  const ARM_H  = isMob ? 0.85 : 0.85;
+  const ARM_D  = isMob ? 0.25 : 0.2;
+  const LEG_W  = isMob ? 0.25 : 0.22;
+  const LEG_H  = isMob ? 0.7 : 0.9;
+  const LEG_D  = isMob ? 0.25 : 0.22;
 
   const legTopY = LEG_H;
   const bodyBottomY = legTopY;
   const bodyCenterY = bodyBottomY + BODY_H * 0.5;
   const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
 
-  const mat = makeRemoteMaterial(id, rpScene);
+  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, rpScene);
+  mat.disableLighting = true;
+  mat.emissiveColor = isMob ? new BABYLON.Color3(0.15, 0.15, 0.18) : new BABYLON.Color3(1, 0.15, 0.15);
+  mat.diffuseColor = mat.emissiveColor.clone();
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.backFaceCulling = false;
+  (mat as any).fogEnabled = false;
+
   remoteMats.set(id, mat);
 
   const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
@@ -2388,7 +2398,48 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   (legL as any).isInFrustum = () => true;
   (legR as any).isInFrustum = () => true;
 
-  (root as any).__parts = { armL, armR, legL, legR };
+  let eyeMat: BABYLON.StandardMaterial | null = null;
+  let auraMesh: BABYLON.Mesh | null = null;
+  let auraMat: BABYLON.StandardMaterial | null = null;
+
+  if (isMob) {
+    eyeMat = new BABYLON.StandardMaterial(`eyeMat:${id}`, rpScene);
+    eyeMat.disableLighting = true;
+    eyeMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1); 
+    (eyeMat as any).fogEnabled = false;
+
+    const eyeL = BABYLON.MeshBuilder.CreateBox(`eyeL:${id}`, { size: 0.12 }, rpScene);
+    eyeL.parent = head;
+    eyeL.position.set(-0.15, 0.1, HEAD / 2 + 0.01);
+    eyeL.material = eyeMat;
+    eyeL.isPickable = false;
+    (eyeL as any).isInFrustum = () => true;
+
+    const eyeR = BABYLON.MeshBuilder.CreateBox(`eyeR:${id}`, { size: 0.12 }, rpScene);
+    eyeR.parent = head;
+    eyeR.position.set(0.15, 0.1, HEAD / 2 + 0.01);
+    eyeR.material = eyeMat;
+    eyeR.isPickable = false;
+    (eyeR as any).isInFrustum = () => true;
+
+    auraMat = new BABYLON.StandardMaterial(`auraMat:${id}`, rpScene);
+    auraMat.disableLighting = true;
+    auraMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1);
+    auraMat.alpha = 0.3;
+    auraMat.alphaMode = BABYLON.Constants.ALPHA_ADD;
+    auraMat.disableDepthWrite = true;
+    auraMat.backFaceCulling = false;
+    (auraMat as any).fogEnabled = false;
+
+    auraMesh = BABYLON.MeshBuilder.CreateCylinder(`aura:${id}`, { height: 2.2, diameter: 1.8, tessellation: 16 }, rpScene);
+    auraMesh.parent = root;
+    auraMesh.position.set(0, 1.1, 0);
+    auraMesh.material = auraMat;
+    auraMesh.isPickable = false;
+    (auraMesh as any).isInFrustum = () => true;
+  }
+
+  (root as any).__parts = { armL, armR, legL, legR, eyeMat, auraMesh, auraMat };
   (root as any).__walkPhase = 0;
 
   remoteMeshes.set(id, root);
@@ -2485,6 +2536,7 @@ function updateRemoteMeshes() {
   }
 
   const now = performance.now();
+  const dtSec = 1 / 60; // Approximate delta for smooth visual spins
 
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
@@ -2515,15 +2567,38 @@ function updateRemoteMeshes() {
     remotePrevPos.set(id, prev);
     remotePrevAt.set(id, now);
 
-    const parts = (root as any).__parts as
-      | { armL: BABYLON.Mesh; armR: BABYLON.Mesh; legL: BABYLON.Mesh; legR: BABYLON.Mesh }
-      | undefined;
-
+    const isMob = (root as any).__isMob;
+    const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
+
+    // HP & Rage State Processing
+    const hp = t.hp ?? 100;
+    const maxHp = t.maxHp ?? 100;
+    const healthPct = hp / Math.max(1, maxHp);
+    const isRaging = isMob && healthPct < 0.5;
+
+    const targetScale = isRaging ? 1.3 : 1.0;
+    root.scaling.x += (targetScale - root.scaling.x) * 0.1;
+    root.scaling.y += (targetScale - root.scaling.y) * 0.1;
+    root.scaling.z += (targetScale - root.scaling.z) * 0.1;
+
+    if (isMob && parts.eyeMat && parts.auraMat) {
+      if (isRaging) {
+        parts.eyeMat.emissiveColor.set(1, 0.5, 0); // Furious Orange
+        parts.auraMat.emissiveColor.set(1, 0.5, 0);
+        parts.auraMat.alpha = 0.5 + Math.sin(now * 0.01) * 0.2; 
+        if (parts.auraMesh) parts.auraMesh.rotation.y += dtSec * 3;
+      } else {
+        parts.eyeMat.emissiveColor.set(1, 0.1, 0.1); // Menacing Red
+        parts.auraMat.emissiveColor.set(1, 0.1, 0.1);
+        parts.auraMat.alpha = 0.2 + Math.sin(now * 0.005) * 0.1;
+        if (parts.auraMesh) parts.auraMesh.rotation.y += dtSec * 1;
+      }
+    }
 
     if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
       const moving = speed > 0.15;
-      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
+      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * (isRaging ? 0.25 : 0.18);
 
       let phase = (root as any).__walkPhase as number;
       if (!Number.isFinite(phase)) phase = 0;
@@ -2533,7 +2608,7 @@ function updateRemoteMeshes() {
 
       const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
 
-      if (mat) {
+      if (mat && !isMob) {
         const flashTime = remoteFlashes.get(id);
         if (flashTime && now - flashTime < 200) {
           mat.emissiveColor.set(1, 0.3, 0.3); 
@@ -2645,6 +2720,11 @@ async function connect() {
         setTimeout(() => flash.remove(), 350);
       } else {
         remoteFlashes.set(targetId, performance.now());
+        const t = netTransforms.get(targetId);
+        if (t) {
+          t.hp = msg.hpLeft;
+          t.maxHp = msg.maxHp;
+        }
       }
       updateOverlay();
     });
