@@ -6,7 +6,7 @@
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
- * NEW: Procedural Blocky Mobs with GlowLayer, Emissive Eyes, and Rage Mode
+ * NEW: Procedural Deepslate Golem Mobs with Orbiting Crystals & Rage Mode
  */
 
 import { Engine } from "noa-engine";
@@ -2312,10 +2312,21 @@ function ensureRpScene(noaScene: BABYLON.Scene) {
 
   if (!rpGlowLayer) {
     rpGlowLayer = new BABYLON.GlowLayer("rpGlow", rpScene);
-    rpGlowLayer.intensity = 1.0;
+    rpGlowLayer.intensity = 0.4;
   }
 
   rpReady = true;
+}
+
+function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardMaterial {
+  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, scene);
+  mat.disableLighting = true;
+  mat.emissiveColor = new BABYLON.Color3(1, 0.15, 0.15);
+  mat.diffuseColor = mat.emissiveColor.clone();
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.backFaceCulling = false;
+  (mat as any).fogEnabled = false;
+  return mat;
 }
 
 function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
@@ -2328,118 +2339,127 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
   (root as any).__isMob = isMob;
 
-  // Modulate dimensions based on whether it is a player or mob
-  const BODY_W = isMob ? 0.8 : 0.65;
-  const BODY_H = isMob ? 1.0 : 0.95;
-  const BODY_D = isMob ? 0.6 : 0.32;
-  const HEAD   = isMob ? 0.6 : 0.55;
-  const ARM_W  = isMob ? 0.25 : 0.2;
-  const ARM_H  = isMob ? 0.85 : 0.85;
-  const ARM_D  = isMob ? 0.25 : 0.2;
-  const LEG_W  = isMob ? 0.25 : 0.22;
-  const LEG_H  = isMob ? 0.7 : 0.9;
-  const LEG_D  = isMob ? 0.25 : 0.22;
-
-  const legTopY = LEG_H;
-  const bodyBottomY = legTopY;
-  const bodyCenterY = bodyBottomY + BODY_H * 0.5;
-  const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
-
-  const mat = new BABYLON.StandardMaterial(`rpMat:${id}`, rpScene);
-  mat.disableLighting = true;
-  mat.emissiveColor = isMob ? new BABYLON.Color3(0.15, 0.15, 0.18) : new BABYLON.Color3(1, 0.15, 0.15);
-  mat.diffuseColor = mat.emissiveColor.clone();
-  mat.specularColor = new BABYLON.Color3(0, 0, 0);
-  mat.backFaceCulling = false;
-  (mat as any).fogEnabled = false;
-
-  remoteMats.set(id, mat);
-
-  const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
-  body.parent = root;
-  body.position.set(0, bodyCenterY, 0);
-  body.material = mat;
-  body.isPickable = false;
-
-  const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
-  head.parent = root;
-  head.position.set(0, headCenterY, 0);
-  head.material = mat;
-  head.isPickable = false;
-
-  const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
-  armL.parent = root;
-  armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
-  armL.material = mat;
-  armL.isPickable = false;
-
-  const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
-  armR.parent = root;
-  armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
-  armR.material = mat;
-  armR.isPickable = false;
-
-  const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
-  legL.parent = root;
-  legL.position.set(-0.16, LEG_H * 0.5, 0);
-  legL.material = mat;
-  legL.isPickable = false;
-
-  const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
-  legR.parent = root;
-  legR.position.set(0.16, LEG_H * 0.5, 0);
-  legR.material = mat;
-  legR.isPickable = false;
-
-  (body as any).isInFrustum = () => true;
-  (head as any).isInFrustum = () => true;
-  (armL as any).isInFrustum = () => true;
-  (armR as any).isInFrustum = () => true;
-  (legL as any).isInFrustum = () => true;
-  (legR as any).isInFrustum = () => true;
-
-  let eyeMat: BABYLON.StandardMaterial | null = null;
-  let auraMesh: BABYLON.Mesh | null = null;
-  let auraMat: BABYLON.StandardMaterial | null = null;
+  let parts: any = {};
 
   if (isMob) {
-    eyeMat = new BABYLON.StandardMaterial(`eyeMat:${id}`, rpScene);
+    const mobMat = getDropAtlasMaterial(rpScene, ATLAS.DEEPSLATE);
+    
+    const body = BABYLON.MeshBuilder.CreateBox(`mobBody:${id}`, { width: 0.9, height: 0.9, depth: 0.6 }, rpScene);
+    body.position.set(0, 0.9, 0); 
+    
+    const head = BABYLON.MeshBuilder.CreateBox(`mobHead:${id}`, { width: 0.5, height: 0.5, depth: 0.5 }, rpScene);
+    head.position.set(0, 1.5, 0.15); 
+
+    const armL = BABYLON.MeshBuilder.CreateBox(`mobArmL:${id}`, { width: 0.35, height: 1.1, depth: 0.35 }, rpScene);
+    armL.position.set(-0.65, 1.0, 0);
+
+    const armR = BABYLON.MeshBuilder.CreateBox(`mobArmR:${id}`, { width: 0.35, height: 1.1, depth: 0.35 }, rpScene);
+    armR.position.set(0.65, 1.0, 0);
+
+    const legL = BABYLON.MeshBuilder.CreateBox(`mobLegL:${id}`, { width: 0.3, height: 0.5, depth: 0.3 }, rpScene);
+    legL.position.set(-0.25, 0.25, 0);
+
+    const legR = BABYLON.MeshBuilder.CreateBox(`mobLegR:${id}`, { width: 0.3, height: 0.5, depth: 0.3 }, rpScene);
+    legR.position.set(0.25, 0.25, 0);
+
+    [body, head, armL, armR, legL, legR].forEach(m => {
+        m.parent = root;
+        m.material = mobMat;
+        m.isPickable = false;
+        (m as any).isInFrustum = () => true;
+    });
+
+    const eyeMat = new BABYLON.StandardMaterial(`mobEyeMat:${id}`, rpScene);
     eyeMat.disableLighting = true;
     eyeMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1); 
     (eyeMat as any).fogEnabled = false;
 
-    const eyeL = BABYLON.MeshBuilder.CreateBox(`eyeL:${id}`, { size: 0.12 }, rpScene);
+    const eyeL = BABYLON.MeshBuilder.CreateBox(`mobEyeL:${id}`, { size: 0.1 }, rpScene);
     eyeL.parent = head;
-    eyeL.position.set(-0.15, 0.1, HEAD / 2 + 0.01);
+    eyeL.position.set(-0.12, 0.05, 0.26);
     eyeL.material = eyeMat;
-    eyeL.isPickable = false;
-    (eyeL as any).isInFrustum = () => true;
 
-    const eyeR = BABYLON.MeshBuilder.CreateBox(`eyeR:${id}`, { size: 0.12 }, rpScene);
+    const eyeR = BABYLON.MeshBuilder.CreateBox(`mobEyeR:${id}`, { size: 0.1 }, rpScene);
     eyeR.parent = head;
-    eyeR.position.set(0.15, 0.1, HEAD / 2 + 0.01);
+    eyeR.position.set(0.12, 0.05, 0.26);
     eyeR.material = eyeMat;
-    eyeR.isPickable = false;
-    (eyeR as any).isInFrustum = () => true;
 
-    auraMat = new BABYLON.StandardMaterial(`auraMat:${id}`, rpScene);
-    auraMat.disableLighting = true;
-    auraMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1);
-    auraMat.alpha = 0.3;
-    auraMat.alphaMode = BABYLON.Constants.ALPHA_ADD;
-    auraMat.disableDepthWrite = true;
-    auraMat.backFaceCulling = false;
-    (auraMat as any).fogEnabled = false;
+    const orbiters: BABYLON.Mesh[] = [];
+    for(let i=0; i<3; i++) {
+        const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, rpScene);
+        orb.material = eyeMat; 
+        orb.parent = root;
+        orb.isPickable = false;
+        (orb as any).isInFrustum = () => true;
+        orbiters.push(orb);
+    }
 
-    auraMesh = BABYLON.MeshBuilder.CreateCylinder(`aura:${id}`, { height: 2.2, diameter: 1.8, tessellation: 16 }, rpScene);
-    auraMesh.parent = root;
-    auraMesh.position.set(0, 1.1, 0);
-    auraMesh.material = auraMat;
-    auraMesh.isPickable = false;
-    (auraMesh as any).isInFrustum = () => true;
+    parts = { body, head, armL, armR, legL, legR, eyeMat, orbiters };
+
+  } else {
+    const BODY_W = 0.65;
+    const BODY_H = 0.95;
+    const BODY_D = 0.32;
+    const HEAD = 0.55;
+    const ARM_W = 0.2;
+    const ARM_H = 0.85;
+    const ARM_D = 0.2;
+    const LEG_W = 0.22;
+    const LEG_H = 0.9;
+    const LEG_D = 0.22;
+
+    const legTopY = LEG_H;
+    const bodyBottomY = legTopY;
+    const bodyCenterY = bodyBottomY + BODY_H * 0.5;
+    const headCenterY = bodyBottomY + BODY_H + HEAD * 0.5;
+
+    const mat = makeRemoteMaterial(id, rpScene);
+    remoteMats.set(id, mat);
+
+    const body = BABYLON.MeshBuilder.CreateBox(`remoteBody:${id}`, { width: BODY_W, height: BODY_H, depth: BODY_D }, rpScene);
+    body.parent = root;
+    body.position.set(0, bodyCenterY, 0);
+    body.material = mat;
+    body.isPickable = false;
+
+    const head = BABYLON.MeshBuilder.CreateBox(`remoteHead:${id}`, { width: HEAD, height: HEAD, depth: HEAD }, rpScene);
+    head.parent = root;
+    head.position.set(0, headCenterY, 0);
+    head.material = mat;
+    head.isPickable = false;
+
+    const armL = BABYLON.MeshBuilder.CreateBox(`remoteArmL:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
+    armL.parent = root;
+    armL.position.set(-(BODY_W * 0.5 + ARM_W * 0.5) + 0.02, bodyBottomY + BODY_H * 0.65, 0);
+    armL.material = mat;
+    armL.isPickable = false;
+
+    const armR = BABYLON.MeshBuilder.CreateBox(`remoteArmR:${id}`, { width: ARM_W, height: ARM_H, depth: ARM_D }, rpScene);
+    armR.parent = root;
+    armR.position.set(BODY_W * 0.5 + ARM_W * 0.5 - 0.02, bodyBottomY + BODY_H * 0.65, 0);
+    armR.material = mat;
+    armR.isPickable = false;
+
+    const legL = BABYLON.MeshBuilder.CreateBox(`remoteLegL:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
+    legL.parent = root;
+    legL.position.set(-0.16, LEG_H * 0.5, 0);
+    legL.material = mat;
+    legL.isPickable = false;
+
+    const legR = BABYLON.MeshBuilder.CreateBox(`remoteLegR:${id}`, { width: LEG_W, height: LEG_H, depth: LEG_D }, rpScene);
+    legR.parent = root;
+    legR.position.set(0.16, LEG_H * 0.5, 0);
+    legR.material = mat;
+    legR.isPickable = false;
+
+    [body, head, armL, armR, legL, legR].forEach(m => {
+        (m as any).isInFrustum = () => true;
+    });
+
+    parts = { armL, armR, legL, legR };
   }
 
-  (root as any).__parts = { armL, armR, legL, legR, eyeMat, auraMesh, auraMat };
+  (root as any).__parts = parts;
   (root as any).__walkPhase = 0;
 
   remoteMeshes.set(id, root);
@@ -2536,7 +2556,6 @@ function updateRemoteMeshes() {
   }
 
   const now = performance.now();
-  const dtSec = 1 / 60; // Approximate delta for smooth visual spins
 
   for (const [id, t] of netTransforms.entries()) {
     if (id === room.sessionId) continue;
@@ -2571,63 +2590,98 @@ function updateRemoteMeshes() {
     const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
 
-    // HP & Rage State Processing
-    const hp = t.hp ?? 100;
-    const maxHp = t.maxHp ?? 100;
-    const healthPct = hp / Math.max(1, maxHp);
-    const isRaging = isMob && healthPct < 0.5;
+    if (isMob) {
+      const hp = t.hp ?? 100;
+      const maxHp = t.maxHp ?? 100;
+      const healthPct = hp / Math.max(1, maxHp);
+      const isRaging = healthPct < 0.5;
 
-    const targetScale = isRaging ? 1.3 : 1.0;
-    root.scaling.x += (targetScale - root.scaling.x) * 0.1;
-    root.scaling.y += (targetScale - root.scaling.y) * 0.1;
-    root.scaling.z += (targetScale - root.scaling.z) * 0.1;
+      const targetScale = isRaging ? 1.25 : 1.0;
+      root.scaling.x += (targetScale - root.scaling.x) * 0.1;
+      root.scaling.y += (targetScale - root.scaling.y) * 0.1;
+      root.scaling.z += (targetScale - root.scaling.z) * 0.1;
 
-    if (isMob && parts.eyeMat && parts.auraMat) {
-      if (isRaging) {
-        parts.eyeMat.emissiveColor.set(1, 0.5, 0); // Furious Orange
-        parts.auraMat.emissiveColor.set(1, 0.5, 0);
-        parts.auraMat.alpha = 0.5 + Math.sin(now * 0.01) * 0.2; 
-        if (parts.auraMesh) parts.auraMesh.rotation.y += dtSec * 3;
-      } else {
-        parts.eyeMat.emissiveColor.set(1, 0.1, 0.1); // Menacing Red
-        parts.auraMat.emissiveColor.set(1, 0.1, 0.1);
-        parts.auraMat.alpha = 0.2 + Math.sin(now * 0.005) * 0.1;
-        if (parts.auraMesh) parts.auraMesh.rotation.y += dtSec * 1;
-      }
-    }
-
-    if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
-      const moving = speed > 0.15;
-      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * (isRaging ? 0.25 : 0.18);
-
-      let phase = (root as any).__walkPhase as number;
-      if (!Number.isFinite(phase)) phase = 0;
-
-      phase += moving ? phaseSpeed : 0.02;
-      (root as any).__walkPhase = phase;
-
-      const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
-
-      if (mat && !isMob) {
-        const flashTime = remoteFlashes.get(id);
-        if (flashTime && now - flashTime < 200) {
-          mat.emissiveColor.set(1, 0.3, 0.3); 
+      if (parts.eyeMat) {
+        if (isRaging) {
+          parts.eyeMat.emissiveColor.set(1, 0.4, 0); 
         } else {
-          mat.emissiveColor.set(1, 0.15, 0.15); 
+          parts.eyeMat.emissiveColor.set(1, 0.05, 0.05); 
         }
       }
 
-      let armPitch = 0;
-      const swingTime = remoteSwings.get(id);
-      if (swingTime && now - swingTime < 300) {
-        const st = (now - swingTime) / 300;
-        armPitch = Math.sin(st * Math.PI) * 1.5; 
+      if (parts.orbiters) {
+        const orbitSpeed = isRaging ? 0.006 : 0.002;
+        const orbitRadius = isRaging ? 1.4 : 1.0;
+        const heightBob = Math.sin(now * 0.003) * 0.2;
+        
+        parts.orbiters.forEach((orb: BABYLON.Mesh, i: number) => {
+            const angle = (now * orbitSpeed) + (i * ((Math.PI * 2) / parts.orbiters.length));
+            orb.position.set(
+                Math.cos(angle) * orbitRadius,
+                0.8 + heightBob + (i * 0.15),
+                Math.sin(angle) * orbitRadius
+            );
+            orb.rotation.x += dt * 2;
+            orb.rotation.y += dt * 3;
+        });
       }
 
-      parts.legL.rotation.x = swing * 0.55;
-      parts.legR.rotation.x = -swing * 0.55;
-      parts.armL.rotation.x = -swing * 0.35;
-      parts.armR.rotation.x = swing * 0.35 - armPitch; 
+      const moving = speed > 0.15;
+      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * (isRaging ? 0.25 : 0.15);
+      let phase = (root as any).__walkPhase as number;
+      if (!Number.isFinite(phase)) phase = 0;
+      phase += moving ? phaseSpeed : 0.02;
+      (root as any).__walkPhase = phase;
+
+      const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
+      
+      let armPitch = 0;
+      const swingTime = remoteSwings.get(id);
+      if (swingTime && now - swingTime < 350) {
+          const st = (now - swingTime) / 350;
+          armPitch = Math.sin(st * Math.PI) * 2.0; 
+      }
+
+      if (parts.legL && parts.legR && parts.armL && parts.armR) {
+          parts.legL.rotation.x = swing;
+          parts.legR.rotation.x = -swing;
+          parts.armL.rotation.x = -swing * 0.5;
+          parts.armR.rotation.x = swing * 0.5 - armPitch;
+      }
+    } else {
+      if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
+        const moving = speed > 0.15;
+        const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
+
+        let phase = (root as any).__walkPhase as number;
+        if (!Number.isFinite(phase)) phase = 0;
+
+        phase += moving ? phaseSpeed : 0.02;
+        (root as any).__walkPhase = phase;
+
+        const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
+
+        if (mat) {
+          const flashTime = remoteFlashes.get(id);
+          if (flashTime && now - flashTime < 200) {
+            mat.emissiveColor.set(1, 0.3, 0.3); 
+          } else {
+            mat.emissiveColor.set(1, 0.15, 0.15); 
+          }
+        }
+
+        let armPitch = 0;
+        const swingTime = remoteSwings.get(id);
+        if (swingTime && now - swingTime < 300) {
+          const st = (now - swingTime) / 300;
+          armPitch = Math.sin(st * Math.PI) * 1.5; 
+        }
+
+        parts.legL.rotation.x = swing * 0.55;
+        parts.legR.rotation.x = -swing * 0.55;
+        parts.armL.rotation.x = -swing * 0.35;
+        parts.armR.rotation.x = swing * 0.35 - armPitch; 
+      }
     }
   }
 }
@@ -2938,6 +2992,8 @@ async function connect() {
         netTransforms.set(id, {
           x, y, z,
           yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+          hp: typeof (p as any).hp === "number" ? (p as any).hp : undefined,
+          maxHp: typeof (p as any).maxHp === "number" ? (p as any).maxHp : undefined,
         });
       }
       lastTransformAt = performance.now();
@@ -2956,9 +3012,10 @@ async function connect() {
       netTransforms.set(id, {
         x, y, z,
         yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+        hp: typeof (p as any).hp === "number" ? (p as any).hp : undefined,
+        maxHp: typeof (p as any).maxHp === "number" ? (p as any).maxHp : undefined,
       });
       lastTransformAt = performance.now();
-      updateOverlay(`playerJoined: ${id}`);
     });
 
     room.onMessage("playerLeft", (p: any) => {
@@ -2967,7 +3024,6 @@ async function connect() {
       netTransforms.delete(id);
       removeRemoteMesh(id);
       lastTransformAt = performance.now();
-      updateOverlay(`playerLeft: ${id}`);
     });
 
     room.onMessage("playerTransformOther", (p: any) => {
@@ -2979,10 +3035,18 @@ async function connect() {
       const z = Number((p as any).z);
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
 
-      netTransforms.set(id, {
-        x, y, z,
-        yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-      });
+      const t = netTransforms.get(id);
+      if (t) {
+        t.x = x;
+        t.y = y;
+        t.z = z;
+        if (typeof (p as any).yaw === "number") t.yaw = (p as any).yaw;
+      } else {
+        netTransforms.set(id, {
+          x, y, z,
+          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+        });
+      }
       lastTransformAt = performance.now();
     });
 
@@ -2999,10 +3063,22 @@ async function connect() {
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
 
         ids.push(id);
-        netTransforms.set(id, {
-          x, y, z,
-          yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
-        });
+        const existing = netTransforms.get(id);
+        if (existing) {
+          existing.x = x;
+          existing.y = y;
+          existing.z = z;
+          if (typeof (p as any).yaw === "number") existing.yaw = (p as any).yaw;
+          if (typeof (p as any).hp === "number") existing.hp = (p as any).hp;
+          if (typeof (p as any).maxHp === "number") existing.maxHp = (p as any).maxHp;
+        } else {
+          netTransforms.set(id, {
+            x, y, z,
+            yaw: typeof (p as any).yaw === "number" ? (p as any).yaw : undefined,
+            hp: typeof (p as any).hp === "number" ? (p as any).hp : undefined,
+            maxHp: typeof (p as any).maxHp === "number" ? (p as any).maxHp : undefined,
+          });
+        }
       }
       lastSnapshotIds = ids;
       lastSnapshotAt = performance.now();
