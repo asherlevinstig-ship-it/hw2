@@ -5,7 +5,7 @@
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects - Additive Blending & Depth Sorting Fixes
+ * UPDATED: Visual Effects with Forced Visibility, LayerMasks, and Debug Box
  */
 
 import { Engine } from "noa-engine";
@@ -3008,7 +3008,7 @@ connect();
 const activeVFX: Array<{ type: string; mesh: BABYLON.Mesh; mat: BABYLON.StandardMaterial; life: number; maxLife: number }> = [];
 
 function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: number) {
-  console.log("[VFX-DEBUG] Spawning magic:", attackId, "at", x, y, z);
+  console.log("[VFX-DEBUG] spawnSkillVFX called for:", attackId, "at", x, y, z);
   
   const scene = getStableScene();
   if (!scene) {
@@ -3016,26 +3016,48 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
     return;
   }
 
+  console.log("[VFX-DEBUG] VFX scene uid", (scene as any).uid, "cam", scene.activeCamera?.name);
+  console.log("[VFX-DEBUG] VFX cam pos", scene.activeCamera?.position?.toString());
+  console.log("[VFX-DEBUG] world cam layerMask", scene.activeCamera?.layerMask);
+
+  const uid = `${attackId}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+  const dbg = BABYLON.MeshBuilder.CreateBox(`DBG_VFX_BOX_${uid}`, { size: 2 }, scene);
+  dbg.position.set(x, y + 2, z);
+  dbg.layerMask = scene.activeCamera?.layerMask ?? 0xFFFFFFFF;
+
+  const dbgMat = new BABYLON.StandardMaterial(`DBG_MAT_${uid}`, scene);
+  dbgMat.emissiveColor = new BABYLON.Color3(1, 0, 0);
+  dbg.material = dbgMat;
+
+  setTimeout(() => {
+    try { dbg.dispose(); } catch {}
+    try { dbgMat.dispose(); } catch {}
+  }, 2000);
+
   let mesh: BABYLON.Mesh;
-  const mat = new BABYLON.StandardMaterial("vfxMat", scene);
+  const mat = new BABYLON.StandardMaterial(`vfxMat_${uid}`, scene);
   mat.disableLighting = true;
   mat.backFaceCulling = false;
-  mat.alphaMode = BABYLON.Engine.ALPHA_ADD;
-  mat.alpha = 0.9;
-  (mat as any).disableDepthWrite = true;
+  
+  mat.alpha = 1.0;
+  mat.alphaMode = BABYLON.Constants.ALPHA_ADD;
+  
+  mat.disableDepthWrite = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
   
   let maxLife = 0.6;
 
   if (attackId === "AURA_SLASH") {
-    mesh = BABYLON.MeshBuilder.CreateTorus("slashVFX", { diameter: 4, thickness: 0.2, tessellation: 24 }, scene);
+    mesh = BABYLON.MeshBuilder.CreateTorus(`slashVFX_${uid}`, { diameter: 4, thickness: 0.2, tessellation: 24 }, scene);
     mesh.scaling.y = 0.1; 
     mat.emissiveColor = new BABYLON.Color3(0, 1, 1); 
   } else if (attackId === "AURA_HEAVY") {
-    mesh = BABYLON.MeshBuilder.CreateSphere("heavyVFX", { diameter: 3, segments: 16 }, scene);
+    mesh = BABYLON.MeshBuilder.CreateSphere(`heavyVFX_${uid}`, { diameter: 3, segments: 16 }, scene);
     mat.emissiveColor = new BABYLON.Color3(1, 0, 1); 
     maxLife = 0.8;
   } else if (attackId === "AURA_THRUST") {
-    mesh = BABYLON.MeshBuilder.CreateCylinder("thrustVFX", { height: 6, diameter: 0.6 }, scene);
+    mesh = BABYLON.MeshBuilder.CreateCylinder(`thrustVFX_${uid}`, { height: 6, diameter: 0.6 }, scene);
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
   } else {
@@ -3045,9 +3067,10 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
 
   mesh.material = mat;
   mesh.isPickable = false;
-  mesh.renderingGroupId = 2; 
+  mesh.renderingGroupId = 3; 
+  mesh.layerMask = scene.activeCamera?.layerMask ?? 0xFFFFFFFF;
+  mesh.alwaysSelectAsActiveMesh = true;
   (mesh as any).isInFrustum = () => true;
-  (mesh as any).alwaysSelectAsActiveMesh = true;
   
   const forwardX = Math.sin(yaw);
   const forwardZ = Math.cos(yaw);
@@ -3098,7 +3121,7 @@ let lastTickMs = performance.now();
     const progress = Math.min(1, vfx.life / vfx.maxLife);
     
     if (progress > 0.5) {
-      vfx.mat.alpha = 0.9 * (1 - ((progress - 0.5) * 2));
+      vfx.mat.alpha = 1.0 * (1 - ((progress - 0.5) * 2));
     }
     
     if (vfx.type === "AURA_SLASH") {
