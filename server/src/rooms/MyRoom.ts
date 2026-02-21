@@ -7,7 +7,7 @@
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
-// NEW: Target Dummy Mob Spawning & Rubber-band AI
+// NEW: Target Dummy Mob Spawning & Aggro/Chase AI
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -446,24 +446,75 @@ export class MyRoom extends Room {
       this.combat.tick(dt);
       lastCombatTick = now;
 
-      // Dummy Rubber-band AI (Slides back to spawn if knocked away)
+      // -----------------------------------------
+      // Upgraded Mob AI: Aggro & Chase
+      // -----------------------------------------
       for (const mob of this.mobs.values()) {
         const c = this.combatants.get(mob.id);
-        if (!c || c.health.isDead()) continue;
+        if (!c || c.health.isDead() || c.state.isStaggered()) continue;
 
-        const dx = mob.spawnX - c.pos.x;
-        const dy = mob.spawnY - c.pos.y;
-        const dz = mob.spawnZ - c.pos.z;
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        
-        if (dist > 0.05) {
-          c.pos.x += (dx / dist) * Math.min(dist, 0.08); 
-          c.pos.y += (dy / dist) * Math.min(dist, 0.08);
-          c.pos.z += (dz / dist) * Math.min(dist, 0.08);
+        let nearestPlayerId: string | null = null;
+        let closestDist = 12.0; // Aggro Radius
+
+        // 1. Scan for closest player
+        for (const pl of this.players.values()) {
+          const pdx = pl.x - c.pos.x;
+          const pdy = pl.y - c.pos.y;
+          const pdz = pl.z - c.pos.z;
+          const dist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+          
+          if (dist < closestDist) {
+            closestDist = dist;
+            nearestPlayerId = pl.id;
+          }
+        }
+
+        let isMoving = false;
+
+        // 2. State: CHASE
+        if (nearestPlayerId) {
+          const target = this.players.get(nearestPlayerId)!;
+          const dx = target.x - c.pos.x;
+          const dz = target.z - c.pos.z;
+          const dist2D = Math.sqrt(dx * dx + dz * dz);
+
+          // Face the player
+          mob.yaw = Math.atan2(dx, dz);
+          c.yaw = mob.yaw;
+
+          if (dist2D > 1.8) { // Stop moving if within attack reach
+            const speed = 0.08 * c.moveSpeedMul;
+            c.pos.x += (dx / dist2D) * speed;
+            c.pos.z += (dz / dist2D) * speed;
+            isMoving = true;
+          } else {
+            // STATE: ATTACK
+            if (c.state.canStartAttack()) {
+               this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
+            }
+          }
+        } 
+        // 3. State: RETURN TO SPAWN (Rubber-band fallback)
+        else {
+          const dx = mob.spawnX - c.pos.x;
+          const dy = mob.spawnY - c.pos.y;
+          const dz = mob.spawnZ - c.pos.z;
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+          if (dist > 1.0) {
+            mob.yaw = Math.atan2(dx, dz);
+            c.yaw = mob.yaw;
+            c.pos.x += (dx / dist) * Math.min(dist, 0.05); 
+            c.pos.z += (dz / dist) * Math.min(dist, 0.05);
+            isMoving = true;
+          }
+        }
+
+        // Sync Transform if changed
+        if (isMoving) {
           mob.x = c.pos.x;
           mob.y = c.pos.y;
           mob.z = c.pos.z;
-          
           this.broadcast("playerTransformOther", { id: mob.id, x: mob.x, y: mob.y, z: mob.z, yaw: mob.yaw });
         }
       }
@@ -1334,7 +1385,7 @@ export class MyRoom extends Room {
       if (buf.byteLength !== expected) {
         console.warn("[WORLD] chunk file wrong size, ignoring:", fp, { got: buf.byteLength, expected });
         return null;
-      }
+        }
       const out = new Uint8Array(expected);
       out.set(buf);
       return out;

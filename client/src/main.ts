@@ -1,11 +1,11 @@
 /* client/src/main.ts
- * FULL FILE - with Beacon, Debug Tools, TS Fixes AND HUD FIX
+ * FULL FILE - with Beacon, TS Fixes AND HUD FIX
  * UPDATED: Added Always-Visible Bottom Hotbar
  * UPDATED: Moved Stats HUD up to accommodate Hotbar
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * FIXED: VFX routed through rpScene to bypass NOA camera matrix offsets
+ * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  */
 
 import { Engine } from "noa-engine";
@@ -568,7 +568,7 @@ function isInSafeZoneXZ(x: number, z: number): boolean {
 /* ===============================
    6.1 Viewmodel Debug/Tuning State
 ================================ */
-let vmDebug = true;
+let vmDebug = false;
 let vmTuning = false;
 let vmMirrorX = true;
 
@@ -998,7 +998,6 @@ function updateOverlay(extraLine = "") {
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
     [K] Toggle DEBUG_PARTICLES_ALWAYS<br>
-    [L] Trigger Local VFX (Debug)<br>
     <span style="opacity:.9">Remote debug:</span><br>
     <span style="opacity:.9">netTransforms=${netTransforms.size} closest=${closestStr}</span><br>
     <span style="opacity:.9">lastSnapshot=${snapAge} lastTransform=${xformAge}</span><br>
@@ -1065,15 +1064,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "k" || e.key === "K") {
     DEBUG_PARTICLES_ALWAYS = !DEBUG_PARTICLES_ALWAYS;
     updateOverlay(DEBUG_PARTICLES_ALWAYS ? "DEBUG particles forced ON" : "DEBUG particles forced OFF");
-    return;
-  }
-
-  if (e.key === "l" || e.key === "L") {
-    const pos = noa.ents.getPosition(noa.playerEntity);
-    const yaw = readNoaYaw();
-    console.log("[VFX-DEBUG] Firing manual local trigger at", pos, "yaw", yaw);
-    spawnSkillVFX("AURA_SLASH", pos[0], pos[1], pos[2], yaw);
-    updateOverlay("Local VFX Triggered");
     return;
   }
 });
@@ -1226,27 +1216,6 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
   return null;
 }
 
-function debugChunkVoxels(_label: string, _voxels: number[], _expected: number) {
-}
-
-function warnUnknownIdsInChunk(voxels: number[]) {
-  const unknown = new Map<number, number>();
-  const N = Math.min(voxels.length, 60000);
-
-  for (let i = 0; i < N; i++) {
-    const v = voxels[i] | 0;
-    if (!isRegisteredBlockId(v)) {
-      unknown.set(v, (unknown.get(v) ?? 0) + 1);
-    }
-  }
-
-  if (unknown.size) {
-    console.warn("[CHUNK] contains unknown block IDs", {
-      unknown: Array.from(unknown.entries()).sort((a, b) => b[1] - a[1]).slice(0, 20),
-    });
-  }
-}
-
 function applyChunkFromServer(msg: any) {
   if (!msg || typeof msg.id !== "string") return;
 
@@ -1261,9 +1230,6 @@ function applyChunkFromServer(msg: any) {
     console.warn("[CHUNK] decode failed", msg.id);
     return;
   }
-
-  debugChunkVoxels(msg.id, voxels, expected);
-  warnUnknownIdsInChunk(voxels);
 
   const data = pending.data;
 
@@ -2624,8 +2590,6 @@ async function connect() {
     room = await colyseus.joinOrCreate("my_room", { userId });
     (globalThis as any).room = room;
 
-    console.log("[NET] joined room", { sessionId: room.sessionId, userId });
-
     updateOverlay();
 
     for (const req of queuedRequests.values()) {
@@ -2641,7 +2605,6 @@ async function connect() {
       const r = Number((m as any).r);
       if (!isFiniteNum(x) || !isFiniteNum(z) || !isFiniteNum(r)) return;
       safeZone = { x, z, r };
-      console.log("[SAFE] safeZone received", safeZone);
       updateOverlay("Safe Zone received");
     });
 
@@ -2654,7 +2617,7 @@ async function connect() {
     });
 
     room.onMessage("useManaResult", (msg: any) => {
-      if (!msg.ok) console.log("[MANA] Failed:", msg.reason);
+      if (!msg.ok) return;
     });
 
     room.onMessage("playerHit", (msg: any) => {
@@ -2680,8 +2643,6 @@ async function connect() {
           flash.style.opacity = "0";
         });
         setTimeout(() => flash.remove(), 350);
-
-        console.log(`[COMBAT] Took ${msg.damage} dmg! HP: ${myHp}`);
       } else {
         remoteFlashes.set(targetId, performance.now());
       }
@@ -2722,9 +2683,7 @@ async function connect() {
 
     room.onMessage("attackResult", (msg: any) => {
       if (!msg.ok) {
-        console.log(`[COMBAT] Attack failed: ${msg.reason}`);
-      } else if (msg.hit) {
-        console.log(`[COMBAT] Hit target ${msg.targetId} for ${msg.damage} dmg!`);
+        // Silent fail for normal gameplay
       }
     });
 
@@ -2736,7 +2695,6 @@ async function connect() {
         myMaxMana = msg.maxMana ?? myMaxMana;
         try {
           noa.ents.setPosition(noa.playerEntity, [msg.x, msg.y, msg.z]);
-          console.log("[COMBAT] Respawned at safe zone.");
         } catch {}
       }
     });
@@ -2968,7 +2926,6 @@ async function connect() {
       }
       lastSnapshotIds = ids;
       lastSnapshotAt = performance.now();
-      updateOverlay("playersSnapshot received");
     });
 
     room.onMessage("youJoined", (p: any) => {
