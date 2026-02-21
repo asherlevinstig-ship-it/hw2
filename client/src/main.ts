@@ -5,7 +5,8 @@
  * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects for Aura Skills
+ * UPDATED: Visual Effects with Debug Logging and Culling Failsafes
+ * FIXED: addCraftButton mkButton reference and dy distance calculation
  */
 
 import { Engine } from "noa-engine";
@@ -998,6 +999,7 @@ function updateOverlay(extraLine = "") {
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
     [K] Toggle DEBUG_PARTICLES_ALWAYS<br>
+    [L] Trigger Local VFX (Debug)<br>
     <span style="opacity:.9">Remote debug:</span><br>
     <span style="opacity:.9">netTransforms=${netTransforms.size} closest=${closestStr}</span><br>
     <span style="opacity:.9">lastSnapshot=${snapAge} lastTransform=${xformAge}</span><br>
@@ -1064,6 +1066,15 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "k" || e.key === "K") {
     DEBUG_PARTICLES_ALWAYS = !DEBUG_PARTICLES_ALWAYS;
     updateOverlay(DEBUG_PARTICLES_ALWAYS ? "DEBUG particles forced ON" : "DEBUG particles forced OFF");
+    return;
+  }
+
+  if (e.key === "l" || e.key === "L") {
+    const pos = noa.ents.getPosition(noa.playerEntity);
+    const yaw = readNoaYaw();
+    console.log("[VFX-DEBUG] Firing manual local trigger at", pos, "yaw", yaw);
+    spawnSkillVFX("AURA_SLASH", pos[0], pos[1], pos[2], yaw);
+    updateOverlay("Local VFX Triggered");
     return;
   }
 });
@@ -2683,6 +2694,8 @@ async function connect() {
     });
 
     room.onMessage("playerSwing", (msg: any) => {
+      console.log("[VFX] Received playerSwing event from server:", msg);
+      
       let x = 0;
       let y = 0;
       let z = 0;
@@ -2710,7 +2723,10 @@ async function connect() {
       }
 
       if (msg.attackId) {
+        console.log("[VFX] Attempting to spawn network skill:", msg.attackId, "at", x, y, z);
         spawnSkillVFX(msg.attackId, x, y, z, yaw);
+      } else {
+        console.warn("[VFX] playerSwing received but no attackId was provided.");
       }
     });
 
@@ -2993,8 +3009,13 @@ connect();
 const activeVFX: Array<{ mesh: BABYLON.Mesh; mat: BABYLON.StandardMaterial; life: number; maxLife: number }> = [];
 
 function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: number) {
+  console.log("[VFX-DEBUG] spawnSkillVFX called for:", attackId, "at", x, y, z);
+  
   const scene = getStableScene();
-  if (!scene) return;
+  if (!scene) {
+    console.warn("[VFX-DEBUG] Failed to get stable scene.");
+    return;
+  }
 
   let mesh: BABYLON.Mesh;
   const mat = new BABYLON.StandardMaterial("vfxMat", scene);
@@ -3015,11 +3036,15 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
   } else {
+    console.log("[VFX-DEBUG] attackId not recognized for VFX rendering:", attackId);
     return; 
   }
 
   mesh.material = mat;
   mesh.isPickable = false;
+  
+  (mesh as any).isInFrustum = () => true;
+  (mesh as any).alwaysSelectAsActiveMesh = true;
   
   const forwardX = Math.sin(yaw);
   const forwardZ = Math.cos(yaw);
@@ -3031,9 +3056,9 @@ function spawnSkillVFX(attackId: string, x: number, y: number, z: number, yaw: n
     mesh.position.set(x + forwardX * 3, y + 1.2, z + forwardZ * 3);
   }
 
+  console.log("[VFX-DEBUG] Mesh fully created and pushed to active array.");
   activeVFX.push({ mesh, mat, life: 0, maxLife: 0.3 }); 
 }
-
 
 /* ===============================
    13. Tick loop
