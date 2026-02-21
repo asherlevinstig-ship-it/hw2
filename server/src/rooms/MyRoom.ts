@@ -7,7 +7,7 @@
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
-// NEW: Target Dummy Mob Spawning & Aggro/Chase AI
+// NEW: Target Dummy Mob Spawning + Voxel Physics (Gravity & Jumping) & Aggro AI
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -81,7 +81,6 @@ type PlayerInfo = {
   invulnUntil: number;
 };
 
-// --- NEW: Mob Data Structure ---
 type MobInfo = {
   id: string;
   x: number;
@@ -93,6 +92,7 @@ type MobInfo = {
   spawnX: number;
   spawnY: number;
   spawnZ: number;
+  vy: number; // Vertical velocity for gravity and jumping
 };
 
 type ItemStack = SharedItemStack;
@@ -447,16 +447,41 @@ export class MyRoom extends Room {
       lastCombatTick = now;
 
       // -----------------------------------------
-      // Upgraded Mob AI: Aggro & Chase
+      // Upgraded Mob AI: Aggro, Chase & Voxel Physics
       // -----------------------------------------
       for (const mob of this.mobs.values()) {
         const c = this.combatants.get(mob.id);
         if (!c || c.health.isDead() || c.state.isStaggered()) continue;
 
+        let isMoving = false;
+
+        // --- 1. Gravity & Ground Check ---
+        let grounded = false;
+        const cx = Math.floor(c.pos.x);
+        const cz = Math.floor(c.pos.z);
+        // Check slightly below the foot
+        const blockBelow = this.getBlockAt(cx, Math.floor(c.pos.y - 0.05), cz);
+        
+        if (blockBelow === this.AIR_ID) {
+          mob.vy -= 0.04; // Gravity acceleration
+          if (mob.vy < -0.6) mob.vy = -0.6; // Terminal velocity
+          c.pos.y += mob.vy;
+          isMoving = true;
+        } else {
+          mob.vy = 0;
+          grounded = true;
+          // Snap to ground level to prevent sinking
+          const groundLevel = Math.floor(c.pos.y - 0.05) + 1;
+          if (c.pos.y < groundLevel) {
+            c.pos.y = groundLevel;
+            isMoving = true;
+          }
+        }
+
+        // --- 2. Scan for closest player ---
         let nearestPlayerId: string | null = null;
         let closestDist = 12.0; // Aggro Radius
 
-        // 1. Scan for closest player
         for (const pl of this.players.values()) {
           const pdx = pl.x - c.pos.x;
           const pdy = pl.y - c.pos.y;
@@ -469,43 +494,79 @@ export class MyRoom extends Room {
           }
         }
 
-        let isMoving = false;
+        // Horizontal movement intent
+        let targetDx = 0;
+        let targetDz = 0;
+        let intentDist = 0;
 
-        // 2. State: CHASE
+        // --- 3. State: CHASE ---
         if (nearestPlayerId) {
           const target = this.players.get(nearestPlayerId)!;
-          const dx = target.x - c.pos.x;
-          const dz = target.z - c.pos.z;
-          const dist2D = Math.sqrt(dx * dx + dz * dz);
+          targetDx = target.x - c.pos.x;
+          targetDz = target.z - c.pos.z;
+          intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
 
           // Face the player
-          mob.yaw = Math.atan2(dx, dz);
+          mob.yaw = Math.atan2(targetDx, targetDz);
           c.yaw = mob.yaw;
 
-          if (dist2D > 1.8) { // Stop moving if within attack reach
-            const speed = 0.08 * c.moveSpeedMul;
-            c.pos.x += (dx / dist2D) * speed;
-            c.pos.z += (dz / dist2D) * speed;
-            isMoving = true;
-          } else {
-            // STATE: ATTACK
-            if (c.state.canStartAttack()) {
-               this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
-            }
+          if (intentDist <= 1.8) {
+             // Reached target, attempt attack
+             if (c.state.canStartAttack()) {
+                this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
+             }
+             intentDist = 0; // Stop moving
           }
         } 
-        // 3. State: RETURN TO SPAWN (Rubber-band fallback)
+        // --- 4. State: RETURN TO SPAWN (Rubber-band fallback) ---
         else {
-          const dx = mob.spawnX - c.pos.x;
-          const dy = mob.spawnY - c.pos.y;
-          const dz = mob.spawnZ - c.pos.z;
-          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          targetDx = mob.spawnX - c.pos.x;
+          targetDz = mob.spawnZ - c.pos.z;
+          intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
 
-          if (dist > 1.0) {
-            mob.yaw = Math.atan2(dx, dz);
+          if (intentDist > 1.0) {
+            mob.yaw = Math.atan2(targetDx, targetDz);
             c.yaw = mob.yaw;
-            c.pos.x += (dx / dist) * Math.min(dist, 0.05); 
-            c.pos.z += (dz / dist) * Math.min(dist, 0.05);
+          } else {
+            intentDist = 0; // Close enough to spawn
+          }
+        }
+
+        // --- 5. Apply Horizontal Movement & Jumping ---
+        if (intentDist > 0) {
+          const speed = nearestPlayerId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
+          const moveX = (targetDx / intentDist) * speed;
+          const moveZ = (targetDz / intentDist) * speed;
+
+          const nextX = c.pos.x + moveX;
+          const nextZ = c.pos.z + moveZ;
+
+          // Simple cylinder collision (checking foot and head at next pos)
+          const nextCx = Math.floor(nextX);
+          const nextCz = Math.floor(nextZ);
+          
+          const blockAtNextFoot = this.getBlockAt(nextCx, Math.floor(c.pos.y + 0.1), nextCz);
+          const blockAtNextHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 1.1), nextCz);
+
+          if (blockAtNextFoot !== this.AIR_ID || blockAtNextHead !== this.AIR_ID) {
+            // Obstacle in front. Can we step up?
+            const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
+            
+            if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
+              // Trigger Jump/Step-up
+              mob.vy = 0.35; // Jump velocity
+              c.pos.y += mob.vy;
+              // Allow slight forward movement to clear the edge
+              c.pos.x = nextX;
+              c.pos.z = nextZ;
+              isMoving = true;
+            } else {
+              // Blocked completely. Prevent horizontal movement.
+            }
+          } else {
+            // Path is clear
+            c.pos.x = nextX;
+            c.pos.z = nextZ;
             isMoving = true;
           }
         }
@@ -958,7 +1019,8 @@ export class MyRoom extends Room {
     const mob: MobInfo = { 
       id, x, y, z, yaw: 0, 
       hp: 1000, maxHp: 1000, 
-      spawnX: x, spawnY: y, spawnZ: z 
+      spawnX: x, spawnY: y, spawnZ: z,
+      vy: 0
     };
     this.mobs.set(id, mob);
 
