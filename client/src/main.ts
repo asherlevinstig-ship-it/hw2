@@ -6,7 +6,8 @@
  * UPDATED: Component-based Combat System Wiring
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
- * NEW: Procedural Deepslate Golem Mobs with Orbiting Crystals & Rage Mode
+ * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
+ * FIXED: Removed unused dtSec variable in updateRemoteMeshes
  */
 
 import { Engine } from "noa-engine";
@@ -2342,7 +2343,9 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   let parts: any = {};
 
   if (isMob) {
-    const mobMat = getDropAtlasMaterial(rpScene, ATLAS.DEEPSLATE);
+    const baseMat = getDropAtlasMaterial(rpScene, ATLAS.DEEPSLATE);
+    const mobMat = baseMat.clone(`rpMat:${id}`) as BABYLON.StandardMaterial;
+    remoteMats.set(id, mobMat);
     
     const body = BABYLON.MeshBuilder.CreateBox(`mobBody:${id}`, { width: 0.9, height: 0.9, depth: 0.6 }, rpScene);
     body.position.set(0, 0.9, 0); 
@@ -2394,7 +2397,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
         orbiters.push(orb);
     }
 
-    parts = { body, head, armL, armR, legL, legR, eyeMat, orbiters };
+    parts = { body, head, armL, armR, legL, legR, eyeMat, orbiters, mobMat };
 
   } else {
     const BODY_W = 0.65;
@@ -2600,6 +2603,19 @@ function updateRemoteMeshes() {
       root.scaling.x += (targetScale - root.scaling.x) * 0.1;
       root.scaling.y += (targetScale - root.scaling.y) * 0.1;
       root.scaling.z += (targetScale - root.scaling.z) * 0.1;
+
+      const flashTime = remoteFlashes.get(id);
+      const isHit = flashTime && now - flashTime < 200;
+
+      if (mat) {
+        if (isHit) {
+          mat.emissiveColor.set(1, 0.2, 0.2);
+          mat.diffuseColor.set(1, 0.2, 0.2);
+        } else {
+          mat.emissiveColor.set(1, 1, 1);
+          mat.diffuseColor.set(1, 1, 1);
+        }
+      }
 
       if (parts.eyeMat) {
         if (isRaging) {
