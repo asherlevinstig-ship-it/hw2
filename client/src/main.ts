@@ -10,6 +10,7 @@
  * UPDATED: Class Selection UI & The Warden Class 
  * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
  * FIXED: Wired up 'U' key for Cave Teleportation
+ * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
  */
 
 import { Engine } from "noa-engine";
@@ -2474,7 +2475,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
-  const isMob = id.includes("dummy") || id.includes("mob");
+  const isMob = id.includes("dummy") || id.includes("mob") || id.includes("golem");
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
   (root as any).__isMob = isMob;
 
@@ -2597,7 +2598,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
         (m as any).isInFrustum = () => true;
     });
 
-    parts = { armL, armR, legL, legR };
+    parts = { body, head, armL, armR, legL, legR, bodyCenterY, headCenterY };
   }
 
   (root as any).__parts = parts;
@@ -2708,12 +2709,19 @@ function updateRemoteMeshes(dtSec: number) {
     target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
     remoteTargetPos.set(id, target);
 
-    const lerp = 0.35;
+    // Smooth position interpolation
+    const lerp = 1 - Math.pow(0.001, dtSec);
     root.position.x += (target.x - root.position.x) * lerp;
     root.position.y += (target.y - root.position.y) * lerp;
     root.position.z += (target.z - root.position.z) * lerp;
 
-    if (typeof t.yaw === "number") root.rotation.y = t.yaw;
+    if (typeof t.yaw === "number") {
+      // Smooth rotation interpolation
+      let dyaw = t.yaw - root.rotation.y;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      root.rotation.y += dyaw * lerp;
+    }
 
     const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
@@ -2787,23 +2795,45 @@ function updateRemoteMeshes(dtSec: number) {
       phase += moving ? phaseSpeed : 0.02;
       (root as any).__walkPhase = phase;
 
+      // Heavy procedural stomping and idle breathing
+      const breath = Math.sin(now * 0.002) * 0.03;
+      const bounce = moving ? Math.abs(Math.sin(phase)) * 0.15 : 0;
       const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
       
+      // Telegraphing and Windup Logic
       let armPitch = 0;
+      let bodyPitch = 0;
       const swingTime = remoteSwings.get(id);
-      if (swingTime && now - swingTime < 350) {
-          const st = (now - swingTime) / 350;
-          armPitch = Math.sin(st * Math.PI) * 2.0; 
+      
+      if (swingTime && now - swingTime < 600) {
+        const elapsed = now - swingTime;
+        if (elapsed < 200) {
+          // 200ms Windup: Rear back
+          const t = elapsed / 200;
+          armPitch = -0.8 * t;
+          bodyPitch = -0.2 * t;
+        } else {
+          // 400ms Smash: Overhead swing and forward lean
+          const t = (elapsed - 200) / 400;
+          armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
+          bodyPitch = Math.sin(t * Math.PI) * 0.4;
+        }
       }
 
-      if (parts.legL && parts.legR && parts.armL && parts.armR) {
+      if (parts.body && parts.head && parts.legL && parts.legR && parts.armL && parts.armR) {
+          parts.body.position.y = 0.9 + breath + bounce;
+          parts.head.position.y = 1.5 + breath + bounce;
+          
+          parts.body.rotation.x = bodyPitch;
+          parts.head.rotation.x = bodyPitch * 0.5;
+
           parts.legL.rotation.x = swing;
           parts.legR.rotation.x = -swing;
           parts.armL.rotation.x = -swing * 0.5;
           parts.armR.rotation.x = swing * 0.5 - armPitch;
       }
     } else {
-      if (parts?.legL && parts?.legR && parts?.armL && parts?.armR) {
+      if (parts?.legL && parts?.legR && parts?.armL && parts?.armR && parts?.body && parts?.head) {
         const moving = speed > 0.15;
         const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
 
@@ -2813,6 +2843,8 @@ function updateRemoteMeshes(dtSec: number) {
         phase += moving ? phaseSpeed : 0.02;
         (root as any).__walkPhase = phase;
 
+        const breath = Math.sin(now * 0.002) * 0.02;
+        const bounce = moving ? Math.abs(Math.sin(phase * 2)) * 0.05 : 0;
         const swing = Math.sin(phase) * (moving ? 0.55 : 0.08);
 
         if (mat) {
@@ -2825,11 +2857,20 @@ function updateRemoteMeshes(dtSec: number) {
         }
 
         let armPitch = 0;
+        let bodyPitch = moving ? 0.1 : 0; // Lean forward slightly when moving
+
         const swingTime = remoteSwings.get(id);
         if (swingTime && now - swingTime < 300) {
           const st = (now - swingTime) / 300;
           armPitch = Math.sin(st * Math.PI) * 1.5; 
+          bodyPitch += Math.sin(st * Math.PI) * 0.2;
         }
+
+        parts.body.position.y = parts.bodyCenterY + breath + bounce;
+        parts.head.position.y = parts.headCenterY + breath + bounce;
+
+        parts.body.rotation.x = bodyPitch;
+        parts.head.rotation.x = bodyPitch * 0.5;
 
         parts.legL.rotation.x = swing * 0.55;
         parts.legR.rotation.x = -swing * 0.55;
