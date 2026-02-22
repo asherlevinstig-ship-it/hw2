@@ -11,6 +11,7 @@
  * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
  * FIXED: Wired up 'U' key for Cave Teleportation
  * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
+ * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
  */
 
 import { Engine } from "noa-engine";
@@ -696,12 +697,14 @@ let vmRotX = 0.22;
 let vmRotY = 0.1;
 let vmRotZ = -0.58;
 
+// INCREASED MULTIPLIERS FOR HEAVY SWING
 let vmPitchMul = 0.45;
-let vmPunchRotMul = 0.75;
+let vmPunchRotMul = 1.2; // Increased rotation distance
 let vmTurnSwayMulY = 0.35;
 let vmTurnSwayMulZ = 0.25;
-let vmPunchMoveX = 0.12;
-let vmPunchMoveY = 0.08;
+let vmPunchMoveX = 0.25; // Push further horizontally
+let vmPunchMoveY = 0.15; // Push further vertically
+let vmPunchMoveZ = 0.35; // Push weapon deep into the screen Z-axis
 
 /* ===============================
    6.2 Remote state
@@ -2380,18 +2383,23 @@ function updateViewmodel(dtSec: number) {
     }
   }
 
-  punchT = Math.min(1, punchT + dtSec * 10.0);
-  const punch01 = Math.sin(punchT * Math.PI);
+  // FIX: Slower animation (3.5x multiplier instead of 10.0x => ~285ms swing)
+  punchT = Math.min(1, punchT + dtSec * 3.5);
+  
+  // FIX: Easing curve for fast attack, slow recovery
+  const punch01 = Math.sin(Math.pow(punchT, 0.6) * Math.PI);
 
   const r = (vmCam.orthoRight ?? 1) as number;
 
   const baseX = r * vmBaseXMul;
   const baseY = vmBaseY;
 
+  // FIX: Increased X, Y translation and added depth (Z-Axis Thrust)
   const x = baseX + sway * 0.55 - punch01 * vmPunchMoveX;
   const y = baseY + bob * 0.65 - punch01 * vmPunchMoveY;
+  const z = punch01 * vmPunchMoveZ; // Pushes arm deeper into the screen 
 
-  vmRoot.position.set(x, y, 0);
+  vmRoot.position.set(x, y, z);
 
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
@@ -2408,6 +2416,7 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
+  // FIX: vmPunchRotMul was heavily increased above
   vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
