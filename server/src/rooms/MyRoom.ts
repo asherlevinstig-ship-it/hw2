@@ -7,7 +7,7 @@
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
-// NEW: Developer "Teleport to Cave" scanner
+// NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -617,35 +617,60 @@ export class MyRoom extends Room {
     this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
 
     // =========================
-    // Cave Teleport Developer Tool
+    // Cave Teleport Developer Tool (SPIRAL RADAR)
     // =========================
     this.onMessage("devTpCave", (client: Client) => {
       const pl = this.players.get(client.sessionId);
       const c = this.combatants.get(client.sessionId);
       if (!pl || !c) return;
 
-      const px = Math.floor(pl.x);
-      const pz = Math.floor(pl.z);
-      const surfaceY = this.heightAt(px, pz);
-
-      let foundY = -1;
+      const startX = Math.floor(pl.x);
+      const startZ = Math.floor(pl.z);
       
-      // Scan downwards from just below the surface down to bedrock (Y=5)
-      for (let y = surfaceY - 2; y > 4; y--) {
-        const block = this.getBlockAt(px, y, pz);
-        const blockBelow = this.getBlockAt(px, y - 1, pz);
-        const blockAbove = this.getBlockAt(px, y + 1, pz);
+      let foundX = -1, foundY = -1, foundZ = -1;
+      
+      // Search outward in expanding rings (radius 0 to 64 blocks)
+      searchLoop:
+      for (let r = 0; r <= 64; r += 3) {
+        for (let dx = -r; dx <= r; dx += 3) {
+          for (let dz = -r; dz <= r; dz += 3) {
+            // Only check the perimeter of the current ring
+            if (Math.abs(dx) !== r && Math.abs(dz) !== r && r !== 0) continue;
 
-        // Found a 2-block high gap with a solid floor!
-        if (block === this.AIR_ID && blockAbove === this.AIR_ID && blockBelow !== this.AIR_ID) {
-          foundY = y;
-          break; 
+            const px = startX + dx;
+            const pz = startZ + dz;
+            
+            // Skip safe zone area so we don't TP into the town basement
+            if (this.isInSafeZoneXZ(px, pz)) continue;
+
+            const surfaceY = this.heightAt(px, pz);
+            
+            // Scan downwards from mid-depth to bedrock
+            for (let y = surfaceY - 5; y > 8; y -= 2) {
+              const block = this.getBlockAt(px, y, pz);
+              if (block === this.AIR_ID) {
+                // Verify it's a good standing spot (solid floor, air head space)
+                const floor = this.getBlockAt(px, y - 1, pz);
+                const head = this.getBlockAt(px, y + 1, pz);
+                if (floor !== this.AIR_ID && head === this.AIR_ID) {
+                  foundX = px;
+                  foundY = y;
+                  foundZ = pz;
+                  break searchLoop;
+                }
+              }
+            }
+          }
         }
       }
 
       if (foundY !== -1) {
+        pl.x = foundX + 0.5;
         pl.y = foundY;
-        c.pos.y = foundY;
+        pl.z = foundZ + 0.5;
+        c.pos.x = pl.x;
+        c.pos.y = pl.y;
+        c.pos.z = pl.z;
         // Force the client to update position immediately
         client.send("playerRespawn", {
           id: pl.id,
@@ -653,9 +678,9 @@ export class MyRoom extends Room {
           hp: c.health.hp, maxHp: c.health.maxHp,
           mana: c.resources.mana, maxMana: c.resources.maxMana
         });
-        client.send("chatMessage", { msg: `[DEV] Teleported to Cave at Y: ${foundY}` });
+        client.send("chatMessage", { msg: `[DEV] Radar found cave! Teleporting to X:${foundX}, Y:${foundY}, Z:${foundZ}` });
       } else {
-        client.send("chatMessage", { msg: "[DEV] No cave found directly beneath you. Move slightly and try again." });
+        client.send("chatMessage", { msg: "[DEV] Radar exhausted! No caves found within a 64-block radius." });
       }
     });
 
@@ -1901,9 +1926,6 @@ export class MyRoom extends Room {
     }
   }
 
-  // =========================
-  // Town of Beginnings stamping (procedural + structure stamping)
-  // =========================
   private stampTownIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
     const CS = this.chunkSize;
     const chunkMinX = cx * CS; const chunkMinY = cy * CS; const chunkMinZ = cz * CS;
@@ -1914,33 +1936,51 @@ export class MyRoom extends Room {
     const r = this.SAFE_RADIUS + 2;
     if ((closestX - this.TOWN_CENTER_X) ** 2 + (closestZ - this.TOWN_CENTER_Z) ** 2 > r * r) return;
 
+    // Define Shrine Centers
+    const shrines = [
+      { hx: this.TOWN_CENTER_X + 13, hz: this.TOWN_CENTER_Z + 13 },
+      { hx: this.TOWN_CENTER_X - 13, hz: this.TOWN_CENTER_Z + 13 },
+      { hx: this.TOWN_CENTER_X + 13, hz: this.TOWN_CENTER_Z - 13 },
+      { hx: this.TOWN_CENTER_X - 13, hz: this.TOWN_CENTER_Z - 13 },
+    ];
+
+    // Define Ring Pillars
+    const pillars = [
+      { px: 24, pz: 0 }, { px: -24, pz: 0 }, { px: 0, pz: 24 }, { px: 0, pz: -24 },
+      { px: 17, pz: 17 }, { px: -17, pz: 17 }, { px: 17, pz: -17 }, { px: -17, pz: -17 }
+    ];
+
     for (let lx = 0; lx < CS; lx++) {
       for (let lz = 0; lz < CS; lz++) {
         const wx = chunkMinX + lx; const wz = chunkMinZ + lz;
         const dx = wx - this.TOWN_CENTER_X; const dz = wz - this.TOWN_CENTER_Z;
         const d2 = dx * dx + dz * dz;
+        const dist = Math.sqrt(d2);
 
-        if (d2 > (this.TOWN_RING_RADIUS + 4) ** 2) continue;
+        if (dist > this.TOWN_RING_RADIUS + 3) continue;
 
-        const colSurface = this.heightAt(wx, wz);
-        const colTownBase = colSurface + 1;
-        const inPlaza = d2 <= this.TOWN_PLAZA_RADIUS ** 2;
-        const inPath = (Math.abs(dz) <= this.TOWN_PATH_HALF_W && Math.abs(dx) <= this.TOWN_RING_RADIUS) || (Math.abs(dx) <= this.TOWN_PATH_HALF_W && Math.abs(dz) <= this.TOWN_RING_RADIUS);
-        const inRingBand = d2 >= this.TOWN_RING_RADIUS ** 2 && d2 <= (this.TOWN_RING_RADIUS + 1) ** 2;
+        // Base surface computation
+        const townY = this.baseHeight + 2; // Flatten the town exactly at baseHeight+2 to make a smooth plaza
+        
+        const inPlaza = dist <= this.TOWN_PLAZA_RADIUS + 2;
+        const inTown = dist <= this.TOWN_RING_RADIUS;
+        const inRingWall = dist >= this.TOWN_RING_RADIUS && dist <= this.TOWN_RING_RADIUS + 1.5;
+        const inPath = (Math.abs(dz) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS) || 
+                       (Math.abs(dx) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS);
 
-        const hutCenters = [
-          { hx: this.TOWN_CENTER_X + 16, hz: this.TOWN_CENTER_Z + 16 },
-          { hx: this.TOWN_CENTER_X - 16, hz: this.TOWN_CENTER_Z + 16 },
-          { hx: this.TOWN_CENTER_X + 16, hz: this.TOWN_CENTER_Z - 16 },
-          { hx: this.TOWN_CENTER_X - 16, hz: this.TOWN_CENTER_Z - 16 },
-        ];
-        let hutLocal: { ox: number; oz: number; which: number } | null = null;
-        for (let i = 0; i < hutCenters.length; i++) {
-          const c = hutCenters[i]; const ox = wx - c.hx; const oz = wz - c.hz;
-          if (Math.abs(ox) <= 3 && Math.abs(oz) <= 3) { hutLocal = { ox, oz, which: i }; break; }
+        // Find if we are in a shrine
+        let shrineLocal: { ox: number; oz: number } | null = null;
+        for (const c of shrines) {
+          const ox = wx - c.hx; const oz = wz - c.hz;
+          if (Math.abs(ox) <= 2 && Math.abs(oz) <= 2) { shrineLocal = { ox, oz }; break; }
         }
 
-        const inFountainFoot = Math.abs(dx) <= 1 && Math.abs(dz) <= 1;
+        // Find if we are in a pillar
+        let pillarLocal: { ox: number; oz: number } | null = null;
+        for (const p of pillars) {
+          const ox = dx - p.px; const oz = dz - p.pz;
+          if (Math.abs(ox) <= 1 && Math.abs(oz) <= 1) { pillarLocal = { ox, oz }; break; }
+        }
 
         for (let ly = 0; ly < CS; ly++) {
           const wy = chunkMinY + ly;
@@ -1948,52 +1988,86 @@ export class MyRoom extends Room {
 
           if (vox[ii] === this.BEDROCK_ID) continue;
 
-          if (this.isInSafeZoneXZ(wx, wz) && wy > colSurface && wy <= Math.min(chunkMaxY, colSurface + this.TOWN_CLEAR_HEIGHT)) vox[ii] = this.AIR_ID;
-
-          if (inPlaza || inPath) {
-            const targetY = colSurface + 1;
-            if (wy <= targetY && wy >= colSurface - 2) vox[ii] = wy === targetY ? this.STONE_ID : this.DIRT_ID;
-            if (wy > targetY && wy <= targetY + 6) vox[ii] = this.AIR_ID;
+          // CLEAR AIR ABOVE TOWN
+          if (wy > townY && wy <= townY + this.TOWN_CLEAR_HEIGHT) vox[ii] = this.AIR_ID;
+          
+          // BUILD SOLID GROUND UNDER TOWN
+          if (inTown && wy < townY) {
+             // Foundation
+             vox[ii] = wy < townY - 2 ? this.DIRT_ID : this.DEEPSLATE_ID;
           }
 
-          if (inRingBand) {
-            const wallY = colSurface + 2;
-            if (wy === wallY) vox[ii] = this.STONE_ID;
-            if (wy === wallY + 1 && ((mod(dx, 5) === 0 && mod(dz, 5) === 0) || this.hash2i(wx, wz, 91234) > 0.94)) vox[ii] = this.LEAVES_ID;
-            if (wy > wallY + 1 && wy <= wallY + 5) vox[ii] = this.AIR_ID;
+          // --- PLAZA FLOOR ---
+          if (inTown && wy === townY) {
+            if (inPath) {
+               vox[ii] = this.DIRT_ID; // Dirt path
+            } else if (inPlaza) {
+               // Grand mosaic center
+               const checker = (Math.abs(wx) + Math.abs(wz)) % 2 === 0;
+               vox[ii] = checker ? this.STONE_ID : this.TUFF_ID;
+            } else {
+               // General plaza floor (grass with occasional moss/stone)
+               const r = this.hash2i(wx, wz, 999);
+               vox[ii] = r < 0.1 ? this.MOSS_ID : r < 0.2 ? this.MOSSY_STONE_ID : this.GRASS_ID;
+            }
           }
 
-          if (inFountainFoot) {
-            const baseY = colSurface + 1;
-            if (wy === baseY) vox[ii] = this.STONE_ID;
-            if (wy >= baseY + 1 && wy <= baseY + 5) vox[ii] = this.WOOD_ID;
-            if (wy === baseY + 6) vox[ii] = this.LEAVES_ID;
-            if (wy === baseY + 7 && (Math.abs(dx) + Math.abs(dz) === 1)) vox[ii] = this.LEAVES_ID;
+          // --- OUTER RING WALL ---
+          if (inRingWall && wy >= townY && wy <= townY + 3 && !inPath) { // Leave paths open
+             if (wy === townY || wy === townY + 1) vox[ii] = this.MOSSY_STONE_ID;
+             if (wy === townY + 2 || wy === townY + 3) vox[ii] = this.LEAVES_ID;
           }
 
-          if (hutLocal) {
-            const hutBaseY = colTownBase; const ox = hutLocal.ox; const oz = hutLocal.oz; const roofY = hutBaseY + 4;
-            if (wy === hutBaseY) vox[ii] = this.STONE_ID;
+          // --- GRAND PILLARS ---
+          if (pillarLocal && wy >= townY && wy <= townY + 6) {
+             if (wy === townY + 6) {
+               if (pillarLocal.ox === 0 && pillarLocal.oz === 0) vox[ii] = this.CRYSTAL_ID;
+               else vox[ii] = this.AIR_ID;
+             } else if (wy === townY) {
+               vox[ii] = this.STONE_ID;
+             } else {
+               // Deepslate pillar trunk
+               if (Math.abs(pillarLocal.ox) + Math.abs(pillarLocal.oz) <= 1) vox[ii] = this.DEEPSLATE_ID;
+               else vox[ii] = this.AIR_ID;
+             }
+          }
 
-            const isEdge = Math.abs(ox) === 3 || Math.abs(oz) === 3;
-            const hc = hutCenters[hutLocal.which];
-            const doorSide = Math.abs(hc.hx - this.TOWN_CENTER_X) >= Math.abs(hc.hz - this.TOWN_CENTER_Z) ? (hc.hx > this.TOWN_CENTER_X ? "W" : "E") : (hc.hz > this.TOWN_CENTER_Z ? "S" : "N");
-            const isDoor = (doorSide === "N" && oz === 3 && ox === 0 && (wy === hutBaseY + 1 || wy === hutBaseY + 2)) ||
-                           (doorSide === "S" && oz === -3 && ox === 0 && (wy === hutBaseY + 1 || wy === hutBaseY + 2)) ||
-                           (doorSide === "E" && ox === 3 && oz === 0 && (wy === hutBaseY + 1 || wy === hutBaseY + 2)) ||
-                           (doorSide === "W" && ox === -3 && oz === 0 && (wy === hutBaseY + 1 || wy === hutBaseY + 2));
+          // --- AWAKENING SHRINES ---
+          if (shrineLocal && wy >= townY && wy <= townY + 6) {
+            const ox = shrineLocal.ox; const oz = shrineLocal.oz;
+            const isCorner = Math.abs(ox) === 2 && Math.abs(oz) === 2;
+            const isCenter = ox === 0 && oz === 0;
+            const distToCenter = Math.max(Math.abs(ox), Math.abs(oz));
 
-            if (wy >= hutBaseY + 1 && wy <= hutBaseY + 3 && isEdge) vox[ii] = isDoor ? this.AIR_ID : this.WOOD_ID;
-            if (wy === roofY) vox[ii] = this.LEAVES_ID;
-            if (wy > hutBaseY && wy <= roofY + 2 && !isEdge) vox[ii] = this.AIR_ID;
+            if (wy === townY) {
+              vox[ii] = this.DEEPSLATE_ID; // Shrine base
+            } else if (wy > townY && wy <= townY + 3) {
+              if (isCorner) vox[ii] = this.WOOD_ID; // Corner pillars
+              else if (isCenter && wy === townY + 1) vox[ii] = this.TUFF_ID; // Pedestal
+              else if (isCenter && wy === townY + 2) vox[ii] = this.CRYSTAL_ID; // Glowing crystal
+              else vox[ii] = this.AIR_ID; // Open air for the rest
+            } else if (wy === townY + 4) {
+              // Outer roof lip
+              if (distToCenter === 2) vox[ii] = this.STONE_ID;
+              else vox[ii] = this.AIR_ID;
+            } else if (wy === townY + 5) {
+              // Inner roof
+              if (distToCenter === 1) vox[ii] = this.STONE_ID;
+              else vox[ii] = this.AIR_ID;
+            } else if (wy === townY + 6) {
+              // Roof tip
+              if (isCenter) vox[ii] = this.STONE_ID;
+              else vox[ii] = this.AIR_ID;
+            }
           }
         }
       }
     }
 
+    // Structure stamping for Town Hall (must be shifted to new townY)
     if (this.townHall) {
-      const centerY = this.heightAt(this.TOWN_CENTER_X, this.TOWN_CENTER_Z);
-      const baseY = centerY + 1;
+      const townY = this.baseHeight + 2;
+      const baseY = townY + 1; // Start building on top of the plaza floor
       const worldX = this.TOWN_CENTER_X - this.townHall.anchor.x;
       const worldY = baseY - this.townHall.anchor.y;
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
