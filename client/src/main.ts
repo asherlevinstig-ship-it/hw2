@@ -7,7 +7,7 @@
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * FIXED: Removed unused dtSec variable in updateRemoteMeshes
+ * NEW: Class Selection UI & The Warden Class 
  */
 
 import { Engine } from "noa-engine";
@@ -53,6 +53,118 @@ appEl.style.bottom = "0";
 appEl.style.left = "0";
 appEl.style.right = "0";
 appEl.style.zIndex = "1";
+
+/* ===============================
+   2.5 Class Selection UI
+================================ */
+const classOverlay = document.createElement("div");
+classOverlay.style.position = "fixed";
+classOverlay.style.inset = "0";
+classOverlay.style.background = "rgba(0, 10, 15, 0.9)";
+classOverlay.style.zIndex = "500";
+classOverlay.style.display = "none"; 
+classOverlay.style.flexDirection = "column";
+classOverlay.style.alignItems = "center";
+classOverlay.style.justifyContent = "center";
+classOverlay.style.color = "white";
+classOverlay.style.fontFamily = "monospace";
+document.body.appendChild(classOverlay);
+
+const classTitle = document.createElement("h1");
+classTitle.textContent = "CHOOSE YOUR PATH";
+classTitle.style.marginBottom = "30px";
+classTitle.style.textShadow = "0 0 15px #00ffff";
+classOverlay.appendChild(classTitle);
+
+const classGrid = document.createElement("div");
+classGrid.style.display = "grid";
+classGrid.style.gridTemplateColumns = "repeat(3, 1fr)";
+classGrid.style.gap = "20px";
+classGrid.style.maxWidth = "1100px";
+classOverlay.appendChild(classGrid);
+
+const CLASSES = [
+  { id: "VANGUARD", name: "The Vanguard", aura: "Iron Essence", desc: "Immovable object. Block hits and crush enemy poise.", perks: ["Juggernaut: +100 Max Poise, 75% Block mitigation", "Demolition: +15% damage to stone/ores"] },
+  { id: "NIGHTBLADE", name: "The Nightblade", aura: "Shadow Essence", desc: "High-risk, high-reward evasion and critical strikes.", perks: ["Ghost Step: Extended dodge i-frames", "Lethal Momentum: +10% Crit Chance"] },
+  { id: "BLOODRAGER", name: "The Bloodrager", aura: "Blood Essence", desc: "Berserker sustain. Trade health for aggressive lifesteal.", perks: ["Siphon: Melee hits restore 1 HP", "Adrenaline: Taking damage grants Aura regen"] },
+  { id: "SPELLBLADE", name: "The Spellblade", aura: "Astral Essence", desc: "Ability spammer. Relies on skills over physical attacks.", perks: ["Deep Well: Double starting Max Mana & Aura", "Leyline: +50% Mana/Aura regen"] },
+  { id: "PROSPECTOR", name: "The Prospector", aura: "Unattuned", desc: "Economy and builder class. Master of gathering.", perks: ["Expert Miner: -25% block break time", "Lucky Strike: 15% chance for double drops"] },
+  { id: "WARDEN", name: "The Warden", aura: "Nature Essence", desc: "Support and sustain. Harness the earth to heal wounds.", perks: ["Photosynthesis: Passive HP regen", "Bountiful Harvest: Bonus medicinal drops from plants"] }
+];
+
+let selectedClassId: string | null = null;
+const classCards: HTMLDivElement[] = [];
+
+const confirmBtn = document.createElement("button");
+confirmBtn.textContent = "AWAKEN";
+confirmBtn.style.marginTop = "40px";
+confirmBtn.style.padding = "15px 40px";
+confirmBtn.style.fontSize = "18px";
+confirmBtn.style.fontWeight = "bold";
+confirmBtn.style.fontFamily = "monospace";
+confirmBtn.style.background = "rgba(0, 255, 255, 0.2)";
+confirmBtn.style.color = "white";
+confirmBtn.style.border = "2px solid #00ffff";
+confirmBtn.style.borderRadius = "8px";
+confirmBtn.style.cursor = "pointer";
+confirmBtn.style.opacity = "0.3";
+confirmBtn.style.pointerEvents = "none";
+confirmBtn.style.transition = "all 0.2s ease";
+
+CLASSES.forEach(cls => {
+  const card = document.createElement("div");
+  card.style.background = "rgba(255, 255, 255, 0.05)";
+  card.style.border = "2px solid rgba(255, 255, 255, 0.1)";
+  card.style.borderRadius = "10px";
+  card.style.padding = "20px";
+  card.style.cursor = "pointer";
+  card.style.transition = "all 0.2s ease";
+  
+  card.innerHTML = `
+    <h2 style="margin: 0 0 10px 0; color: #00ffff;">${cls.name}</h2>
+    <div style="font-size: 12px; color: #aaa; margin-bottom: 10px;">Aura: ${cls.aura}</div>
+    <div style="font-size: 14px; margin-bottom: 15px; min-height: 40px;">${cls.desc}</div>
+    <ul style="font-size: 12px; color: #ddd; padding-left: 20px; margin: 0;">
+      ${cls.perks.map(p => `<li>${p}</li>`).join('')}
+    </ul>
+  `;
+
+  card.onclick = () => {
+    classCards.forEach(c => {
+      c.style.border = "2px solid rgba(255, 255, 255, 0.1)";
+      c.style.background = "rgba(255, 255, 255, 0.05)";
+      c.style.boxShadow = "none";
+    });
+    
+    card.style.border = "2px solid #00ffff";
+    card.style.background = "rgba(0, 255, 255, 0.1)";
+    card.style.boxShadow = "0 0 15px rgba(0, 255, 255, 0.3)";
+    
+    selectedClassId = cls.id;
+    confirmBtn.style.opacity = "1";
+    confirmBtn.style.pointerEvents = "auto";
+  };
+  
+  card.onmouseenter = () => {
+    if (selectedClassId !== cls.id) card.style.background = "rgba(255, 255, 255, 0.1)";
+  };
+  card.onmouseleave = () => {
+    if (selectedClassId !== cls.id) card.style.background = "rgba(255, 255, 255, 0.05)";
+  };
+
+  classCards.push(card);
+  classGrid.appendChild(card);
+});
+
+confirmBtn.onclick = () => {
+  if (!selectedClassId) return;
+  localStorage.setItem("noa_player_class", selectedClassId);
+  classOverlay.style.display = "none";
+  if (room) room.send("selectClass", { classId: selectedClassId });
+  requestPointerLock();
+};
+
+classOverlay.appendChild(confirmBtn);
 
 /* ===============================
    3. UI Overlay Setup
@@ -340,7 +452,7 @@ function requestPointerLock() {
 }
 
 appEl.addEventListener("click", () => {
-  if (!invOpen) requestPointerLock();
+  if (!invOpen && classOverlay.style.display === "none") requestPointerLock();
 });
 
 function hasPointerLock(): boolean {
@@ -1029,6 +1141,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   if (e.key === "i" || e.key === "I") {
+    if (classOverlay.style.display !== "none") return;
     setInvOpen(!invOpen);
     updateOverlay(invOpen ? "Inventory opened" : "Inventory closed");
     return;
@@ -1357,6 +1470,7 @@ function setInvOpen(open: boolean) {
 }
 
 noa.inputs.down.on("fire", () => {
+  if (classOverlay.style.display !== "none") return;
   if (!hasPointerLock()) return;
   if (invOpen) return;
 
@@ -1401,6 +1515,7 @@ window.addEventListener("mouseup", (e: MouseEvent) => {
 });
 
 noa.inputs.down.on("alt-fire", () => {
+  if (classOverlay.style.display !== "none") return;
   if (!hasPointerLock()) return;
   if (invOpen) return;
 
@@ -2732,8 +2847,18 @@ async function connect() {
     updateOverlay();
 
     const userId = ensureUserId();
+    const savedClass = localStorage.getItem("noa_player_class");
+    
+    if (!savedClass) {
+      classOverlay.style.display = "flex";
+    }
+
     room = await colyseus.joinOrCreate("my_room", { userId });
     (globalThis as any).room = room;
+
+    if (savedClass && room) {
+      room.send("selectClass", { classId: savedClass });
+    }
 
     updateOverlay();
 
