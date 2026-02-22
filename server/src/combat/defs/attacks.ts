@@ -8,7 +8,8 @@ export type AttackDefId =
   | "PICK_IRON"
   | "AURA_SLASH"
   | "AURA_HEAVY"
-  | "AURA_THRUST";
+  | "AURA_THRUST"
+  | "NATURE_GRASP";
 
 export type AttackDef = {
   id: AttackDefId;
@@ -184,5 +185,27 @@ export const AttackDefs: Record<AttackDefId, AttackDef> = {
     critBonus: 0.02,
     onHitStatus: { id: "CHILL", chance: 0.30, durationMs: 2400, stacks: 1 },
     knockback: { strength: 1.0, lift: 0.08 },
+  },
+
+  // Nature kit (The Warden)
+  NATURE_GRASP: {
+    id: "NATURE_GRASP",
+    kind: "SKILL",
+    cooldownMs: 1200,
+    windupMs: 200,
+    activeMs: 150,
+    recoveryMs: 400,
+    reach: 5.0,
+    arcDeg: 45,
+    maxTargets: 3,
+    baseDamage: 6,
+    damageType: "PIERCE",
+    poiseDamage: 35,
+    staggerMs: 800,
+    auraCost: 15,
+    canCrit: true,
+    critBonus: 0.05,
+    onHitStatus: { id: "CRIPPLE", chance: 0.50, durationMs: 3000, stacks: 1 },
+    knockback: { strength: 0.2, lift: 0.5 },
   },
 };

@@ -7,7 +7,8 @@
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * NEW: Class Selection UI & The Warden Class 
+ * UPDATED: Class Selection UI & The Warden Class 
+ * UPDATED: NATURE_GRASP VFX implemented
  */
 
 import { Engine } from "noa-engine";
@@ -3290,6 +3291,10 @@ function spawnSkillVFX(attackId: string, globalX: number, globalY: number, globa
     mesh = BABYLON.MeshBuilder.CreateCylinder(`thrustVFX_${uid}`, { height: 6, diameter: 0.6 }, scene);
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
+  } else if (attackId === "NATURE_GRASP") {
+    mesh = BABYLON.MeshBuilder.CreateTorusKnot(`natureVFX_${uid}`, { radius: 1.5, tube: 0.2, radialSegments: 64, tubularSegments: 8, p: 2, q: 3 }, scene);
+    mat.emissiveColor = new BABYLON.Color3(0.2, 1.0, 0.2); 
+    maxLife = 0.9;
   } else {
     return; 
   }
@@ -3371,6 +3376,11 @@ let lastTickMs = performance.now();
       vfx.mesh.scaling.z += dtSec * 5;
     } else if (vfx.type === "AURA_THRUST") {
       vfx.mesh.scaling.y += dtSec * 8; 
+    } else if (vfx.type === "NATURE_GRASP") {
+      vfx.mesh.rotation.y += dtSec * 10;
+      vfx.mesh.scaling.x += dtSec * 4;
+      vfx.mesh.scaling.y += dtSec * 4;
+      vfx.mesh.scaling.z += dtSec * 4;
     }
 
     vfx.mesh.position.set(
