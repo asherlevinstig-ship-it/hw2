@@ -7,7 +7,8 @@
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * NEW: Class Selection UI & The Warden Class 
+ * UPDATED: Class Selection UI & The Warden Class 
+ * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
  */
 
 import { Engine } from "noa-engine";
@@ -1303,20 +1304,9 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     return null;
   }
 
-  if (ArrayBuffer.isView(msgVoxels) && (msgVoxels as any).buffer instanceof ArrayBuffer) {
-    const view = msgVoxels as ArrayBufferView;
-
-    const len = (msgVoxels as any).length;
-    if (typeof len === "number" && len === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = (msgVoxels as any)[i] | 0;
-      }
-      return out;
-    }
-
-    const bytes = view.byteLength;
-    if (bytes === expectedLen * 2) {
+  if (ArrayBuffer.isView(msgVoxels)) {
+    const view = msgVoxels as any;
+    if (view.byteLength === expectedLen * 2) {
       const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1324,7 +1314,7 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    if (bytes === expectedLen) {
+    if (view.byteLength === expectedLen) {
       const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1332,7 +1322,32 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    return null;
+    if (typeof view.length === "number" && view.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = view[i] | 0;
+      }
+      return out;
+    }
+  }
+
+  if (typeof msgVoxels === "object" && typeof msgVoxels.length === "number" && msgVoxels.length === expectedLen) {
+    const out = new Array<number>(expectedLen);
+    for (let i = 0; i < expectedLen; i++) {
+      out[i] = msgVoxels[i] | 0;
+    }
+    return out;
+  }
+
+  if (msgVoxels && msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data)) {
+    const data = msgVoxels.data;
+    if (data.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = data[i] | 0;
+      }
+      return out;
+    }
   }
 
   return null;
@@ -2664,7 +2679,7 @@ function syncRpCameraFromWorld(worldScene: BABYLON.Scene) {
   }
 }
 
-function updateRemoteMeshes() {
+function updateRemoteMeshes(dtSec: number) {
   if (!remotePlayersEnabled) return;
   if (!rpReady || !rpScene) return;
   if (!room) return;
@@ -2694,11 +2709,11 @@ function updateRemoteMeshes() {
 
     const prev = remotePrevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
     const prevAt = remotePrevAt.get(id) ?? now;
-    const dt = Math.max(0.001, (now - prevAt) / 1000);
+    const dtMove = Math.max(0.001, (now - prevAt) / 1000);
 
     const dx = root.position.x - prev.x;
     const dz = root.position.z - prev.z;
-    const speed = Math.sqrt(dx * dx + dz * dz) / dt;
+    const speed = Math.sqrt(dx * dx + dz * dz) / dtMove;
 
     prev.copyFrom(root.position);
     remotePrevPos.set(id, prev);
@@ -2741,19 +2756,19 @@ function updateRemoteMeshes() {
       }
 
       if (parts.orbiters) {
-        const orbitSpeed = isRaging ? 0.006 : 0.002;
+        const orbitSpeed = isRaging ? 6.0 : 2.0;
         const orbitRadius = isRaging ? 1.4 : 1.0;
         const heightBob = Math.sin(now * 0.003) * 0.2;
         
         parts.orbiters.forEach((orb: BABYLON.Mesh, i: number) => {
-            const angle = (now * orbitSpeed) + (i * ((Math.PI * 2) / parts.orbiters.length));
+            const angle = ((now * 0.001) * orbitSpeed) + (i * ((Math.PI * 2) / parts.orbiters.length));
             orb.position.set(
                 Math.cos(angle) * orbitRadius,
                 0.8 + heightBob + (i * 0.15),
                 Math.sin(angle) * orbitRadius
             );
-            orb.rotation.x += dt * 2;
-            orb.rotation.y += dt * 3;
+            orb.rotation.x += dtSec * 2;
+            orb.rotation.y += dtSec * 3;
         });
       }
 
@@ -3290,6 +3305,10 @@ function spawnSkillVFX(attackId: string, globalX: number, globalY: number, globa
     mesh = BABYLON.MeshBuilder.CreateCylinder(`thrustVFX_${uid}`, { height: 6, diameter: 0.6 }, scene);
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
+  } else if (attackId === "NATURE_GRASP") {
+    mesh = BABYLON.MeshBuilder.CreateTorusKnot(`natureVFX_${uid}`, { radius: 1.5, tube: 0.2, radialSegments: 64, tubularSegments: 8, p: 2, q: 3 }, scene);
+    mat.emissiveColor = new BABYLON.Color3(0.2, 1.0, 0.2); 
+    maxLife = 0.9;
   } else {
     return; 
   }
@@ -3337,6 +3356,15 @@ let lastTickMs = performance.now();
   const dtSec = Math.min(0.05, (now - lastTickMs) / 1000);
   lastTickMs = now;
 
+  if (classOverlay.style.display !== "none") {
+    const body = noa.ents.getPhysicsBody(noa.playerEntity);
+    if (body) {
+      body.velocity[0] = 0;
+      body.velocity[1] = 0; 
+      body.velocity[2] = 0;
+    }
+  }
+
   const scene = getStableScene();
   if (scene) {
     ensureVmScene(scene);
@@ -3371,6 +3399,11 @@ let lastTickMs = performance.now();
       vfx.mesh.scaling.z += dtSec * 5;
     } else if (vfx.type === "AURA_THRUST") {
       vfx.mesh.scaling.y += dtSec * 8; 
+    } else if (vfx.type === "NATURE_GRASP") {
+      vfx.mesh.rotation.y += dtSec * 10;
+      vfx.mesh.scaling.x += dtSec * 4;
+      vfx.mesh.scaling.y += dtSec * 4;
+      vfx.mesh.scaling.z += dtSec * 4;
     }
 
     vfx.mesh.position.set(
@@ -3387,7 +3420,7 @@ let lastTickMs = performance.now();
   }
 
   updateViewmodel(dtSec);
-  updateRemoteMeshes();
+  updateRemoteMeshes(dtSec);
   updateDropVisuals(dtSec);
   tryAutoPickup();
 
