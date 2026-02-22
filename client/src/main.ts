@@ -8,7 +8,8 @@
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
  * UPDATED: Class Selection UI & The Warden Class 
- * UPDATED: NATURE_GRASP VFX implemented
+ * FIXED: Player falling through world during Class Selection
+ * FIXED: Bulletproof Chunk Decoding for Colyseus Buffer Serialization
  */
 
 import { Engine } from "noa-engine";
@@ -1304,20 +1305,9 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     return null;
   }
 
-  if (ArrayBuffer.isView(msgVoxels) && (msgVoxels as any).buffer instanceof ArrayBuffer) {
-    const view = msgVoxels as ArrayBufferView;
-
-    const len = (msgVoxels as any).length;
-    if (typeof len === "number" && len === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = (msgVoxels as any)[i] | 0;
-      }
-      return out;
-    }
-
-    const bytes = view.byteLength;
-    if (bytes === expectedLen * 2) {
+  if (ArrayBuffer.isView(msgVoxels)) {
+    const view = msgVoxels as any;
+    if (view.byteLength === expectedLen * 2) {
       const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1325,7 +1315,7 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    if (bytes === expectedLen) {
+    if (view.byteLength === expectedLen) {
       const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1333,7 +1323,32 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    return null;
+    if (typeof view.length === "number" && view.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = view[i] | 0;
+      }
+      return out;
+    }
+  }
+
+  if (typeof msgVoxels === "object" && typeof msgVoxels.length === "number" && msgVoxels.length === expectedLen) {
+    const out = new Array<number>(expectedLen);
+    for (let i = 0; i < expectedLen; i++) {
+      out[i] = msgVoxels[i] | 0;
+    }
+    return out;
+  }
+
+  if (msgVoxels && msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data)) {
+    const data = msgVoxels.data;
+    if (data.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = data[i] | 0;
+      }
+      return out;
+    }
   }
 
   return null;
@@ -3341,6 +3356,15 @@ let lastTickMs = performance.now();
   const now = performance.now();
   const dtSec = Math.min(0.05, (now - lastTickMs) / 1000);
   lastTickMs = now;
+
+  if (classOverlay.style.display !== "none") {
+    const body = noa.ents.getPhysicsBody(noa.playerEntity);
+    if (body) {
+      body.velocity[0] = 0;
+      body.velocity[1] = 0; 
+      body.velocity[2] = 0;
+    }
+  }
 
   const scene = getStableScene();
   if (scene) {
