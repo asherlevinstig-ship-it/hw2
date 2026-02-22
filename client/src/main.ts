@@ -7,9 +7,7 @@
  * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
  * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * UPDATED: Class Selection UI & The Warden Class 
- * FIXED: Player falling through world during Class Selection
- * FIXED: Bulletproof Chunk Decoding for Colyseus Buffer Serialization
+ * NEW: Class Selection UI & The Warden Class 
  */
 
 import { Engine } from "noa-engine";
@@ -1305,9 +1303,20 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
     return null;
   }
 
-  if (ArrayBuffer.isView(msgVoxels)) {
-    const view = msgVoxels as any;
-    if (view.byteLength === expectedLen * 2) {
+  if (ArrayBuffer.isView(msgVoxels) && (msgVoxels as any).buffer instanceof ArrayBuffer) {
+    const view = msgVoxels as ArrayBufferView;
+
+    const len = (msgVoxels as any).length;
+    if (typeof len === "number" && len === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = (msgVoxels as any)[i] | 0;
+      }
+      return out;
+    }
+
+    const bytes = view.byteLength;
+    if (bytes === expectedLen * 2) {
       const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1315,7 +1324,7 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    if (view.byteLength === expectedLen) {
+    if (bytes === expectedLen) {
       const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
@@ -1323,32 +1332,7 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       }
       return out;
     }
-    if (typeof view.length === "number" && view.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = view[i] | 0;
-      }
-      return out;
-    }
-  }
-
-  if (typeof msgVoxels === "object" && typeof msgVoxels.length === "number" && msgVoxels.length === expectedLen) {
-    const out = new Array<number>(expectedLen);
-    for (let i = 0; i < expectedLen; i++) {
-      out[i] = msgVoxels[i] | 0;
-    }
-    return out;
-  }
-
-  if (msgVoxels && msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data)) {
-    const data = msgVoxels.data;
-    if (data.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = data[i] | 0;
-      }
-      return out;
-    }
+    return null;
   }
 
   return null;
@@ -3306,10 +3290,6 @@ function spawnSkillVFX(attackId: string, globalX: number, globalY: number, globa
     mesh = BABYLON.MeshBuilder.CreateCylinder(`thrustVFX_${uid}`, { height: 6, diameter: 0.6 }, scene);
     mesh.rotation.x = Math.PI / 2; 
     mat.emissiveColor = new BABYLON.Color3(1, 1, 0); 
-  } else if (attackId === "NATURE_GRASP") {
-    mesh = BABYLON.MeshBuilder.CreateTorusKnot(`natureVFX_${uid}`, { radius: 1.5, tube: 0.2, radialSegments: 64, tubularSegments: 8, p: 2, q: 3 }, scene);
-    mat.emissiveColor = new BABYLON.Color3(0.2, 1.0, 0.2); 
-    maxLife = 0.9;
   } else {
     return; 
   }
@@ -3357,15 +3337,6 @@ let lastTickMs = performance.now();
   const dtSec = Math.min(0.05, (now - lastTickMs) / 1000);
   lastTickMs = now;
 
-  if (classOverlay.style.display !== "none") {
-    const body = noa.ents.getPhysicsBody(noa.playerEntity);
-    if (body) {
-      body.velocity[0] = 0;
-      body.velocity[1] = 0; 
-      body.velocity[2] = 0;
-    }
-  }
-
   const scene = getStableScene();
   if (scene) {
     ensureVmScene(scene);
@@ -3400,11 +3371,6 @@ let lastTickMs = performance.now();
       vfx.mesh.scaling.z += dtSec * 5;
     } else if (vfx.type === "AURA_THRUST") {
       vfx.mesh.scaling.y += dtSec * 8; 
-    } else if (vfx.type === "NATURE_GRASP") {
-      vfx.mesh.rotation.y += dtSec * 10;
-      vfx.mesh.scaling.x += dtSec * 4;
-      vfx.mesh.scaling.y += dtSec * 4;
-      vfx.mesh.scaling.z += dtSec * 4;
     }
 
     vfx.mesh.position.set(
