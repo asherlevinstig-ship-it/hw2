@@ -9,6 +9,7 @@
  * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
  * UPDATED: Class Selection UI & The Warden Class 
  * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
+ * FIXED: Wired up 'U' key for Cave Teleportation
  */
 
 import { Engine } from "noa-engine";
@@ -1120,6 +1121,7 @@ function updateOverlay(extraLine = "") {
     [N] Toggle VM Tuning (captures tuning keys)<br>
     [M] Toggle VM Mirror (handedness)<br>
     [K] Toggle DEBUG_PARTICLES_ALWAYS<br>
+    [U] Teleport to Cave Below<br>
     <span style="opacity:.9">Remote debug:</span><br>
     <span style="opacity:.9">netTransforms=${netTransforms.size} closest=${closestStr}</span><br>
     <span style="opacity:.9">lastSnapshot=${snapAge} lastTransform=${xformAge}</span><br>
@@ -1145,6 +1147,12 @@ document.addEventListener("keydown", (e) => {
     if (classOverlay.style.display !== "none") return;
     setInvOpen(!invOpen);
     updateOverlay(invOpen ? "Inventory opened" : "Inventory closed");
+    return;
+  }
+
+  if (e.key === "u" || e.key === "U") {
+    if (room) room.send("devTpCave");
+    updateOverlay("Scanning for caves below...");
     return;
   }
 
