@@ -7,7 +7,7 @@
 // OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
-// NEW: Target Dummy Mob Spawning + Voxel Physics (Gravity & Jumping) & Aggro AI
+// NEW: Class Selection Network Handler integrated
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -668,6 +668,81 @@ export class MyRoom extends Room {
       }
 
       this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
+    });
+
+    // =========================
+    // Class Selection Handler
+    // =========================
+    this.onMessage("selectClass", (client: Client, payload: unknown) => {
+      const p = payload as { classId?: string };
+      if (!p || typeof p.classId !== "string") return;
+
+      const pl = this.players.get(client.sessionId);
+      const c = this.combatants.get(client.sessionId);
+      if (!pl || !c) return;
+
+      const inv = this.getOrLoadInventory(pl.userId);
+      
+      // Clear existing hotbar to ensure clean slate
+      for (let i = 0; i < this.HOTBAR_SLOTS; i++) {
+        inv.slots[i] = { id: 0, count: 0 } as any;
+      }
+
+      // Base defaults
+      let archetype = "BASIC";
+      inv.slots[0] = { id: Items.WOOD_PICK, count: 1, dur: ITEM_DEFS[Items.WOOD_PICK]?.tool?.maxDurability } as any;
+      
+      switch (p.classId) {
+        case "VANGUARD":
+          archetype = "IRON";
+          inv.slots[1] = { id: Items.SKILL_AURA_HEAVY, count: 1 } as any;
+          c.maxPoise = 200;
+          c.poise = 200;
+          c.blockMitigation = 0.75;
+          break;
+        case "NIGHTBLADE":
+          archetype = "SHADOW";
+          inv.slots[1] = { id: Items.SKILL_AURA_THRUST, count: 1 } as any;
+          c.dodgeIframesMs = 600;
+          c.critChance += 0.10;
+          c.moveSpeedMul = 1.15;
+          break;
+        case "BLOODRAGER":
+          archetype = "BLOOD";
+          inv.slots[1] = { id: Items.SKILL_AURA_SLASH, count: 1 } as any;
+          break;
+        case "SPELLBLADE":
+          archetype = "ASTRAL";
+          inv.slots[1] = { id: Items.SKILL_AURA_HEAVY, count: 1 } as any;
+          inv.slots[2] = { id: Items.SKILL_AURA_THRUST, count: 1 } as any;
+          c.resources.maxMana = c.resources.maxMana * 2;
+          c.resources.mana = c.resources.maxMana;
+          c.resources.maxAura = c.resources.maxAura * 2;
+          c.resources.aura = c.resources.maxAura;
+          break;
+        case "PROSPECTOR":
+          archetype = "BASIC";
+          // Skips wood pickaxe, gets stone immediately
+          inv.slots[0] = { id: Items.STONE_PICK, count: 1, dur: ITEM_DEFS[Items.STONE_PICK]?.tool?.maxDurability } as any;
+          break;
+        case "WARDEN":
+          archetype = "BASIC"; // You can build a NATURE aura in aura.ts later
+          inv.slots[1] = { id: Items.SKILL_NATURE_GRASP, count: 1 } as any; // Gives the new skill!
+          break;
+      }
+
+      // Apply the chosen aura and heal to full
+      inv.stats.auraArchetype = archetype;
+      c.aura.setArchetype(archetype as any);
+      c.health.setMax(c.health.maxHp, true);
+
+      // Save and synchronize state to client
+      this.saveInventory(pl.userId, inv);
+      this.sendInvStateToClient(client, inv);
+      c.onSync?.(c.snapshot());
+
+      // Notify the player
+      client.send("chatMessage", { msg: `You have awakened as ${p.classId}.` });
     });
 
     // =========================

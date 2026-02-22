@@ -18,6 +18,9 @@ export class EquipmentComponent {
     if (itemId === Items.SKILL_AURA_SLASH) return "AURA_SLASH";
     if (itemId === Items.SKILL_AURA_HEAVY) return "AURA_HEAVY";
     if (itemId === Items.SKILL_AURA_THRUST) return "AURA_THRUST";
+    
+    // The Warden's new ability
+    if (itemId === Items.SKILL_NATURE_GRASP) return "NATURE_GRASP";
 
     // Standard physical tool/weapon fallback
     if (itemId === Items.WOOD_PICK) return "PICK_WOOD";

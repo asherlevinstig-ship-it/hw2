@@ -1,55 +1,29 @@
-// shared/items.ts
-
-export type ItemStack = {
-  id: number;
-  count: number;
-  dur?: number; // Optional durability for tools/weapons
-};
-
-export type ItemDef = {
-  id: number;
-  name: string;
-  maxStack: number;
-  placeBlockId?: number; // If set, this item places a block in the world
-  tool?: {
-    kind: string;
-    tier: number;
-    speedMul: number;
-    maxDurability: number;
-  };
-};
-
-export type Recipe = {
-  id: string;
-  inputs: { id: number; count: number }[];
-  output: { id: number; count: number };
-};
+// server/src/shared/items.ts
+// FULL FILE - paste exactly as-is
+//
+// Shared items/defs/recipes (single source of truth for server).
+// Client can mirror these IDs/defs (or you can import them if you share across packages).
+//
+// Updated for biome work:
+// Add SAND + SNOW items (placeable blocks)
+// Add CAVE BIOME blocks (Deepslate, Tuff, Moss, etc.)
+// Keep durability-safe semantics: tools are maxStack=1 and carry dur
+// ADDED: Awakening Stones & Virtual Skill Gems
+// NEW: SKILL_NATURE_GRASP added for the Warden class
 
 export const Items = {
-  // -------------------------
-  // Environment Blocks
-  // -------------------------
-  AIR: 0,
+  // Blocks as items
   GRASS: 1,
   DIRT: 2,
   STONE: 3,
   WOOD_LOG: 4,
   LEAVES: 5,
-  BEDROCK: 6,
-  SAND: 11,
-  SNOW: 12,
 
-  // -------------------------
-  // Ore Blocks
-  // -------------------------
-  COAL_ORE: 30,
-  IRON_ORE: 31,
-  GOLD_ORE: 32,
-  DIAMOND_ORE: 33,
+  // Biome blocks as items
+  SAND: 6,
+  SNOW: 7,
 
-  // -------------------------
-  // Cave Biome Blocks
-  // -------------------------
+  // Cave Biome Blocks (NEW)
   DEEPSLATE: 90,
   TUFF: 91,
   MOSS: 92,
@@ -59,138 +33,178 @@ export const Items = {
   GLOW_SHROOM: 96,
   CRYSTAL: 97,
 
-  // -------------------------
-  // Materials / Drops
-  // -------------------------
-  COAL: 101,
-  RAW_IRON: 102,
-  RAW_GOLD: 103,
-  DIAMOND: 104,
+  // Basic crafted
+  PLANK: 10,
+  STICK: 11,
 
-  // -------------------------
-  // Tools & Equipment
-  // -------------------------
-  WOOD_PICK: 201,
-  STONE_PICK: 202,
-  IRON_PICK: 203,
+  // Tools
+  WOOD_PICK: 20,
+  STONE_PICK: 21,
+  IRON_PICK: 22,
 
-  // -------------------------
-  // Awakening Stones
-  // -------------------------
-  STONE_IRON: 501,
-  STONE_SHADOW: 502,
-  STONE_BLOOD: 503,
-  STONE_ASTRAL: 504,
+  // Minerals
+  COAL: 30,
+  RAW_IRON: 31,
+  RAW_GOLD: 32,
+  DIAMOND: 33,
 
-  // -------------------------
-  // Skill Gems
-  // -------------------------
+  // --- AWAKENING STONES ---
+  STONE_IRON: 200,
+  STONE_SHADOW: 201,
+  STONE_BLOOD: 202,
+  STONE_ASTRAL: 203,
+
+  // --- VIRTUAL SKILLS ---
   SKILL_AURA_SLASH: 1001,
   SKILL_AURA_HEAVY: 1002,
   SKILL_AURA_THRUST: 1003,
   SKILL_NATURE_GRASP: 1004,
+} as const;
+
+export type ItemStack = { id: number; count: number; dur?: number };
+
+export type ToolKind = "pick";
+
+export type ToolDef = {
+  kind: ToolKind;
+  tier: number; // 1 wood, 2 stone, 3 iron...
+  maxDurability: number; // durability points
+  speedMul: number; // lower break time multiplier
 };
 
+export type ItemDef = {
+  id: number;
+  name: string;
+  maxStack: number;
+  placeBlockId?: number;
+
+  // If present => tool behavior
+  tool?: ToolDef;
+};
+
+// Server uses placeBlockId rules; these IDs must match your client block IDs.
+const GRASS_ID = 1;
+const DIRT_ID = 2;
+const STONE_ID = 3;
+const WOOD_ID = 4;
+const LEAVES_ID = 5;
+
+// Biome surface blocks
+const SAND_ID = 11;
+const SNOW_ID = 12;
+
+// Cave Biome Blocks (Must match server MyRoom generation & Client registry)
+const DEEPSLATE_ID = 90;
+const TUFF_ID = 91;
+const MOSS_ID = 92;
+const MOSSY_STONE_ID = 93;
+const DRIPSTONE_ID = 94;        
+const DRIPSTONE_BLOCK_ID = 95;  
+const GLOW_SHROOM_ID = 96;      
+const CRYSTAL_ID = 97;
+
 export const ITEM_DEFS: Record<number, ItemDef> = {
-  // -------------------------
-  // Environment Blocks (Placeable)
-  // -------------------------
-  [Items.GRASS]: { id: Items.GRASS, name: "Grass Block", maxStack: 64, placeBlockId: 1 },
-  [Items.DIRT]: { id: Items.DIRT, name: "Dirt", maxStack: 64, placeBlockId: 2 },
-  [Items.STONE]: { id: Items.STONE, name: "Stone", maxStack: 64, placeBlockId: 3 },
-  [Items.WOOD_LOG]: { id: Items.WOOD_LOG, name: "Wood Log", maxStack: 64, placeBlockId: 4 },
-  [Items.LEAVES]: { id: Items.LEAVES, name: "Leaves", maxStack: 64, placeBlockId: 5 },
-  [Items.BEDROCK]: { id: Items.BEDROCK, name: "Bedrock", maxStack: 64, placeBlockId: 6 },
-  [Items.SAND]: { id: Items.SAND, name: "Sand", maxStack: 64, placeBlockId: 11 },
-  [Items.SNOW]: { id: Items.SNOW, name: "Snow", maxStack: 64, placeBlockId: 12 },
+  // Blocks
+  1: { id: 1, name: "Grass", maxStack: 64, placeBlockId: GRASS_ID },
+  2: { id: 2, name: "Dirt", maxStack: 64, placeBlockId: DIRT_ID },
+  3: { id: 3, name: "Stone", maxStack: 64, placeBlockId: STONE_ID },
+  4: { id: 4, name: "Wood", maxStack: 64, placeBlockId: WOOD_ID },
+  5: { id: 5, name: "Leaves", maxStack: 64, placeBlockId: LEAVES_ID },
 
-  // -------------------------
-  // Ore Blocks (Placeable)
-  // -------------------------
-  [Items.COAL_ORE]: { id: Items.COAL_ORE, name: "Coal Ore", maxStack: 64, placeBlockId: 30 },
-  [Items.IRON_ORE]: { id: Items.IRON_ORE, name: "Iron Ore", maxStack: 64, placeBlockId: 31 },
-  [Items.GOLD_ORE]: { id: Items.GOLD_ORE, name: "Gold Ore", maxStack: 64, placeBlockId: 32 },
-  [Items.DIAMOND_ORE]: { id: Items.DIAMOND_ORE, name: "Diamond Ore", maxStack: 64, placeBlockId: 33 },
+  // Biome blocks
+  6: { id: 6, name: "Sand", maxStack: 64, placeBlockId: SAND_ID },
+  7: { id: 7, name: "Snow", maxStack: 64, placeBlockId: SNOW_ID },
 
-  // -------------------------
-  // Cave Biome Blocks (Placeable)
-  // -------------------------
-  [Items.DEEPSLATE]: { id: Items.DEEPSLATE, name: "Deepslate", maxStack: 64, placeBlockId: 90 },
-  [Items.TUFF]: { id: Items.TUFF, name: "Tuff", maxStack: 64, placeBlockId: 91 },
-  [Items.MOSS]: { id: Items.MOSS, name: "Moss", maxStack: 64, placeBlockId: 92 },
-  [Items.MOSSY_STONE]: { id: Items.MOSSY_STONE, name: "Mossy Stone", maxStack: 64, placeBlockId: 93 },
-  [Items.DRIPSTONE]: { id: Items.DRIPSTONE, name: "Dripstone", maxStack: 64, placeBlockId: 94 },
-  [Items.DRIPSTONE_BLOCK]: { id: Items.DRIPSTONE_BLOCK, name: "Dripstone Block", maxStack: 64, placeBlockId: 95 },
-  [Items.GLOW_SHROOM]: { id: Items.GLOW_SHROOM, name: "Glow Shroom", maxStack: 64, placeBlockId: 96 },
-  [Items.CRYSTAL]: { id: Items.CRYSTAL, name: "Crystal", maxStack: 64, placeBlockId: 97 },
+  // Cave Biome Blocks (NEW)
+  90: { id: 90, name: "Deepslate", maxStack: 64, placeBlockId: DEEPSLATE_ID },
+  91: { id: 91, name: "Tuff", maxStack: 64, placeBlockId: TUFF_ID },
+  92: { id: 92, name: "Moss", maxStack: 64, placeBlockId: MOSS_ID },
+  93: { id: 93, name: "Mossy Stone", maxStack: 64, placeBlockId: MOSSY_STONE_ID },
+  94: { id: 94, name: "Pointed Dripstone", maxStack: 64, placeBlockId: DRIPSTONE_ID },
+  95: { id: 95, name: "Dripstone Block", maxStack: 64, placeBlockId: DRIPSTONE_BLOCK_ID },
+  96: { id: 96, name: "Glow Shroom", maxStack: 64, placeBlockId: GLOW_SHROOM_ID },
+  97: { id: 97, name: "Cave Crystal", maxStack: 64, placeBlockId: CRYSTAL_ID },
 
-  // -------------------------
-  // Materials / Drops
-  // -------------------------
-  [Items.COAL]: { id: Items.COAL, name: "Coal", maxStack: 64 },
-  [Items.RAW_IRON]: { id: Items.RAW_IRON, name: "Raw Iron", maxStack: 64 },
-  [Items.RAW_GOLD]: { id: Items.RAW_GOLD, name: "Raw Gold", maxStack: 64 },
-  [Items.DIAMOND]: { id: Items.DIAMOND, name: "Diamond", maxStack: 64 },
+  // Crafted
+  10: { id: 10, name: "Planks", maxStack: 64 },
+  11: { id: 11, name: "Stick", maxStack: 64 },
 
-  // -------------------------
-  // Tools
-  // -------------------------
-  [Items.WOOD_PICK]: { 
-    id: Items.WOOD_PICK, 
-    name: "Wooden Pickaxe", 
+  // Tools (maxStack=1)
+  20: {
+    id: 20,
+    name: "Wood Pick",
     maxStack: 1,
-    tool: { kind: "pick", tier: 1, speedMul: 1.5, maxDurability: 60 }
+    tool: { kind: "pick", tier: 1, maxDurability: 60, speedMul: 0.65 },
   },
-  [Items.STONE_PICK]: { 
-    id: Items.STONE_PICK, 
-    name: "Stone Pickaxe", 
+  21: {
+    id: 21,
+    name: "Stone Pick",
     maxStack: 1,
-    tool: { kind: "pick", tier: 2, speedMul: 3.0, maxDurability: 132 }
+    tool: { kind: "pick", tier: 2, maxDurability: 132, speedMul: 0.48 },
   },
-  [Items.IRON_PICK]: { 
-    id: Items.IRON_PICK, 
-    name: "Iron Pickaxe", 
+  22: {
+    id: 22,
+    name: "Iron Pick",
     maxStack: 1,
-    tool: { kind: "pick", tier: 3, speedMul: 6.0, maxDurability: 250 }
+    tool: { kind: "pick", tier: 3, maxDurability: 251, speedMul: 0.34 },
   },
 
-  // -------------------------
-  // Awakening Stones
-  // -------------------------
-  [Items.STONE_IRON]: { id: Items.STONE_IRON, name: "Iron Awakening Stone", maxStack: 64 },
-  [Items.STONE_SHADOW]: { id: Items.STONE_SHADOW, name: "Shadow Awakening Stone", maxStack: 64 },
-  [Items.STONE_BLOOD]: { id: Items.STONE_BLOOD, name: "Blood Awakening Stone", maxStack: 64 },
-  [Items.STONE_ASTRAL]: { id: Items.STONE_ASTRAL, name: "Astral Awakening Stone", maxStack: 64 },
+  // Minerals
+  30: { id: 30, name: "Coal", maxStack: 64 },
+  31: { id: 31, name: "Raw Iron", maxStack: 64 },
+  32: { id: 32, name: "Raw Gold", maxStack: 64 },
+  33: { id: 33, name: "Diamond", maxStack: 64 },
 
-  // -------------------------
-  // Skill Gems
-  // -------------------------
-  [Items.SKILL_AURA_SLASH]: { id: Items.SKILL_AURA_SLASH, name: "Skill Gem: Aura Slash", maxStack: 1 },
-  [Items.SKILL_AURA_HEAVY]: { id: Items.SKILL_AURA_HEAVY, name: "Skill Gem: Aura Heavy", maxStack: 1 },
-  [Items.SKILL_AURA_THRUST]: { id: Items.SKILL_AURA_THRUST, name: "Skill Gem: Aura Thrust", maxStack: 1 },
-  [Items.SKILL_NATURE_GRASP]: { id: Items.SKILL_NATURE_GRASP, name: "Skill Gem: Nature's Grasp", maxStack: 1 },
+  // --- AWAKENING STONES ---
+  200: { id: 200, name: "Iron Awakening Stone", maxStack: 10 },
+  201: { id: 201, name: "Shadow Awakening Stone", maxStack: 10 },
+  202: { id: 202, name: "Blood Awakening Stone", maxStack: 10 },
+  203: { id: 203, name: "Astral Awakening Stone", maxStack: 10 },
+
+  // --- VIRTUAL SKILLS --- (Only stack to 1)
+  1001: { id: 1001, name: "[Skill] Aura Slash", maxStack: 1 },
+  1002: { id: 1002, name: "[Skill] Aura Heavy", maxStack: 1 },
+  1003: { id: 1003, name: "[Skill] Aura Thrust", maxStack: 1 },
+  1004: { id: 1004, name: "[Skill] Nature Grasp", maxStack: 1 },
+};
+
+export type Recipe = {
+  id: string;
+  inputs: Array<{ id: number; count: number }>;
+  output: { id: number; count: number };
 };
 
 export const RECIPES: Recipe[] = [
+  { id: "planks_from_log", inputs: [{ id: Items.WOOD_LOG, count: 1 }], output: { id: Items.PLANK, count: 4 } },
+  { id: "sticks_from_planks", inputs: [{ id: Items.PLANK, count: 2 }], output: { id: Items.STICK, count: 4 } },
+
+  // Wood pick
   {
-    id: "craft_wood_pick",
-    inputs: [{ id: Items.WOOD_LOG, count: 2 }],
-    output: { id: Items.WOOD_PICK, count: 1 }
-  },
-  {
-    id: "craft_stone_pick",
+    id: "wood_pick",
     inputs: [
-      { id: Items.WOOD_LOG, count: 1 },
-      { id: Items.STONE, count: 3 }
+      { id: Items.PLANK, count: 3 },
+      { id: Items.STICK, count: 2 },
     ],
-    output: { id: Items.STONE_PICK, count: 1 }
+    output: { id: Items.WOOD_PICK, count: 1 },
   },
+
+  // Stone pick (uses STONE item as "cobble" for now)
   {
-    id: "craft_iron_pick",
+    id: "stone_pick",
     inputs: [
-      { id: Items.WOOD_LOG, count: 1 },
-      { id: Items.RAW_IRON, count: 3 }
+      { id: Items.STONE, count: 3 },
+      { id: Items.STICK, count: 2 },
     ],
-    output: { id: Items.IRON_PICK, count: 1 }
-  }
+    output: { id: Items.STONE_PICK, count: 1 },
+  },
+
+  // Iron pick (uses RAW_IRON as ingot substitute until smelting exists)
+  {
+    id: "iron_pick",
+    inputs: [
+      { id: Items.RAW_IRON, count: 3 },
+      { id: Items.STICK, count: 2 },
+    ],
+    output: { id: Items.IRON_PICK, count: 1 },
+  },
 ];
