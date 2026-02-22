@@ -8,6 +8,7 @@
 // CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
 // NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
+// NEW: Scaled AI (Spatial Hashing, AI Tick Interleaving, Chunk Sleep, Dharma Spawners)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -93,6 +94,8 @@ type MobInfo = {
   spawnY: number;
   spawnZ: number;
   vy: number; // Vertical velocity for gravity and jumping
+  tickPhase: number; // For interleaved AI ticking
+  targetId: string | null; // Cached aggro target
 };
 
 type ItemStack = SharedItemStack;
@@ -395,13 +398,20 @@ export class MyRoom extends Room {
   // State Maps
   // =========================
   private players = new Map<string, PlayerInfo>();
-  private mobs = new Map<string, MobInfo>(); // NEW: Mobs map
+  private mobs = new Map<string, MobInfo>();
   private chunks = new Map<string, Uint8Array>();
   private drops = new Map<string, Drop>();
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
   private inventories = new Map<string, InvState>();
   
+  // =========================
+  // Spatial Hashing (50+ Player Scaling)
+  // =========================
+  private playerChunks = new Map<string, string>(); // sessionId -> "cx,cz"
+  private spatialGrid = new Map<string, Set<string>>(); // "cx,cz" -> Set<sessionId>
+  private combatTickCount = 0;
+
   // =========================
   // Combat System
   // =========================
@@ -414,11 +424,51 @@ export class MyRoom extends Room {
   private townHall: BlockStructure | null = null;
 
   // =========================
+  // Spatial Hashing Helpers
+  // =========================
+  private updatePlayerSpatial(sessionId: string, x: number, z: number) {
+    const cx = Math.floor(x / this.chunkSize);
+    const cz = Math.floor(z / this.chunkSize);
+    const key = `${cx},${cz}`;
+
+    const oldKey = this.playerChunks.get(sessionId);
+    if (oldKey === key) return;
+
+    if (oldKey) {
+      const oldSet = this.spatialGrid.get(oldKey);
+      if (oldSet) {
+        oldSet.delete(sessionId);
+        if (oldSet.size === 0) this.spatialGrid.delete(oldKey);
+      }
+    }
+
+    this.playerChunks.set(sessionId, key);
+    let newSet = this.spatialGrid.get(key);
+    if (!newSet) {
+      newSet = new Set();
+      this.spatialGrid.set(key, newSet);
+    }
+    newSet.add(sessionId);
+  }
+
+  private removePlayerSpatial(sessionId: string) {
+    const oldKey = this.playerChunks.get(sessionId);
+    if (oldKey) {
+      const oldSet = this.spatialGrid.get(oldKey);
+      if (oldSet) {
+        oldSet.delete(sessionId);
+        if (oldSet.size === 0) this.spatialGrid.delete(oldKey);
+      }
+    }
+    this.playerChunks.delete(sessionId);
+  }
+
+  // =========================
   // onCreate
   // =========================
   onCreate(options: any) {
-    console.log("✅ MyRoom created", options);
-    this.maxClients = 32;
+    console.log("MyRoom created", options);
+    this.maxClients = 64;
     this.autoDispose = false;
 
     this.ensureDirs();
@@ -435,62 +485,84 @@ export class MyRoom extends Room {
       AIR_ID: this.AIR_ID
     });
 
-    // Spawn our Test Dummy!
+    // Spawn initial dummy
     this.spawnDummy("target_dummy_1", -77, 18, -2);
 
-    // Start Combat Tick Loop
+    // Start Combat Tick Loop (Optimized for 50+ players)
     let lastCombatTick = Date.now();
     this.clock.setInterval(() => {
       const now = Date.now();
       const dt = now - lastCombatTick;
       this.combat.tick(dt);
       lastCombatTick = now;
+      this.combatTickCount++;
 
-      // -----------------------------------------
-      // Upgraded Mob AI: Aggro, Chase & Voxel Physics
-      // -----------------------------------------
+      // Upgraded Mob AI: Interleaved, Chunk-Sleep, Spatial Aggro
       for (const mob of this.mobs.values()) {
         const c = this.combatants.get(mob.id);
         if (!c || c.health.isDead() || c.state.isStaggered()) continue;
 
         let isMoving = false;
 
-        // --- 1. Gravity & Ground Check ---
+        // 1. Determine Chunk Sleep State
+        const mcx = Math.floor(c.pos.x / this.chunkSize);
+        const mcz = Math.floor(c.pos.z / this.chunkSize);
+        let hasLocalPlayers = false;
+
+        let nearbyPlayers: PlayerInfo[] = [];
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const set = this.spatialGrid.get(`${mcx + dx},${mcz + dz}`);
+            if (set && set.size > 0) {
+              hasLocalPlayers = true;
+              for (const pid of set) {
+                const p = this.players.get(pid);
+                if (p) nearbyPlayers.push(p);
+              }
+            }
+          }
+        }
+
+        // Chunk Sleep: Skip all AI and physics if no players are nearby
+        if (!hasLocalPlayers) continue;
+
+        // 2. Interleaved Target Finding (Only run AI every 5th tick based on mob identity)
+        if (this.combatTickCount % 5 === mob.tickPhase) {
+          let nearestPlayerId: string | null = null;
+          let closestDist = 12.0; // Aggro Radius
+
+          for (const pl of nearbyPlayers) {
+            const pdx = pl.x - c.pos.x;
+            const pdy = pl.y - c.pos.y;
+            const pdz = pl.z - c.pos.z;
+            const dist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+            
+            if (dist < closestDist) {
+              closestDist = dist;
+              nearestPlayerId = pl.id;
+            }
+          }
+          mob.targetId = nearestPlayerId;
+        }
+
+        // 3. Gravity & Ground Check (Runs every tick for active chunks)
         let grounded = false;
         const cx = Math.floor(c.pos.x);
         const cz = Math.floor(c.pos.z);
-        // Check slightly below the foot
         const blockBelow = this.getBlockAt(cx, Math.floor(c.pos.y - 0.05), cz);
         
         if (blockBelow === this.AIR_ID) {
-          mob.vy -= 0.04; // Gravity acceleration
-          if (mob.vy < -0.6) mob.vy = -0.6; // Terminal velocity
+          mob.vy -= 0.04;
+          if (mob.vy < -0.6) mob.vy = -0.6;
           c.pos.y += mob.vy;
           isMoving = true;
         } else {
           mob.vy = 0;
           grounded = true;
-          // Snap to ground level to prevent sinking
           const groundLevel = Math.floor(c.pos.y - 0.05) + 1;
           if (c.pos.y < groundLevel) {
             c.pos.y = groundLevel;
             isMoving = true;
-          }
-        }
-
-        // --- 2. Scan for closest player ---
-        let nearestPlayerId: string | null = null;
-        let closestDist = 12.0; // Aggro Radius
-
-        for (const pl of this.players.values()) {
-          const pdx = pl.x - c.pos.x;
-          const pdy = pl.y - c.pos.y;
-          const pdz = pl.z - c.pos.z;
-          const dist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
-          
-          if (dist < closestDist) {
-            closestDist = dist;
-            nearestPlayerId = pl.id;
           }
         }
 
@@ -499,27 +571,29 @@ export class MyRoom extends Room {
         let targetDz = 0;
         let intentDist = 0;
 
-        // --- 3. State: CHASE ---
-        if (nearestPlayerId) {
-          const target = this.players.get(nearestPlayerId)!;
-          targetDx = target.x - c.pos.x;
-          targetDz = target.z - c.pos.z;
-          intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
+        // 4. State: CHASE
+        if (mob.targetId) {
+          const target = this.players.get(mob.targetId);
+          if (target) {
+            targetDx = target.x - c.pos.x;
+            targetDz = target.z - c.pos.z;
+            intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
 
-          // Face the player
-          mob.yaw = Math.atan2(targetDx, targetDz);
-          c.yaw = mob.yaw;
+            mob.yaw = Math.atan2(targetDx, targetDz);
+            c.yaw = mob.yaw;
 
-          if (intentDist <= 1.8) {
-             // Reached target, attempt attack
-             if (c.state.canStartAttack()) {
-                this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
-             }
-             intentDist = 0; // Stop moving
+            if (intentDist <= 1.8) {
+               if (c.state.canStartAttack()) {
+                  this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
+               }
+               intentDist = 0;
+            }
+          } else {
+            mob.targetId = null; // Lost target
           }
         } 
-        // --- 4. State: RETURN TO SPAWN (Rubber-band fallback) ---
-        else {
+        // 5. State: RETURN TO SPAWN
+        if (!mob.targetId) {
           targetDx = mob.spawnX - c.pos.x;
           targetDz = mob.spawnZ - c.pos.z;
           intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
@@ -528,20 +602,19 @@ export class MyRoom extends Room {
             mob.yaw = Math.atan2(targetDx, targetDz);
             c.yaw = mob.yaw;
           } else {
-            intentDist = 0; // Close enough to spawn
+            intentDist = 0;
           }
         }
 
-        // --- 5. Apply Horizontal Movement & Jumping ---
+        // 6. Apply Horizontal Movement & Jumping
         if (intentDist > 0) {
-          const speed = nearestPlayerId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
+          const speed = mob.targetId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
           const moveX = (targetDx / intentDist) * speed;
           const moveZ = (targetDz / intentDist) * speed;
 
           const nextX = c.pos.x + moveX;
           const nextZ = c.pos.z + moveZ;
 
-          // Simple cylinder collision (checking foot and head at next pos)
           const nextCx = Math.floor(nextX);
           const nextCz = Math.floor(nextZ);
           
@@ -549,29 +622,22 @@ export class MyRoom extends Room {
           const blockAtNextHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 1.1), nextCz);
 
           if (blockAtNextFoot !== this.AIR_ID || blockAtNextHead !== this.AIR_ID) {
-            // Obstacle in front. Can we step up?
             const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
             
             if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
-              // Trigger Jump/Step-up
-              mob.vy = 0.35; // Jump velocity
+              mob.vy = 0.35;
               c.pos.y += mob.vy;
-              // Allow slight forward movement to clear the edge
               c.pos.x = nextX;
               c.pos.z = nextZ;
               isMoving = true;
-            } else {
-              // Blocked completely. Prevent horizontal movement.
             }
           } else {
-            // Path is clear
             c.pos.x = nextX;
             c.pos.z = nextZ;
             isMoving = true;
           }
         }
 
-        // Sync Transform if changed
         if (isMoving) {
           mob.x = c.pos.x;
           mob.y = c.pos.y;
@@ -580,6 +646,40 @@ export class MyRoom extends Room {
         }
       }
     }, 50);
+
+    // Dynamic Dharma Spawners
+    this.clock.setInterval(() => {
+      for (const [chunkKey, playerIds] of this.spatialGrid.entries()) {
+        if (playerIds.size === 0) continue;
+        const [cxStr, czStr] = chunkKey.split(',');
+        const cx = parseInt(cxStr);
+        const cz = parseInt(czStr);
+
+        let mobsInChunk = 0;
+        for (const m of this.mobs.values()) {
+          const mcx = Math.floor(m.x / this.chunkSize);
+          const mcz = Math.floor(m.z / this.chunkSize);
+          if (mcx === cx && mcz === cz) mobsInChunk++;
+        }
+
+        // Station dispensing limit per active chunk
+        if (mobsInChunk < 3) {
+           const pId = Array.from(playerIds)[0];
+           const p = this.players.get(pId);
+           if (p) {
+              const spawnX = p.x + (Math.random() * 24 - 12);
+              const spawnZ = p.z + (Math.random() * 24 - 12);
+              // Avoid spawning too close to player or in safe zone
+              const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
+              if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
+                 const spawnY = this.heightAt(spawnX, spawnZ) + 1;
+                 const id = `golem_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
+                 this.spawnDummy(id, spawnX, spawnY, spawnZ);
+              }
+           }
+        }
+      }
+    }, 5000);
 
     // Load pre-expanded structures (Path B)
     try {
@@ -590,7 +690,7 @@ export class MyRoom extends Room {
       this.townHall = loadBlockStructure(structPath);
       console.log(`[STRUCT] TownHall loaded. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
     } catch (e) {
-      console.error("[STRUCT] ❌ FATAL: TownHall failed to load!", (e as Error).message);
+      console.error("[STRUCT] FATAL: TownHall failed to load!", (e as Error).message);
       this.townHall = null;
     }
 
@@ -608,7 +708,6 @@ export class MyRoom extends Room {
       const now = Date.now();
       if (now - this.lastSnapshotLogAt > 3000) {
         this.lastSnapshotLogAt = now;
-        console.log("[SNAPSHOT]", { count: allPlayers.length + allMobs.length });
       }
     }, this.snapshotIntervalMs);
 
@@ -629,27 +728,22 @@ export class MyRoom extends Room {
       
       let foundX = -1, foundY = -1, foundZ = -1;
       
-      // Search outward in expanding rings (radius 0 to 64 blocks)
       searchLoop:
       for (let r = 0; r <= 64; r += 3) {
         for (let dx = -r; dx <= r; dx += 3) {
           for (let dz = -r; dz <= r; dz += 3) {
-            // Only check the perimeter of the current ring
             if (Math.abs(dx) !== r && Math.abs(dz) !== r && r !== 0) continue;
 
             const px = startX + dx;
             const pz = startZ + dz;
             
-            // Skip safe zone area so we don't TP into the town basement
             if (this.isInSafeZoneXZ(px, pz)) continue;
 
             const surfaceY = this.heightAt(px, pz);
             
-            // Scan downwards from mid-depth to bedrock
             for (let y = surfaceY - 5; y > 8; y -= 2) {
               const block = this.getBlockAt(px, y, pz);
               if (block === this.AIR_ID) {
-                // Verify it's a good standing spot (solid floor, air head space)
                 const floor = this.getBlockAt(px, y - 1, pz);
                 const head = this.getBlockAt(px, y + 1, pz);
                 if (floor !== this.AIR_ID && head === this.AIR_ID) {
@@ -671,7 +765,8 @@ export class MyRoom extends Room {
         c.pos.x = pl.x;
         c.pos.y = pl.y;
         c.pos.z = pl.z;
-        // Force the client to update position immediately
+        this.updatePlayerSpatial(client.sessionId, pl.x, pl.z);
+
         client.send("playerRespawn", {
           id: pl.id,
           x: pl.x, y: pl.y, z: pl.z,
@@ -728,6 +823,7 @@ export class MyRoom extends Room {
       if (dx * dx + dy * dy + dz * dz > maxDist * maxDist * 9) return;
 
       pl.x = x; pl.y = y; pl.z = z; pl.yaw = yaw; pl.lastMoveAt = now;
+      this.updatePlayerSpatial(client.sessionId, x, z);
 
       // Sync to Combatant
       const c = this.combatants.get(client.sessionId);
@@ -751,12 +847,10 @@ export class MyRoom extends Room {
 
       const inv = this.getOrLoadInventory(pl.userId);
       
-      // Clear existing hotbar to ensure clean slate
       for (let i = 0; i < this.HOTBAR_SLOTS; i++) {
         inv.slots[i] = { id: 0, count: 0 } as any;
       }
 
-      // Base defaults
       let archetype = "BASIC";
       inv.slots[0] = { id: Items.WOOD_PICK, count: 1, dur: ITEM_DEFS[Items.WOOD_PICK]?.tool?.maxDurability } as any;
       
@@ -790,26 +884,22 @@ export class MyRoom extends Room {
           break;
         case "PROSPECTOR":
           archetype = "BASIC";
-          // Skips wood pickaxe, gets stone immediately
           inv.slots[0] = { id: Items.STONE_PICK, count: 1, dur: ITEM_DEFS[Items.STONE_PICK]?.tool?.maxDurability } as any;
           break;
         case "WARDEN":
-          archetype = "BASIC"; // You can build a NATURE aura in aura.ts later
-          inv.slots[1] = { id: Items.SKILL_NATURE_GRASP, count: 1 } as any; // Gives the new skill!
+          archetype = "BASIC";
+          inv.slots[1] = { id: Items.SKILL_NATURE_GRASP, count: 1 } as any;
           break;
       }
 
-      // Apply the chosen aura and heal to full
       inv.stats.auraArchetype = archetype;
       c.aura.setArchetype(archetype as any);
       c.health.setMax(c.health.maxHp, true);
 
-      // Save and synchronize state to client
       this.saveInventory(pl.userId, inv);
       this.sendInvStateToClient(client, inv);
       c.onSync?.(c.snapshot());
 
-      // Notify the player
       client.send("chatMessage", { msg: `You have awakened as ${p.classId}.` });
     });
 
@@ -874,7 +964,7 @@ export class MyRoom extends Room {
 
       if (kind === "heart") {
         const addHp = amt * this.HP_PER_HEART;
-        c.health.setMax(c.health.maxHp + addHp, true); // true = fill HP
+        c.health.setMax(c.health.maxHp + addHp, true);
       } else {
         const addMana = amt * this.MANA_PER_CONTAINER;
         c.resources.maxMana = clamp(c.resources.maxMana + addMana, 0, 999999);
@@ -908,25 +998,20 @@ export class MyRoom extends Room {
       else if (stack.id === Items.STONE_ASTRAL) newArchetype = "ASTRAL";
 
       if (newArchetype) {
-        // 1. Consume the stone
         stack.count -= 1;
         if (stack.count <= 0) inv.slots[slot] = { id: 0, count: 0 } as any;
 
-        // 2. Set the Archetype
         inv.stats.auraArchetype = newArchetype;
         c.aura.setArchetype(newArchetype as any);
 
-        // 3. Grant basic Skill Gems to inventory
         this.inventoryAdd(inv, { id: Items.SKILL_AURA_SLASH, count: 1 } as any);
         this.inventoryAdd(inv, { id: Items.SKILL_AURA_HEAVY, count: 1 } as any);
         this.inventoryAdd(inv, { id: Items.SKILL_AURA_THRUST, count: 1 } as any);
 
-        // 4. Save & Sync
         this.saveInventory(pl.userId, inv);
         this.sendInvStateToClient(client, inv);
         c.onSync?.(c.snapshot());
 
-        // Send confirmation popup to client
         client.send("chatMessage", { msg: `AWAKENED! You are now bound to the ${newArchetype} Essence.` });
       }
     });
@@ -1163,7 +1248,9 @@ export class MyRoom extends Room {
       id, x, y, z, yaw: 0, 
       hp: 1000, maxHp: 1000, 
       spawnX: x, spawnY: y, spawnZ: z,
-      vy: 0
+      vy: 0,
+      tickPhase: id.charCodeAt(id.length - 1) % 5,
+      targetId: null
     };
     this.mobs.set(id, mob);
 
@@ -1213,10 +1300,8 @@ export class MyRoom extends Room {
       this.broadcast("playerSwing", { id: e.attackerId, attackId: e.attackId });
     } 
     else if (e.type === "HIT") {
-      // Check players AND mobs
       const target: any = this.players.get(e.targetId) || this.mobs.get(e.targetId);
       if (target) {
-        // Apply pushback to physical transform
         if (e.knockback) {
           target.x = clamp(target.x + e.knockback.x, -this.maxAbsCoord, this.maxAbsCoord);
           target.y = clamp(target.y + e.knockback.y, -this.maxAbsCoord, this.maxAbsCoord);
@@ -1232,7 +1317,6 @@ export class MyRoom extends Room {
           this.broadcast("playerTransformOther", { id: target.id, x: target.x, y: target.y, z: target.z, yaw: target.yaw });
         }
         
-        // Notify clients
         this.broadcast("playerHit", {
           attackerId: e.attackerId,
           targetId: e.targetId,
@@ -1253,7 +1337,7 @@ export class MyRoom extends Room {
       if (target && tc) {
         this.broadcast("playerDowned", { id: target.id, by: e.sourceId });
         
-        tc.health.setMax(tc.health.maxHp, true); // Fill HP
+        tc.health.setMax(tc.health.maxHp, true);
         tc.resources.mana = tc.resources.maxMana;
         tc.invulnUntil = Date.now() + 1500;
         tc.state.state = "IDLE";
@@ -1261,12 +1345,11 @@ export class MyRoom extends Room {
         let rx, ry, rz;
 
         if (isMob) {
-          // Reset Dummy
           const m = target as MobInfo;
           rx = m.spawnX; ry = m.spawnY; rz = m.spawnZ;
           tc.poise = tc.maxPoise;
+          m.targetId = null;
         } else {
-          // Respawn Player in Town
           rx = this.TOWN_CENTER_X;
           rz = this.TOWN_CENTER_Z;
           ry = this.heightAt(rx, rz) + 8;
@@ -1274,6 +1357,7 @@ export class MyRoom extends Room {
 
         target.x = rx; target.y = ry; target.z = rz;
         tc.pos.x = rx; tc.pos.y = ry; tc.pos.z = rz;
+        if (!isMob) this.updatePlayerSpatial(target.id, rx, rz);
 
         this.broadcast("playerRespawn", { 
           id: target.id, 
@@ -1282,7 +1366,7 @@ export class MyRoom extends Room {
           mana: tc.resources.mana, maxMana: tc.resources.maxMana 
         });
         
-        tc.onSync?.(tc.snapshot()); // force persist
+        tc.onSync?.(tc.snapshot());
       }
     } 
     else if (e.type === "DODGE") {
@@ -1300,7 +1384,6 @@ export class MyRoom extends Room {
     const health = new HealthComponent(inv.stats.hp, inv.stats.maxHp);
     const resources = new ResourceComponent(inv.stats.mana, inv.stats.maxMana, 0, 100);
     
-    // Pass the saved archetype directly to the combat engine
     const archetype = (inv.stats.auraArchetype as any) || "BASIC";
     const aura = new AuraComponent(archetype, 0, 0, 0);
     
@@ -1390,7 +1473,7 @@ export class MyRoom extends Room {
   // =========================
   onJoin(client: Client, options: any) {
     const userId = safeUserId(options?.userId);
-    console.log("➕ onJoin", { sessionId: client.sessionId, userId });
+    console.log("onJoin", { sessionId: client.sessionId, userId });
 
     const spacing = 5;
     let spawnX = this.TOWN_CENTER_X;
@@ -1444,6 +1527,7 @@ export class MyRoom extends Room {
     };
 
     this.players.set(client.sessionId, spawn);
+    this.updatePlayerSpatial(client.sessionId, spawn.x, spawn.z);
     
     const combatant = this.buildCombatant(client, spawn, inv);
     this.combatants.set(client.sessionId, combatant);
@@ -1462,7 +1546,6 @@ export class MyRoom extends Room {
       .filter((pl) => pl.id !== client.sessionId)
       .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z, yaw: pl.yaw }));
       
-    // Send existing players AND existing mobs to the client
     const existingMobs = Array.from(this.mobs.values())
       .map((m) => ({ id: m.id, x: m.x, y: m.y, z: m.z, yaw: m.yaw }));
 
@@ -1476,19 +1559,22 @@ export class MyRoom extends Room {
   }
 
   onLeave(client: Client, code?: number) {
-    console.log("➖ onLeave", client.sessionId, "code:", code);
+    console.log("onLeave", client.sessionId, "code:", code);
     this.cancelMiningFor(client, "leave");
     this.combatants.delete(client.sessionId);
+    this.removePlayerSpatial(client.sessionId);
     const existed = this.players.delete(client.sessionId);
     if (existed) this.broadcast("playerLeft", { id: client.sessionId });
   }
 
   onDispose() {
-    console.log("🧹 MyRoom disposed");
+    console.log("MyRoom disposed");
     this.players.clear();
     this.mobs.clear();
     this.mining.clear();
     this.combatants.clear();
+    this.spatialGrid.clear();
+    this.playerChunks.clear();
   }
 
   // =========================
