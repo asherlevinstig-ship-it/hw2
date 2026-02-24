@@ -2,7 +2,7 @@
 // FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
 // Shared items/defs/recipes (single source of truth for server).
 //
-// UPDATED: Replaced Emojis with high-quality Game-Icons.net SVG paths
+// UPDATED: Fixed ICON_BASE URL to correctly point to raw SVG assets
 // UPDATED: Added 'color' field for Rarity/UI borders
 // Includes: All Biomes, Cave Blocks, Tools, Awakening Stones, and Skills
 
@@ -100,8 +100,8 @@ const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;      
 const CRYSTAL_ID = 97;
 
-// Base URL for Game-Icons.net assets (hosted via GitHub Raw for stability)
-const ICON_BASE = "https://raw.githubusercontent.com/game-icons/icons/refs/heads/master";
+// FIXED: Removed 'refs/heads/' to allow direct raw access
+const ICON_BASE = "https://raw.githubusercontent.com/game-icons/icons/master";
 
 export const ITEM_DEFS: Record<number, ItemDef> = {
   // Blocks

@@ -15,6 +15,7 @@
  * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
  * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
  * FIXED: Removed unused 'stackLabel' function
+ * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
  */
 
 import { Engine } from "noa-engine";
@@ -242,24 +243,30 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
-function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
-  const el = document.createElement("div");
-  el.style.width = "18px";
-  el.style.height = "18px";
-  el.style.border = "2px solid #111";
-  el.style.borderRadius = "2px";
-  
+// Use persistent URLs for HUD icons
+const HUD_ICON_BASE = "https://raw.githubusercontent.com/game-icons/icons/master";
+const HEART_ICON = `${HUD_ICON_BASE}/delapouite/transparent/1x1/heart-beats.svg`;
+const MANA_ICON = `${HUD_ICON_BASE}/lorc/transparent/1x1/power-lightning.svg`;
+
+function createStatIcon(type: "heart" | "mana", fillState: "full" | "half" | "empty") {
+  const img = document.createElement("img");
+  img.src = type === "heart" ? HEART_ICON : MANA_ICON;
+  img.style.width = "24px";
+  img.style.height = "24px";
+  img.style.filter = "invert(1)"; // White icon
+  img.style.transition = "all 0.2s ease";
+
   if (fillState === "full") {
-    el.style.backgroundColor = color;
-    el.style.boxShadow = "inset -3px -3px 0px rgba(0,0,0,0.3), inset 3px 3px 0px rgba(255,255,255,0.4), 2px 2px 4px rgba(0,0,0,0.5)";
+    img.style.opacity = "1";
+    img.style.filter = type === "heart" 
+      ? "drop-shadow(0 0 3px #ff0000) invert(1)" // Red glow hint
+      : "drop-shadow(0 0 3px #0055ff) invert(1)"; // Blue glow hint
   } else if (fillState === "half") {
-    el.style.background = `linear-gradient(to right, ${color} 50%, rgba(0,0,0,0.6) 50%)`;
-    el.style.boxShadow = "inset 2px 2px 0px rgba(255,255,255,0.3), 2px 2px 4px rgba(0,0,0,0.5)"; 
+    img.style.opacity = "0.5";
   } else {
-    el.style.backgroundColor = "rgba(0,0,0,0.6)";
-    el.style.boxShadow = "inset 2px 2px 5px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.5)";
+    img.style.opacity = "0.2";
   }
-  return el;
+  return img;
 }
 
 /* ===============================
@@ -831,7 +838,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
-      // Tiny durability bar? Or just number
       dEl.textContent = `${dur}`;
       dEl.style.position = "absolute";
       dEl.style.left = "4px";
@@ -1074,7 +1080,7 @@ function updateStatsHUD() {
     if (hpVal >= 2) state = "full";
     else if (hpVal === 1) state = "half";
     
-    healthHUD.appendChild(createStatBlock(state, "#ff2222")); 
+    healthHUD.appendChild(createStatIcon("heart", state)); 
   }
 
   const manaContainers = Math.max(1, Math.floor(myMaxMana / 10));
@@ -1084,7 +1090,7 @@ function updateStatsHUD() {
     if (mVal >= 10) state = "full";
     else if (mVal >= 5) state = "half"; 
     
-    manaHUD.appendChild(createStatBlock(state, "#2277ff")); 
+    manaHUD.appendChild(createStatIcon("mana", state)); 
   }
 }
 
@@ -2828,6 +2834,7 @@ function updateRemoteMeshes(dtSec: number) {
       const bounce = moving ? Math.abs(Math.sin(phase)) * 0.15 : 0;
       const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
       
+      // Telegraphing and Windup Logic
       let armPitch = 0;
       let bodyPitch = 0;
       const swingTime = remoteSwings.get(id);
@@ -2835,10 +2842,12 @@ function updateRemoteMeshes(dtSec: number) {
       if (swingTime && now - swingTime < 600) {
         const elapsed = now - swingTime;
         if (elapsed < 200) {
+          // 200ms Windup: Rear back
           const t = elapsed / 200;
           armPitch = -0.8 * t;
           bodyPitch = -0.2 * t;
         } else {
+          // 400ms Smash: Overhead swing and forward lean
           const t = (elapsed - 200) / 400;
           armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
           bodyPitch = Math.sin(t * Math.PI) * 0.4;
