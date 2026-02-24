@@ -1,8 +1,21 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, TS Fixes AND HUD FIX
- * UPDATED: Fixed HUD Icons (Heart/Mana) to use valid SVG URLs from Iconify API
- * UPDATED: Added fallback to Emoji in renderSlot if SVG fails
- * UPDATED: Removed unused 'stackLabel' function
+ * UPDATED: Added Always-Visible Bottom Hotbar
+ * UPDATED: Moved Stats HUD up to accommodate Hotbar
+ * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
+ * UPDATED: Component-based Combat System Wiring
+ * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
+ * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
+ * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
+ * UPDATED: Class Selection UI & The Warden Class 
+ * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
+ * FIXED: Wired up 'U' key for Cave Teleportation
+ * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
+ * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
+ * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
+ * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
+ * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
+ * NEW: Zone Notification Banner (Town/Wilderness/Caves) with Fade Transitions
  */
 
 import { Engine } from "noa-engine";
@@ -230,7 +243,57 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
-// Use persistent URLs for HUD icons - CORRECTED TO ICONIFY API
+/* ===============================
+   3.01 Zone Notification UI
+================================ */
+const zoneBanner = document.createElement("div");
+zoneBanner.style.position = "fixed";
+zoneBanner.style.top = "20%";
+zoneBanner.style.left = "50%";
+zoneBanner.style.transform = "translate(-50%, -50%)";
+zoneBanner.style.display = "flex";
+zoneBanner.style.flexDirection = "column";
+zoneBanner.style.alignItems = "center";
+zoneBanner.style.pointerEvents = "none";
+zoneBanner.style.zIndex = "400";
+zoneBanner.style.opacity = "0";
+zoneBanner.style.transition = "opacity 1s ease-in-out";
+document.body.appendChild(zoneBanner);
+
+const zoneTitle = document.createElement("div");
+zoneTitle.style.fontSize = "42px";
+zoneTitle.style.fontWeight = "bold";
+zoneTitle.style.color = "white";
+zoneTitle.style.textShadow = "0 2px 10px rgba(0,0,0,0.8)";
+zoneTitle.style.fontFamily = "monospace";
+zoneTitle.style.letterSpacing = "2px";
+zoneBanner.appendChild(zoneTitle);
+
+const zoneSub = document.createElement("div");
+zoneSub.style.fontSize = "18px";
+zoneSub.style.marginTop = "5px";
+zoneSub.style.color = "#ddd";
+zoneSub.style.textShadow = "0 1px 5px rgba(0,0,0,0.8)";
+zoneSub.style.fontFamily = "monospace";
+zoneBanner.appendChild(zoneSub);
+
+let currentZoneState: string | null = null;
+let zoneFadeTimeout: any = null;
+
+function showZoneNotification(title: string, sub: string, subColor: string) {
+    zoneTitle.textContent = title;
+    zoneSub.textContent = sub;
+    zoneSub.style.color = subColor;
+    
+    zoneBanner.style.opacity = "1";
+    
+    if (zoneFadeTimeout) clearTimeout(zoneFadeTimeout);
+    zoneFadeTimeout = setTimeout(() => {
+        zoneBanner.style.opacity = "0";
+    }, 4000);
+}
+
+// Use persistent URLs for HUD icons
 const HUD_ICON_BASE = "https://api.iconify.design/game-icons";
 const HEART_ICON = `${HUD_ICON_BASE}/heart-beats.svg`;
 const MANA_ICON = `${HUD_ICON_BASE}/power-lightning.svg`;
@@ -671,7 +734,7 @@ const remoteSwings = new Map<string, number>();
 /* ===============================
    6.0 Safe Zone state
 ================================ */
-type SafeZoneMsg = { x: number; z: number; r: number };
+type SafeZoneMsg = { x: number; z: number; r: number; name?: string };
 let safeZone: SafeZoneMsg | null = null;
 
 function isFiniteNum(n: any): n is number {
@@ -2837,7 +2900,6 @@ function updateRemoteMeshes(dtSec: number) {
       const bounce = moving ? Math.abs(Math.sin(phase)) * 0.15 : 0;
       const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
       
-      // Telegraphing and Windup Logic
       let armPitch = 0;
       let bodyPitch = 0;
       const swingTime = remoteSwings.get(id);
@@ -2845,12 +2907,10 @@ function updateRemoteMeshes(dtSec: number) {
       if (swingTime && now - swingTime < 600) {
         const elapsed = now - swingTime;
         if (elapsed < 200) {
-          // 200ms Windup: Rear back
           const t = elapsed / 200;
           armPitch = -0.8 * t;
           bodyPitch = -0.2 * t;
         } else {
-          // 400ms Smash: Overhead swing and forward lean
           const t = (elapsed - 200) / 400;
           armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
           bodyPitch = Math.sin(t * Math.PI) * 0.4;
@@ -2989,11 +3049,14 @@ async function connect() {
 
     room.onMessage("safeZone", (m: any) => {
       if (!m || typeof m !== "object") return;
-      const x = Number((m as any).x);
-      const z = Number((m as any).z);
-      const r = Number((m as any).r);
+      const x = Number((m as any).cx ?? (m as any).x); // Fix server key mismatch
+      const z = Number((m as any).cz ?? (m as any).z);
+      const r = Number((m as any).radius ?? (m as any).r);
+      const name = typeof (m as any).name === "string" ? (m as any).name : undefined;
+      
       if (!isFiniteNum(x) || !isFiniteNum(z) || !isFiniteNum(r)) return;
-      safeZone = { x, z, r };
+      
+      safeZone = { x, z, r, name };
       updateOverlay("Safe Zone received");
     });
 
@@ -3453,6 +3516,42 @@ function spawnSkillVFX(attackId: string, globalX: number, globalY: number, globa
 let tickCount = 0;
 let lastTickMs = performance.now();
 
+// 13.1 Zone Logic Hook
+function updateZoneCheck() {
+    if (!noa || !noa.playerEntity) return;
+    const p = noa.ents.getPosition(noa.playerEntity);
+    if (!p) return;
+
+    const x = p[0];
+    const y = p[1];
+    const z = p[2];
+
+    let newState = "wild";
+    let title = "The Wilderness";
+    let sub = "Danger Zone - PvP Enabled";
+    let color = "#ff4444";
+
+    // 1. Check Safe Zone
+    if (isInSafeZoneXZ(x, z)) {
+        newState = "safe";
+        title = safeZone?.name || "Town of Beginnings";
+        sub = "Safe Zone - Combat Disabled";
+        color = "#44ff44";
+    }
+    // 2. Check Deep Caves (Y < 10)
+    else if (y < 10) {
+        newState = "cave";
+        title = "Deep Caverns";
+        sub = "Darkness Encroaches";
+        color = "#b026ff"; // Purple/Red
+    }
+
+    if (newState !== currentZoneState) {
+        currentZoneState = newState;
+        showZoneNotification(title, sub, color);
+    }
+}
+
 (noa as any).on("tick", () => {
   tickCount++;
 
@@ -3527,6 +3626,8 @@ let lastTickMs = performance.now();
   updateRemoteMeshes(dtSec);
   updateDropVisuals(dtSec);
   tryAutoPickup();
+  
+  if (tickCount % 20 === 0) updateZoneCheck();
 
   if (miningActive && hasPointerLock() && !invOpen) {
     const t = getTargetInfo();
