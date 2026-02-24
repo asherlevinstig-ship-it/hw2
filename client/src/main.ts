@@ -1,21 +1,8 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, TS Fixes AND HUD FIX
- * UPDATED: Added Always-Visible Bottom Hotbar
- * UPDATED: Moved Stats HUD up to accommodate Hotbar
- * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
- * UPDATED: Component-based Combat System Wiring
- * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
- * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * UPDATED: Class Selection UI & The Warden Class 
- * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
- * FIXED: Wired up 'U' key for Cave Teleportation
- * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
- * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
- * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
- * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
- * FIXED: Removed unused 'stackLabel' function
- * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
+ * UPDATED: Fixed HUD Icons (Heart/Mana) to use valid SVG URLs from Iconify API
+ * UPDATED: Added fallback to Emoji in renderSlot if SVG fails
+ * UPDATED: Removed unused 'stackLabel' function
  */
 
 import { Engine } from "noa-engine";
@@ -243,10 +230,10 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
-// Use persistent URLs for HUD icons
-const HUD_ICON_BASE = "https://raw.githubusercontent.com/game-icons/icons/master";
-const HEART_ICON = `${HUD_ICON_BASE}/delapouite/transparent/1x1/heart-beats.svg`;
-const MANA_ICON = `${HUD_ICON_BASE}/lorc/transparent/1x1/power-lightning.svg`;
+// Use persistent URLs for HUD icons - CORRECTED TO ICONIFY API
+const HUD_ICON_BASE = "https://api.iconify.design/game-icons";
+const HEART_ICON = `${HUD_ICON_BASE}/heart-beats.svg`;
+const MANA_ICON = `${HUD_ICON_BASE}/power-lightning.svg`;
 
 function createStatIcon(type: "heart" | "mana", fillState: "full" | "half" | "empty") {
   const img = document.createElement("img");
@@ -255,6 +242,11 @@ function createStatIcon(type: "heart" | "mana", fillState: "full" | "half" | "em
   img.style.height = "24px";
   img.style.filter = "invert(1)"; // White icon
   img.style.transition = "all 0.2s ease";
+  
+  // Add error handling to hide broken icons in HUD
+  img.onerror = () => {
+      img.style.display = "none";
+  };
 
   if (fillState === "full") {
     img.style.opacity = "1";
@@ -795,6 +787,16 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       // Game-Icons.net are black; invert to white for dark UI
       img.style.filter = "invert(1)"; 
       img.style.opacity = "0.9";
+      
+      // Fallback to emoji if image fails to load
+      img.onerror = () => {
+          img.style.display = "none";
+          const fallback = document.createElement("div");
+          fallback.textContent = def.fallback || "❓";
+          fallback.style.fontSize = "28px";
+          el.appendChild(fallback);
+      };
+      
       el.appendChild(img);
 
       // 2. Rarity / Type Border Color
@@ -838,6 +840,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
+      // Tiny durability bar? Or just number
       dEl.textContent = `${dur}`;
       dEl.style.position = "absolute";
       dEl.style.left = "4px";

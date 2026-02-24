@@ -2,7 +2,7 @@
 // FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
 // Shared items/defs/recipes (single source of truth for server).
 //
-// UPDATED: Fixed ICON_BASE URL to correctly point to raw SVG assets
+// UPDATED: Switched to Iconify API CDN (Stable, fast, no 404s)
 // UPDATED: Added 'color' field for Rarity/UI borders
 // Includes: All Biomes, Cave Blocks, Tools, Awakening Stones, and Skills
 
@@ -71,6 +71,7 @@ export type ItemDef = {
   id: number;
   name: string;
   icon: string; // Full URL to SVG icon
+  fallback: string; // Emoji fallback
   color: string; // Hex color for UI borders/text
   maxStack: number;
   placeBlockId?: number;
@@ -90,7 +91,7 @@ const LEAVES_ID = 5;
 const SAND_ID = 11;
 const SNOW_ID = 12;
 
-// Cave Biome Blocks (Must match server MyRoom generation & Client registry)
+// Cave Biome Blocks
 const DEEPSLATE_ID = 90;
 const TUFF_ID = 91;
 const MOSS_ID = 92;
@@ -100,40 +101,42 @@ const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;      
 const CRYSTAL_ID = 97;
 
-// FIXED: Removed 'refs/heads/' to allow direct raw access
-const ICON_BASE = "https://raw.githubusercontent.com/game-icons/icons/master";
+// STABLE CDN URL for Game Icons via Iconify
+// This API flattens the structure so we don't need to guess author names
+const ICON_BASE = "https://api.iconify.design/game-icons";
 
 export const ITEM_DEFS: Record<number, ItemDef> = {
   // Blocks
-  1: { id: 1, name: "Grass", icon: `${ICON_BASE}/delapouite/transparent/1x1/grass.svg`, color: "#4CAF50", maxStack: 64, placeBlockId: GRASS_ID },
-  2: { id: 2, name: "Dirt", icon: `${ICON_BASE}/lorc/transparent/1x1/ground-sprout.svg`, color: "#795548", maxStack: 64, placeBlockId: DIRT_ID },
-  3: { id: 3, name: "Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/stone-block.svg`, color: "#9E9E9E", maxStack: 64, placeBlockId: STONE_ID },
-  4: { id: 4, name: "Wood", icon: `${ICON_BASE}/lorc/transparent/1x1/wood-beam.svg`, color: "#8D6E63", maxStack: 64, placeBlockId: WOOD_ID },
-  5: { id: 5, name: "Leaves", icon: `${ICON_BASE}/lorc/transparent/1x1/vine-leaf.svg`, color: "#66BB6A", maxStack: 64, placeBlockId: LEAVES_ID },
+  1: { id: 1, name: "Grass", icon: `${ICON_BASE}/grass.svg`, fallback: "🌿", color: "#4CAF50", maxStack: 64, placeBlockId: GRASS_ID },
+  2: { id: 2, name: "Dirt", icon: `${ICON_BASE}/ground-sprout.svg`, fallback: "🟫", color: "#795548", maxStack: 64, placeBlockId: DIRT_ID },
+  3: { id: 3, name: "Stone", icon: `${ICON_BASE}/stone-block.svg`, fallback: "🌑", color: "#9E9E9E", maxStack: 64, placeBlockId: STONE_ID },
+  4: { id: 4, name: "Wood", icon: `${ICON_BASE}/wood-beam.svg`, fallback: "🪵", color: "#8D6E63", maxStack: 64, placeBlockId: WOOD_ID },
+  5: { id: 5, name: "Leaves", icon: `${ICON_BASE}/vine-leaf.svg`, fallback: "🍃", color: "#66BB6A", maxStack: 64, placeBlockId: LEAVES_ID },
 
   // Biome blocks
-  6: { id: 6, name: "Sand", icon: `${ICON_BASE}/lorc/transparent/1x1/dust-cloud.svg`, color: "#FFF59D", maxStack: 64, placeBlockId: SAND_ID },
-  7: { id: 7, name: "Snow", icon: `${ICON_BASE}/lorc/transparent/1x1/snowflake-2.svg`, color: "#E0F7FA", maxStack: 64, placeBlockId: SNOW_ID },
+  6: { id: 6, name: "Sand", icon: `${ICON_BASE}/dust-cloud.svg`, fallback: "🏜️", color: "#FFF59D", maxStack: 64, placeBlockId: SAND_ID },
+  7: { id: 7, name: "Snow", icon: `${ICON_BASE}/snowflake-2.svg`, fallback: "❄️", color: "#E0F7FA", maxStack: 64, placeBlockId: SNOW_ID },
 
   // Cave Biome Blocks
-  90: { id: 90, name: "Deepslate", icon: `${ICON_BASE}/lorc/transparent/1x1/rock.svg`, color: "#37474F", maxStack: 64, placeBlockId: DEEPSLATE_ID },
-  91: { id: 91, name: "Tuff", icon: `${ICON_BASE}/lorc/transparent/1x1/pumice.svg`, color: "#78909C", maxStack: 64, placeBlockId: TUFF_ID },
-  92: { id: 92, name: "Moss", icon: `${ICON_BASE}/lorc/transparent/1x1/mossy-stone.svg`, color: "#69F0AE", maxStack: 64, placeBlockId: MOSS_ID },
-  93: { id: 93, name: "Mossy Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/stone-pile.svg`, color: "#4DB6AC", maxStack: 64, placeBlockId: MOSSY_STONE_ID },
-  94: { id: 94, name: "Pointed Dripstone", icon: `${ICON_BASE}/lorc/transparent/1x1/stalactites.svg`, color: "#8D6E63", maxStack: 64, placeBlockId: DRIPSTONE_ID },
-  95: { id: 95, name: "Dripstone Block", icon: `${ICON_BASE}/lorc/transparent/1x1/stone-wall.svg`, color: "#5D4037", maxStack: 64, placeBlockId: DRIPSTONE_BLOCK_ID },
-  96: { id: 96, name: "Glow Shroom", icon: `${ICON_BASE}/lorc/transparent/1x1/mushroom.svg`, color: "#00E5FF", maxStack: 64, placeBlockId: GLOW_SHROOM_ID },
-  97: { id: 97, name: "Cave Crystal", icon: `${ICON_BASE}/lorc/transparent/1x1/crystal-growth.svg`, color: "#D500F9", maxStack: 64, placeBlockId: CRYSTAL_ID },
+  90: { id: 90, name: "Deepslate", icon: `${ICON_BASE}/rock.svg`, fallback: "⬛", color: "#37474F", maxStack: 64, placeBlockId: DEEPSLATE_ID },
+  91: { id: 91, name: "Tuff", icon: `${ICON_BASE}/pumice.svg`, fallback: "🌪️", color: "#78909C", maxStack: 64, placeBlockId: TUFF_ID },
+  92: { id: 92, name: "Moss", icon: `${ICON_BASE}/mossy-stone.svg`, fallback: "🟢", color: "#69F0AE", maxStack: 64, placeBlockId: MOSS_ID },
+  93: { id: 93, name: "Mossy Stone", icon: `${ICON_BASE}/stone-pile.svg`, fallback: "🦠", color: "#4DB6AC", maxStack: 64, placeBlockId: MOSSY_STONE_ID },
+  94: { id: 94, name: "Pointed Dripstone", icon: `${ICON_BASE}/stalactites.svg`, fallback: "🔻", color: "#8D6E63", maxStack: 64, placeBlockId: DRIPSTONE_ID },
+  95: { id: 95, name: "Dripstone Block", icon: `${ICON_BASE}/stone-wall.svg`, fallback: "🟤", color: "#5D4037", maxStack: 64, placeBlockId: DRIPSTONE_BLOCK_ID },
+  96: { id: 96, name: "Glow Shroom", icon: `${ICON_BASE}/mushroom.svg`, fallback: "🍄", color: "#00E5FF", maxStack: 64, placeBlockId: GLOW_SHROOM_ID },
+  97: { id: 97, name: "Cave Crystal", icon: `${ICON_BASE}/crystal-growth.svg`, fallback: "💠", color: "#D500F9", maxStack: 64, placeBlockId: CRYSTAL_ID },
 
   // Crafted
-  10: { id: 10, name: "Planks", icon: `${ICON_BASE}/lorc/transparent/1x1/wooden-crate.svg`, color: "#A1887F", maxStack: 64 },
-  11: { id: 11, name: "Stick", icon: `${ICON_BASE}/lorc/transparent/1x1/bo.svg`, color: "#8D6E63", maxStack: 64 },
+  10: { id: 10, name: "Planks", icon: `${ICON_BASE}/wooden-crate.svg`, fallback: "🪜", color: "#A1887F", maxStack: 64 },
+  11: { id: 11, name: "Stick", icon: `${ICON_BASE}/bo.svg`, fallback: "🥢", color: "#8D6E63", maxStack: 64 },
 
-  // Tools (maxStack=1)
+  // Tools
   20: {
     id: 20,
     name: "Wood Pick",
-    icon: `${ICON_BASE}/lorc/transparent/1x1/pick-of-destiny.svg`,
+    icon: `${ICON_BASE}/pick-of-destiny.svg`,
+    fallback: "⛏️",
     color: "#8D6E63",
     maxStack: 1,
     tool: { kind: "pick", tier: 1, maxDurability: 60, speedMul: 0.65 },
@@ -141,7 +144,8 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   21: {
     id: 21,
     name: "Stone Pick",
-    icon: `${ICON_BASE}/lorc/transparent/1x1/miner.svg`,
+    icon: `${ICON_BASE}/miner.svg`,
+    fallback: "⛏️",
     color: "#BDBDBD",
     maxStack: 1,
     tool: { kind: "pick", tier: 2, maxDurability: 132, speedMul: 0.48 },
@@ -149,29 +153,30 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   22: {
     id: 22,
     name: "Iron Pick",
-    icon: `${ICON_BASE}/lorc/transparent/1x1/mining.svg`,
+    icon: `${ICON_BASE}/mining.svg`,
+    fallback: "⛏️",
     color: "#ECEFF1",
     maxStack: 1,
     tool: { kind: "pick", tier: 3, maxDurability: 251, speedMul: 0.34 },
   },
 
   // Minerals
-  30: { id: 30, name: "Coal", icon: `${ICON_BASE}/lorc/transparent/1x1/ember-shot.svg`, color: "#212121", maxStack: 64 },
-  31: { id: 31, name: "Raw Iron", icon: `${ICON_BASE}/lorc/transparent/1x1/iron-ingot.svg`, color: "#D7CCC8", maxStack: 64 },
-  32: { id: 32, name: "Raw Gold", icon: `${ICON_BASE}/lorc/transparent/1x1/gold-nugget.svg`, color: "#FFD54F", maxStack: 64 },
-  33: { id: 33, name: "Diamond", icon: `${ICON_BASE}/lorc/transparent/1x1/diamond-hard.svg`, color: "#00E5FF", maxStack: 64 },
+  30: { id: 30, name: "Coal", icon: `${ICON_BASE}/ember-shot.svg`, fallback: "⚫", color: "#212121", maxStack: 64 },
+  31: { id: 31, name: "Raw Iron", icon: `${ICON_BASE}/iron-ingot.svg`, fallback: "🧱", color: "#D7CCC8", maxStack: 64 },
+  32: { id: 32, name: "Raw Gold", icon: `${ICON_BASE}/gold-nugget.svg`, fallback: "🟡", color: "#FFD54F", maxStack: 64 },
+  33: { id: 33, name: "Diamond", icon: `${ICON_BASE}/diamond-hard.svg`, fallback: "💎", color: "#00E5FF", maxStack: 64 },
 
   // --- AWAKENING STONES ---
-  200: { id: 200, name: "Iron Awakening Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/shield-bash.svg`, color: "#B0BEC5", maxStack: 10 },
-  201: { id: 201, name: "Shadow Awakening Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/hooded-figure.svg`, color: "#7E57C2", maxStack: 10 },
-  202: { id: 202, name: "Blood Awakening Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/droplets.svg`, color: "#EF5350", maxStack: 10 },
-  203: { id: 203, name: "Astral Awakening Stone", icon: `${ICON_BASE}/lorc/transparent/1x1/runes.svg`, color: "#29B6F6", maxStack: 10 },
+  200: { id: 200, name: "Iron Awakening Stone", icon: `${ICON_BASE}/shield-bash.svg`, fallback: "🛡️", color: "#B0BEC5", maxStack: 10 },
+  201: { id: 201, name: "Shadow Awakening Stone", icon: `${ICON_BASE}/hooded-figure.svg`, fallback: "🌚", color: "#7E57C2", maxStack: 10 },
+  202: { id: 202, name: "Blood Awakening Stone", icon: `${ICON_BASE}/droplets.svg`, fallback: "🩸", color: "#EF5350", maxStack: 10 },
+  203: { id: 203, name: "Astral Awakening Stone", icon: `${ICON_BASE}/runes.svg`, fallback: "✨", color: "#29B6F6", maxStack: 10 },
 
-  // --- VIRTUAL SKILLS --- (Only stack to 1)
-  1001: { id: 1001, name: "[Skill] Aura Slash", icon: `${ICON_BASE}/lorc/transparent/1x1/swords-power.svg`, color: "#00E676", maxStack: 1 },
-  1002: { id: 1002, name: "[Skill] Aura Heavy", icon: `${ICON_BASE}/lorc/transparent/1x1/hammer-drop.svg`, color: "#FFA726", maxStack: 1 },
-  1003: { id: 1003, name: "[Skill] Aura Thrust", icon: `${ICON_BASE}/lorc/transparent/1x1/piercing-sword.svg`, color: "#29B6F6", maxStack: 1 },
-  1004: { id: 1004, name: "[Skill] Nature Grasp", icon: `${ICON_BASE}/lorc/transparent/1x1/vine-whip.svg`, color: "#66BB6A", maxStack: 1 },
+  // --- VIRTUAL SKILLS ---
+  1001: { id: 1001, name: "[Skill] Aura Slash", icon: `${ICON_BASE}/swords-power.svg`, fallback: "🗡️", color: "#00E676", maxStack: 1 },
+  1002: { id: 1002, name: "[Skill] Aura Heavy", icon: `${ICON_BASE}/hammer-drop.svg`, fallback: "🔨", color: "#FFA726", maxStack: 1 },
+  1003: { id: 1003, name: "[Skill] Aura Thrust", icon: `${ICON_BASE}/piercing-sword.svg`, fallback: "📍", color: "#29B6F6", maxStack: 1 },
+  1004: { id: 1004, name: "[Skill] Nature Grasp", icon: `${ICON_BASE}/vine-whip.svg`, fallback: "🌿", color: "#66BB6A", maxStack: 1 },
 };
 
 export type Recipe = {
@@ -183,34 +188,7 @@ export type Recipe = {
 export const RECIPES: Recipe[] = [
   { id: "planks_from_log", inputs: [{ id: Items.WOOD_LOG, count: 1 }], output: { id: Items.PLANK, count: 4 } },
   { id: "sticks_from_planks", inputs: [{ id: Items.PLANK, count: 2 }], output: { id: Items.STICK, count: 4 } },
-
-  // Wood pick
-  {
-    id: "wood_pick",
-    inputs: [
-      { id: Items.PLANK, count: 3 },
-      { id: Items.STICK, count: 2 },
-    ],
-    output: { id: Items.WOOD_PICK, count: 1 },
-  },
-
-  // Stone pick (uses STONE item as "cobble" for now)
-  {
-    id: "stone_pick",
-    inputs: [
-      { id: Items.STONE, count: 3 },
-      { id: Items.STICK, count: 2 },
-    ],
-    output: { id: Items.STONE_PICK, count: 1 },
-  },
-
-  // Iron pick (uses RAW_IRON as ingot substitute until smelting exists)
-  {
-    id: "iron_pick",
-    inputs: [
-      { id: Items.RAW_IRON, count: 3 },
-      { id: Items.STICK, count: 2 },
-    ],
-    output: { id: Items.IRON_PICK, count: 1 },
-  },
+  { id: "wood_pick", inputs: [{ id: Items.PLANK, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.WOOD_PICK, count: 1 } },
+  { id: "stone_pick", inputs: [{ id: Items.STONE, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.STONE_PICK, count: 1 } },
+  { id: "iron_pick", inputs: [{ id: Items.RAW_IRON, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.IRON_PICK, count: 1 } },
 ];
