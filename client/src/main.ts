@@ -1,21 +1,9 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, TS Fixes AND HUD FIX
- * UPDATED: Added Always-Visible Bottom Hotbar
- * UPDATED: Moved Stats HUD up to accommodate Hotbar
- * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
- * UPDATED: Component-based Combat System Wiring
- * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
- * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * UPDATED: Class Selection UI & The Warden Class 
- * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
- * FIXED: Wired up 'U' key for Cave Teleportation
- * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
- * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
- * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
- * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
- * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
- * NEW: Zone Notification Banner (Town/Wilderness/Caves) with Fade Transitions
+ * UPDATED: Fixed HUD Icons (Heart/Mana) to use valid SVG URLs from Iconify API
+ * UPDATED: Added fallback to Emoji in renderSlot if SVG fails
+ * UPDATED: Removed unused 'stackLabel' function
+ * UPDATED: Zone Notification Banner logic included
  */
 
 import { Engine } from "noa-engine";
@@ -293,7 +281,7 @@ function showZoneNotification(title: string, sub: string, subColor: string) {
     }, 4000);
 }
 
-// Use persistent URLs for HUD icons
+// Use persistent URLs for HUD icons - CORRECTED TO ICONIFY API
 const HUD_ICON_BASE = "https://api.iconify.design/game-icons";
 const HEART_ICON = `${HUD_ICON_BASE}/heart-beats.svg`;
 const MANA_ICON = `${HUD_ICON_BASE}/power-lightning.svg`;

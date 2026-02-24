@@ -9,6 +9,7 @@
 // COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
 // NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
 // NEW: Scaled AI (Spatial Hashing, AI Tick Interleaving, Chunk Sleep, Dharma Spawners)
+// NEW: Mob Stuck/Frustration Mechanic + Projectile System (Rock Throw)
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -96,6 +97,26 @@ type MobInfo = {
   vy: number; // Vertical velocity for gravity and jumping
   tickPhase: number; // For interleaved AI ticking
   targetId: string | null; // Cached aggro target
+
+  // Stuck/Frustration Logic
+  lastPos: { x: number, y: number, z: number };
+  lastPosTime: number;
+  stuckAccumulator: number; // ms stuck
+  attackCooldown: number;   // ms until next attack/throw
+};
+
+type Projectile = {
+  id: string;
+  ownerId: string;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  damage: number;
+  radius: number;
+  createdAt: number;
 };
 
 type ItemStack = SharedItemStack;
@@ -401,6 +422,7 @@ export class MyRoom extends Room {
   private mobs = new Map<string, MobInfo>();
   private chunks = new Map<string, Uint8Array>();
   private drops = new Map<string, Drop>();
+  private projectiles = new Map<string, Projectile>(); // NEW: Projectiles
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
   private inventories = new Map<string, InvState>();
@@ -497,10 +519,15 @@ export class MyRoom extends Room {
       lastCombatTick = now;
       this.combatTickCount++;
 
-      // Upgraded Mob AI: Interleaved, Chunk-Sleep, Spatial Aggro
+      this.tickProjectiles(); // Move projectiles every tick
+
+      // Upgraded Mob AI: Interleaved, Chunk-Sleep, Spatial Aggro, Stuck Check
       for (const mob of this.mobs.values()) {
         const c = this.combatants.get(mob.id);
         if (!c || c.health.isDead() || c.state.isStaggered()) continue;
+
+        // Reduce cooldowns
+        if (mob.attackCooldown > 0) mob.attackCooldown -= dt;
 
         let isMoving = false;
 
@@ -528,8 +555,20 @@ export class MyRoom extends Room {
 
         // 2. Interleaved Target Finding (Only run AI every 5th tick based on mob identity)
         if (this.combatTickCount % 5 === mob.tickPhase) {
+          // STUCK CHECK LOGIC
+          if (now - mob.lastPosTime > 1000) {
+            const dist = Math.sqrt((c.pos.x - mob.lastPos.x)**2 + (c.pos.z - mob.lastPos.z)**2);
+            if (mob.targetId && dist < 1.5) {
+                mob.stuckAccumulator += (now - mob.lastPosTime);
+            } else {
+                mob.stuckAccumulator = 0;
+            }
+            mob.lastPos = { x: c.pos.x, y: c.pos.y, z: c.pos.z };
+            mob.lastPosTime = now;
+          }
+
           let nearestPlayerId: string | null = null;
-          let closestDist = 12.0; // Aggro Radius
+          let closestDist = 16.0; // Aggro Radius
 
           for (const pl of nearbyPlayers) {
             const pdx = pl.x - c.pos.x;
@@ -571,8 +610,31 @@ export class MyRoom extends Room {
         let targetDz = 0;
         let intentDist = 0;
 
-        // 4. State: CHASE
-        if (mob.targetId) {
+        // 4. Frustration / Stuck State: Throw Rock
+        if (mob.stuckAccumulator > 3000 && mob.targetId && mob.attackCooldown <= 0) {
+            const target = this.players.get(mob.targetId);
+            if (target) {
+                // Face target
+                const pdx = target.x - c.pos.x;
+                const pdz = target.z - c.pos.z;
+                mob.yaw = Math.atan2(pdx, pdz);
+                c.yaw = mob.yaw;
+
+                // Fire Projectile
+                this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
+                
+                // Trigger animation via fake attack event
+                this.broadcast("playerSwing", { id: mob.id, attackId: "SLAM" });
+
+                // Reset stuck timer & set cooldown
+                mob.stuckAccumulator = 0;
+                mob.attackCooldown = 2500;
+                continue; // Skip movement this tick
+            }
+        }
+
+        // 5. State: CHASE
+        if (mob.targetId && mob.attackCooldown <= 0) {
           const target = this.players.get(mob.targetId);
           if (target) {
             targetDx = target.x - c.pos.x;
@@ -592,7 +654,7 @@ export class MyRoom extends Room {
             mob.targetId = null; // Lost target
           }
         } 
-        // 5. State: RETURN TO SPAWN
+        // 6. State: RETURN TO SPAWN
         if (!mob.targetId) {
           targetDx = mob.spawnX - c.pos.x;
           targetDz = mob.spawnZ - c.pos.z;
@@ -606,7 +668,7 @@ export class MyRoom extends Room {
           }
         }
 
-        // 6. Apply Horizontal Movement & Jumping
+        // 7. Apply Horizontal Movement & Jumping
         if (intentDist > 0) {
           const speed = mob.targetId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
           const moveX = (targetDx / intentDist) * speed;
@@ -1250,7 +1312,11 @@ export class MyRoom extends Room {
       spawnX: x, spawnY: y, spawnZ: z,
       vy: 0,
       tickPhase: id.charCodeAt(id.length - 1) % 5,
-      targetId: null
+      targetId: null,
+      lastPos: { x, y, z },
+      lastPosTime: Date.now(),
+      stuckAccumulator: 0,
+      attackCooldown: 0
     };
     this.mobs.set(id, mob);
 
@@ -1290,6 +1356,92 @@ export class MyRoom extends Room {
       }
     };
     this.combatants.set(id, c);
+  }
+
+  // =========================
+  // Projectile System
+  // =========================
+  private spawnProjectile(ownerId: string, x: number, y: number, z: number, tx: number, ty: number, tz: number) {
+      const id = `proj_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
+      
+      const dx = tx - x;
+      const dy = ty - y;
+      const dz = tz - z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      const speed = 1.0; // blocks per tick (50ms) = 20 blocks/sec
+
+      // Simple ballistic arc estimate
+      const timeToTarget = dist / speed;
+      const gravity = 0.04; // Must match physics loop
+      // Add extra Y velocity to arc it
+      const arcY = (0.5 * gravity * timeToTarget * timeToTarget + dy) / timeToTarget;
+
+      const p: Projectile = {
+          id, ownerId,
+          x, y, z,
+          vx: (dx / timeToTarget),
+          vy: arcY,
+          vz: (dz / timeToTarget),
+          damage: 15,
+          radius: 0.5,
+          createdAt: Date.now()
+      };
+      
+      this.projectiles.set(id, p);
+      this.broadcast("projectileSpawn", p);
+  }
+
+  private tickProjectiles() {
+      const toRemove: string[] = [];
+      const now = Date.now();
+
+      for(const [id, p] of this.projectiles) {
+          if (now - p.createdAt > 5000) {
+              toRemove.push(id);
+              continue;
+          }
+
+          p.x += p.vx;
+          p.y += p.vy;
+          p.z += p.vz;
+          p.vy -= 0.04; // Gravity
+
+          // Ground Collision
+          const cx = Math.floor(p.x);
+          const cy = Math.floor(p.y);
+          const cz = Math.floor(p.z);
+          if (this.getBlockAt(cx, cy, cz) !== this.AIR_ID) {
+              toRemove.push(id);
+              continue;
+          }
+
+          // Player Collision
+          for (const pl of this.players.values()) {
+              if (pl.id === p.ownerId) continue;
+              const dx = pl.x - p.x;
+              const dy = (pl.y + 0.9) - p.y; // Center mass
+              const dz = pl.z - p.z;
+              if (dx*dx + dy*dy + dz*dz < 1.0) {
+                  const combatant = this.combatants.get(pl.id);
+                  if (combatant) {
+                      this.combat.applyHit({
+                          targetId: pl.id,
+                          attackerId: p.ownerId,
+                          damage: p.damage,
+                          kind: "PHYSICAL",
+                          knockback: { x: p.vx * 0.5, y: 0.2, z: p.vz * 0.5 }
+                      });
+                  }
+                  toRemove.push(id);
+                  break; 
+              }
+          }
+      }
+
+      for (const id of toRemove) {
+          this.projectiles.delete(id);
+          this.broadcast("projectileDespawn", { id });
+      }
   }
 
   // =========================

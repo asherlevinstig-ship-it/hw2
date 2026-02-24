@@ -1,6 +1,7 @@
 // server/src/combat/CombatSystem.ts
 // Server-authoritative combat engine: players + mobs share the same pipeline.
 // NodeNext-friendly ESM imports use ".js" extensions.
+// UPDATED: Added public applyHit() method for Projectiles/Hazards
 
 import { AttackDefs, type AttackDefId } from "./defs/attacks.js";
 import { StatusDefs, type StatusDefId } from "./defs/status.js";
@@ -32,7 +33,7 @@ export type EntityId = string;
 
 export type Faction = "PLAYER" | "MOB" | "NEUTRAL";
 
-export type DamageType = "BLUNT" | "SLASH" | "PIERCE" | "ARCANE" | "FIRE" | "ICE";
+export type DamageType = "BLUNT" | "SLASH" | "PIERCE" | "ARCANE" | "FIRE" | "ICE" | "PHYSICAL";
 
 export type HitResultKind = "MISS" | "HIT" | "BLOCK" | "DODGE" | "IMMUNE";
 
@@ -46,12 +47,12 @@ export type AttackRequest = {
 export type CombatEvent =
   | { type: "ATTACK_START"; attackerId: EntityId; attackId: AttackDefId }
   | { type: "ATTACK_PHASE"; attackerId: EntityId; phase: "WINDUP" | "ACTIVE" | "RECOVERY"; tLeftMs: number }
-  | { type: "HIT"; attackerId: EntityId; targetId: EntityId; attackId: AttackDefId; kind: HitResultKind; damage: number; damageType: DamageType; crit: boolean; poiseDamage: number; knockback?: Vec3 }
+  | { type: "HIT"; attackerId: EntityId; targetId: EntityId; attackId: string; kind: HitResultKind; damage: number; damageType: DamageType; crit: boolean; poiseDamage: number; knockback?: Vec3 }
   | { type: "STATUS_APPLY"; sourceId: EntityId; targetId: EntityId; statusId: StatusDefId; stacks: number; durationMs: number }
   | { type: "STAGGER"; sourceId: EntityId; targetId: EntityId; durationMs: number }
   | { type: "DEATH"; sourceId: EntityId; targetId: EntityId }
   | { type: "RESOURCE"; id: EntityId; hp?: number; maxHp?: number; mana?: number; maxMana?: number; aura?: number; maxAura?: number; burnout?: number; intensity?: number; tier?: number }
-  | { type: "AURA_STATE"; id: EntityId; intensity: number; tier: number; burnout: number; berserk: boolean } // <-- Added this line
+  | { type: "AURA_STATE"; id: EntityId; intensity: number; tier: number; burnout: number; berserk: boolean }
   | { type: "DODGE"; id: EntityId; dir: Vec3 }
   | { type: "BLOCK"; id: EntityId; active: boolean }
   | { type: "COMBAT_LOG"; msg: string; data?: any };
@@ -565,6 +566,50 @@ export class CombatSystem {
         this.sync(attacker);
       }
     }
+  }
+
+  // --- External API for Projectiles/Traps ---
+  public applyHit(input: {
+      targetId: EntityId;
+      attackerId: EntityId;
+      damage: number;
+      kind: DamageType;
+      knockback?: Vec3;
+  }) {
+      const target = this.find(input.targetId);
+      const attacker = this.find(input.attackerId); // Might be null for traps
+
+      if (!target || target.health.isDead()) return;
+      
+      const now = nowMs();
+      if (now < target.invulnUntil) return;
+
+      const dmg = this.applyMitigation(input.damage, input.kind, target, false);
+      
+      target.health.applyDamage(dmg);
+      if (input.knockback) {
+          target.pos = add(target.pos, input.knockback);
+      }
+
+      this.hooks.emit({
+          type: "HIT",
+          attackerId: input.attackerId,
+          targetId: input.targetId,
+          attackId: "PROJECTILE",
+          kind: "HIT",
+          damage: dmg,
+          damageType: input.kind,
+          crit: false,
+          poiseDamage: 10,
+          knockback: input.knockback
+      });
+
+      if (target.health.isDead()) {
+          target.state.setDead();
+          this.hooks.emit({ type: "DEATH", sourceId: input.attackerId, targetId: target.id });
+      }
+
+      this.sync(target);
   }
 
   // --------------------
