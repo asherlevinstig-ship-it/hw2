@@ -12,6 +12,7 @@
  * FIXED: Wired up 'U' key for Cave Teleportation
  * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
  * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
+ * NEW: Minecraft-Style Object Pooled HUD for Health and Mana
  */
 
 import { Engine } from "noa-engine";
@@ -204,15 +205,18 @@ coordsHUD.style.zIndex = "150";
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
 
+/* ===============================
+   3.5 Stats HUD & Object Pools
+================================ */
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
 statsHUD.style.bottom = "90px"; 
 statsHUD.style.left = "50%";
 statsHUD.style.transform = "translateX(-50%)";
 statsHUD.style.display = "flex";
-statsHUD.style.flexDirection = "column";
-statsHUD.style.gap = "6px";
-statsHUD.style.alignItems = "center";
+statsHUD.style.flexDirection = "row";
+statsHUD.style.gap = "40px";
+statsHUD.style.alignItems = "flex-end";
 statsHUD.style.pointerEvents = "none";
 statsHUD.style.userSelect = "none";
 statsHUD.style.zIndex = "150";
@@ -220,12 +224,18 @@ document.body.appendChild(statsHUD);
 
 const healthHUD = document.createElement("div");
 healthHUD.style.display = "flex";
-healthHUD.style.gap = "4px";
+healthHUD.style.flexWrap = "wrap-reverse";
+healthHUD.style.width = "180px";
+healthHUD.style.justifyContent = "flex-start";
+healthHUD.style.gap = "0px";
 statsHUD.appendChild(healthHUD);
 
 const manaHUD = document.createElement("div");
 manaHUD.style.display = "flex";
-manaHUD.style.gap = "4px";
+manaHUD.style.flexWrap = "wrap-reverse";
+manaHUD.style.width = "180px";
+manaHUD.style.justifyContent = "flex-end";
+manaHUD.style.gap = "0px";
 statsHUD.appendChild(manaHUD);
 
 const hudHotbarRoot = document.createElement("div");
@@ -239,25 +249,20 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
-function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
-  const el = document.createElement("div");
-  el.style.width = "18px";
-  el.style.height = "18px";
-  el.style.border = "2px solid #111";
-  el.style.borderRadius = "2px";
+// Object Pools to prevent DOM Thrashing
+const hpNodes: HTMLDivElement[] = [];
+const manaNodes: HTMLDivElement[] = [];
+
+// Base64 SVGs for that classic crisp pixel look
+const ICONS = {
+  heartFull: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h4 v1 h2 v4 l-4,3 l-4,-3 z' fill='%23ff2222' stroke='black' stroke-width='1'/></svg>")`,
+  heartHalf: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h2 v8 l-4,-3 z' fill='%23ff2222' stroke='black' stroke-width='1'/><path d='M5,2 h2 v1 h2 v4 l-4,3 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
+  heartEmpty: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h4 v1 h2 v4 l-4,3 l-4,-3 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
   
-  if (fillState === "full") {
-    el.style.backgroundColor = color;
-    el.style.boxShadow = "inset -3px -3px 0px rgba(0,0,0,0.3), inset 3px 3px 0px rgba(255,255,255,0.4), 2px 2px 4px rgba(0,0,0,0.5)";
-  } else if (fillState === "half") {
-    el.style.background = `linear-gradient(to right, ${color} 50%, rgba(0,0,0,0.6) 50%)`;
-    el.style.boxShadow = "inset 2px 2px 0px rgba(255,255,255,0.3), 2px 2px 4px rgba(0,0,0,0.5)"; 
-  } else {
-    el.style.backgroundColor = "rgba(0,0,0,0.6)";
-    el.style.boxShadow = "inset 2px 2px 5px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.5)";
-  }
-  return el;
-}
+  manaFull: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='%232277ff' stroke='black' stroke-width='1'/></svg>")`,
+  manaHalf: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M5,1 a4,4 0 0,0 0,8 z' fill='%232277ff' stroke='black' stroke-width='1'/><path d='M5,1 a4,4 0 0,1 0,8 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
+  manaEmpty: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`
+};
 
 /* ===============================
    3.1 Inventory UI
@@ -1044,27 +1049,58 @@ function updateCoordsHUD() {
 }
 
 function updateStatsHUD() {
-  healthHUD.innerHTML = "";
-  manaHUD.innerHTML = "";
-
-  const hpContainers = Math.max(1, Math.floor(myMaxHp / 2));
-  for (let i = 0; i < hpContainers; i++) {
-    const hpVal = myHp - (i * 2);
-    let state: "full" | "half" | "empty" = "empty";
-    if (hpVal >= 2) state = "full";
-    else if (hpVal === 1) state = "half";
-    
-    healthHUD.appendChild(createStatBlock(state, "#ff2222")); 
+  const hpContainers = Math.max(1, Math.ceil(myMaxHp / 2));
+  
+  while (hpNodes.length < hpContainers) {
+    const el = document.createElement("div");
+    el.style.width = "18px";
+    el.style.height = "18px";
+    el.style.backgroundSize = "contain";
+    el.style.backgroundRepeat = "no-repeat";
+    el.style.imageRendering = "pixelated";
+    healthHUD.appendChild(el);
+    hpNodes.push(el);
   }
 
-  const manaContainers = Math.max(1, Math.floor(myMaxMana / 10));
-  for (let i = 0; i < manaContainers; i++) {
-    const mVal = myMana - (i * 10);
-    let state: "full" | "half" | "empty" = "empty";
-    if (mVal >= 10) state = "full";
-    else if (mVal >= 5) state = "half"; 
-    
-    manaHUD.appendChild(createStatBlock(state, "#2277ff")); 
+  for (let i = 0; i < hpNodes.length; i++) {
+    const el = hpNodes[i];
+    if (i >= hpContainers) {
+      el.style.display = "none";
+    } else {
+      el.style.display = "block";
+      const hpVal = myHp - (i * 2);
+      
+      if (hpVal >= 2) el.style.backgroundImage = ICONS.heartFull;
+      else if (hpVal === 1) el.style.backgroundImage = ICONS.heartHalf;
+      else el.style.backgroundImage = ICONS.heartEmpty;
+    }
+  }
+
+  const manaContainers = Math.max(1, Math.ceil(myMaxMana / 10));
+  
+  while (manaNodes.length < manaContainers) {
+    const el = document.createElement("div");
+    el.style.width = "18px";
+    el.style.height = "18px";
+    el.style.backgroundSize = "contain";
+    el.style.backgroundRepeat = "no-repeat";
+    el.style.imageRendering = "pixelated";
+    manaHUD.appendChild(el);
+    manaNodes.push(el);
+  }
+
+  for (let i = 0; i < manaNodes.length; i++) {
+    const el = manaNodes[i];
+    if (i >= manaContainers) {
+      el.style.display = "none";
+    } else {
+      el.style.display = "block";
+      const mVal = myMana - (i * 10);
+      
+      if (mVal >= 10) el.style.backgroundImage = ICONS.manaFull;
+      else if (mVal >= 5) el.style.backgroundImage = ICONS.manaHalf;
+      else el.style.backgroundImage = ICONS.manaEmpty;
+    }
   }
 }
 
