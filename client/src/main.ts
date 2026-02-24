@@ -12,7 +12,9 @@
  * FIXED: Wired up 'U' key for Cave Teleportation
  * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
  * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
- * NEW: Minecraft-Style Object Pooled HUD for Health and Mana
+ * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
+ * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
+ * FIXED: Removed unused 'stackLabel' function
  */
 
 import { Engine } from "noa-engine";
@@ -205,18 +207,15 @@ coordsHUD.style.zIndex = "150";
 coordsHUD.textContent = "XYZ: ...";
 document.body.appendChild(coordsHUD);
 
-/* ===============================
-   3.5 Stats HUD & Object Pools
-================================ */
 const statsHUD = document.createElement("div");
 statsHUD.style.position = "fixed";
 statsHUD.style.bottom = "90px"; 
 statsHUD.style.left = "50%";
 statsHUD.style.transform = "translateX(-50%)";
 statsHUD.style.display = "flex";
-statsHUD.style.flexDirection = "row";
-statsHUD.style.gap = "40px";
-statsHUD.style.alignItems = "flex-end";
+statsHUD.style.flexDirection = "column";
+statsHUD.style.gap = "6px";
+statsHUD.style.alignItems = "center";
 statsHUD.style.pointerEvents = "none";
 statsHUD.style.userSelect = "none";
 statsHUD.style.zIndex = "150";
@@ -224,18 +223,12 @@ document.body.appendChild(statsHUD);
 
 const healthHUD = document.createElement("div");
 healthHUD.style.display = "flex";
-healthHUD.style.flexWrap = "wrap-reverse";
-healthHUD.style.width = "180px";
-healthHUD.style.justifyContent = "flex-start";
-healthHUD.style.gap = "0px";
+healthHUD.style.gap = "4px";
 statsHUD.appendChild(healthHUD);
 
 const manaHUD = document.createElement("div");
 manaHUD.style.display = "flex";
-manaHUD.style.flexWrap = "wrap-reverse";
-manaHUD.style.width = "180px";
-manaHUD.style.justifyContent = "flex-end";
-manaHUD.style.gap = "0px";
+manaHUD.style.gap = "4px";
 statsHUD.appendChild(manaHUD);
 
 const hudHotbarRoot = document.createElement("div");
@@ -249,20 +242,25 @@ hudHotbarRoot.style.zIndex = "150";
 hudHotbarRoot.style.pointerEvents = "auto"; 
 document.body.appendChild(hudHotbarRoot);
 
-// Object Pools to prevent DOM Thrashing
-const hpNodes: HTMLDivElement[] = [];
-const manaNodes: HTMLDivElement[] = [];
-
-// Base64 SVGs for that classic crisp pixel look
-const ICONS = {
-  heartFull: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h4 v1 h2 v4 l-4,3 l-4,-3 z' fill='%23ff2222' stroke='black' stroke-width='1'/></svg>")`,
-  heartHalf: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h2 v8 l-4,-3 z' fill='%23ff2222' stroke='black' stroke-width='1'/><path d='M5,2 h2 v1 h2 v4 l-4,3 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
-  heartEmpty: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M1,3 h2 v-1 h4 v1 h2 v4 l-4,3 l-4,-3 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
+function createStatBlock(fillState: "full" | "half" | "empty", color: string) {
+  const el = document.createElement("div");
+  el.style.width = "18px";
+  el.style.height = "18px";
+  el.style.border = "2px solid #111";
+  el.style.borderRadius = "2px";
   
-  manaFull: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='%232277ff' stroke='black' stroke-width='1'/></svg>")`,
-  manaHalf: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M5,1 a4,4 0 0,0 0,8 z' fill='%232277ff' stroke='black' stroke-width='1'/><path d='M5,1 a4,4 0 0,1 0,8 z' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`,
-  manaEmpty: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='%23333333' stroke='black' stroke-width='1'/></svg>")`
-};
+  if (fillState === "full") {
+    el.style.backgroundColor = color;
+    el.style.boxShadow = "inset -3px -3px 0px rgba(0,0,0,0.3), inset 3px 3px 0px rgba(255,255,255,0.4), 2px 2px 4px rgba(0,0,0,0.5)";
+  } else if (fillState === "half") {
+    el.style.background = `linear-gradient(to right, ${color} 50%, rgba(0,0,0,0.6) 50%)`;
+    el.style.boxShadow = "inset 2px 2px 0px rgba(255,255,255,0.3), 2px 2px 4px rgba(0,0,0,0.5)"; 
+  } else {
+    el.style.backgroundColor = "rgba(0,0,0,0.6)";
+    el.style.boxShadow = "inset 2px 2px 5px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.5)";
+  }
+  return el;
+}
 
 /* ===============================
    3.1 Inventory UI
@@ -761,69 +759,86 @@ function itemName(id: number): string {
   return def?.name ?? `Item ${id}`;
 }
 
-function stackLabel(s: ItemStack): string {
-  if (!s || s.id <= 0 || s.count <= 0) return "";
-  return `${itemName(s.id)}\n×${s.count}`;
-}
-
 function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   el.innerHTML = "";
   el.style.width = "64px";
   el.style.height = "64px";
   el.style.borderRadius = "8px";
-  el.style.border = isSelected
-    ? "2px solid rgba(255,255,255,0.9)"
-    : "1px solid rgba(255,255,255,0.18)";
-  el.style.background = "rgba(0,0,0,0.35)";
   el.style.display = "flex";
   el.style.flexDirection = "column";
   el.style.alignItems = "center";
   el.style.justifyContent = "center";
   el.style.position = "relative";
   el.style.cursor = "pointer";
+  el.style.background = "rgba(0,0,0,0.35)";
+  el.style.border = isSelected
+    ? "2px solid rgba(255,255,255,0.9)"
+    : "1px solid rgba(255,255,255,0.18)";
 
   if (stack && stack.id > 0 && stack.count > 0) {
-    const isSkill = stack.id >= 1000 && stack.id <= 2000;
+    const def = (ITEM_DEFS as any)[stack.id] as ItemDef | undefined;
     
-    if (isSkill) {
-      el.style.border = isSelected ? "2px solid #00FFFF" : "1px solid rgba(0,255,255,0.4)";
-      el.style.background = "radial-gradient(circle, rgba(0,100,150,0.6) 0%, rgba(0,0,0,0.4) 100%)";
+    // 1. Icon Rendering (replacing plain text)
+    if (def && def.icon) {
+      const img = document.createElement("img");
+      img.src = def.icon;
+      img.style.width = "42px";
+      img.style.height = "42px";
+      img.style.imageRendering = "pixelated";
+      // Game-Icons.net are black; invert to white for dark UI
+      img.style.filter = "invert(1)"; 
+      img.style.opacity = "0.9";
+      el.appendChild(img);
+
+      // 2. Rarity / Type Border Color
+      if (def.color) {
+        if (isSelected) {
+           el.style.borderColor = def.color;
+           el.style.boxShadow = `0 0 8px ${def.color}, inset 0 0 10px ${def.color}40`;
+        } else {
+           el.style.borderColor = def.color;
+           el.style.boxShadow = `inset 0 0 5px ${def.color}30`;
+        }
+      }
+    } else {
+      // Fallback if no icon defined
+      const name = document.createElement("div");
+      name.textContent = itemName(stack.id);
+      name.style.fontSize = "11px";
+      name.style.textAlign = "center";
+      name.style.padding = "0 4px";
+      name.style.wordBreak = "break-word";
+      el.appendChild(name);
     }
 
-    const name = document.createElement("div");
-    name.textContent = itemName(stack.id);
-    name.style.fontSize = "11px";
-    name.style.textAlign = "center";
-    name.style.padding = "0 6px";
-    name.style.opacity = "0.95";
-    name.style.wordBreak = "break-word";
-    
-    if (isSkill) {
-      name.style.color = "#00FFFF";
-    }
-    
-    el.appendChild(name);
-
-    if (!isSkill) {
-      const count = document.createElement("div");
-      count.textContent = `×${stack.count}`;
-      count.style.position = "absolute";
-      count.style.right = "6px";
-      count.style.bottom = "4px";
-      count.style.fontSize = "12px";
-      count.style.opacity = "0.95";
-      el.appendChild(count);
+    // 3. Count Overlay
+    if (!def || (def.id < 1000)) { // Don't show count 1 for skills
+      if (stack.count > 1 || (def && def.maxStack > 1)) {
+        const count = document.createElement("div");
+        count.textContent = `${stack.count}`;
+        count.style.position = "absolute";
+        count.style.right = "4px";
+        count.style.bottom = "2px";
+        count.style.fontSize = "12px";
+        count.style.fontWeight = "bold";
+        count.style.color = "white";
+        count.style.textShadow = "1px 1px 0 #000";
+        el.appendChild(count);
+      }
     }
 
+    // 4. Durability Overlay
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
+      // Tiny durability bar? Or just number
       dEl.textContent = `${dur}`;
       dEl.style.position = "absolute";
-      dEl.style.left = "6px";
-      dEl.style.bottom = "4px";
-      dEl.style.fontSize = "11px";
-      dEl.style.opacity = "0.85";
+      dEl.style.left = "4px";
+      dEl.style.bottom = "2px";
+      dEl.style.fontSize = "10px";
+      dEl.style.color = "#ccc";
+      dEl.style.textShadow = "1px 1px 0 #000";
       el.appendChild(dEl);
     }
   }
@@ -833,7 +848,7 @@ function renderInventoryUI() {
   renderSlot(cursorSlotEl, invState.cursor, false);
   cursorNameEl.textContent =
     invState.cursor.id > 0
-      ? stackLabel(invState.cursor).split("\n")[0]
+      ? itemName(invState.cursor.id)
       : "(empty)";
 
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
@@ -1049,58 +1064,27 @@ function updateCoordsHUD() {
 }
 
 function updateStatsHUD() {
-  const hpContainers = Math.max(1, Math.ceil(myMaxHp / 2));
-  
-  while (hpNodes.length < hpContainers) {
-    const el = document.createElement("div");
-    el.style.width = "18px";
-    el.style.height = "18px";
-    el.style.backgroundSize = "contain";
-    el.style.backgroundRepeat = "no-repeat";
-    el.style.imageRendering = "pixelated";
-    healthHUD.appendChild(el);
-    hpNodes.push(el);
+  healthHUD.innerHTML = "";
+  manaHUD.innerHTML = "";
+
+  const hpContainers = Math.max(1, Math.floor(myMaxHp / 2));
+  for (let i = 0; i < hpContainers; i++) {
+    const hpVal = myHp - (i * 2);
+    let state: "full" | "half" | "empty" = "empty";
+    if (hpVal >= 2) state = "full";
+    else if (hpVal === 1) state = "half";
+    
+    healthHUD.appendChild(createStatBlock(state, "#ff2222")); 
   }
 
-  for (let i = 0; i < hpNodes.length; i++) {
-    const el = hpNodes[i];
-    if (i >= hpContainers) {
-      el.style.display = "none";
-    } else {
-      el.style.display = "block";
-      const hpVal = myHp - (i * 2);
-      
-      if (hpVal >= 2) el.style.backgroundImage = ICONS.heartFull;
-      else if (hpVal === 1) el.style.backgroundImage = ICONS.heartHalf;
-      else el.style.backgroundImage = ICONS.heartEmpty;
-    }
-  }
-
-  const manaContainers = Math.max(1, Math.ceil(myMaxMana / 10));
-  
-  while (manaNodes.length < manaContainers) {
-    const el = document.createElement("div");
-    el.style.width = "18px";
-    el.style.height = "18px";
-    el.style.backgroundSize = "contain";
-    el.style.backgroundRepeat = "no-repeat";
-    el.style.imageRendering = "pixelated";
-    manaHUD.appendChild(el);
-    manaNodes.push(el);
-  }
-
-  for (let i = 0; i < manaNodes.length; i++) {
-    const el = manaNodes[i];
-    if (i >= manaContainers) {
-      el.style.display = "none";
-    } else {
-      el.style.display = "block";
-      const mVal = myMana - (i * 10);
-      
-      if (mVal >= 10) el.style.backgroundImage = ICONS.manaFull;
-      else if (mVal >= 5) el.style.backgroundImage = ICONS.manaHalf;
-      else el.style.backgroundImage = ICONS.manaEmpty;
-    }
+  const manaContainers = Math.max(1, Math.floor(myMaxMana / 10));
+  for (let i = 0; i < manaContainers; i++) {
+    const mVal = myMana - (i * 10);
+    let state: "full" | "half" | "empty" = "empty";
+    if (mVal >= 10) state = "full";
+    else if (mVal >= 5) state = "half"; 
+    
+    manaHUD.appendChild(createStatBlock(state, "#2277ff")); 
   }
 }
 
@@ -2840,12 +2824,10 @@ function updateRemoteMeshes(dtSec: number) {
       phase += moving ? phaseSpeed : 0.02;
       (root as any).__walkPhase = phase;
 
-      // Heavy procedural stomping and idle breathing
       const breath = Math.sin(now * 0.002) * 0.03;
       const bounce = moving ? Math.abs(Math.sin(phase)) * 0.15 : 0;
       const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
       
-      // Telegraphing and Windup Logic
       let armPitch = 0;
       let bodyPitch = 0;
       const swingTime = remoteSwings.get(id);
@@ -2853,12 +2835,10 @@ function updateRemoteMeshes(dtSec: number) {
       if (swingTime && now - swingTime < 600) {
         const elapsed = now - swingTime;
         if (elapsed < 200) {
-          // 200ms Windup: Rear back
           const t = elapsed / 200;
           armPitch = -0.8 * t;
           bodyPitch = -0.2 * t;
         } else {
-          // 400ms Smash: Overhead swing and forward lean
           const t = (elapsed - 200) / 400;
           armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
           bodyPitch = Math.sin(t * Math.PI) * 0.4;
@@ -2902,24 +2882,42 @@ function updateRemoteMeshes(dtSec: number) {
         }
 
         let armPitch = 0;
-        let bodyPitch = moving ? 0.1 : 0; // Lean forward slightly when moving
+        let bodyPitch = moving ? 0.1 : 0;
+        let bodyYaw = 0;
+        let headYaw = 0;
 
         const swingTime = remoteSwings.get(id);
-        if (swingTime && now - swingTime < 300) {
-          const st = (now - swingTime) / 300;
-          armPitch = Math.sin(st * Math.PI) * 1.5; 
-          bodyPitch += Math.sin(st * Math.PI) * 0.2;
+        if (swingTime && now - swingTime < 450) {
+          const elapsed = now - swingTime;
+          if (elapsed < 150) {
+            const t = elapsed / 150;
+            const ease = t * t * (3 - 2 * t);
+            armPitch = -0.6 * ease;
+            bodyPitch += -0.15 * ease;
+            bodyYaw = 0.3 * ease; 
+            headYaw = -0.3 * ease; 
+          } else {
+            const t = (elapsed - 150) / 300;
+            const strikeT = Math.sin(Math.pow(t, 0.5) * Math.PI);
+            
+            armPitch = strikeT * 2.2 - 0.6 * (1 - t);
+            bodyPitch += strikeT * 0.4;
+            bodyYaw = -0.4 * strikeT + 0.3 * (1 - t); 
+            headYaw = 0.4 * strikeT - 0.3 * (1 - t);
+          }
         }
 
         parts.body.position.y = parts.bodyCenterY + breath + bounce;
         parts.head.position.y = parts.headCenterY + breath + bounce;
 
         parts.body.rotation.x = bodyPitch;
+        parts.body.rotation.y = bodyYaw;
         parts.head.rotation.x = bodyPitch * 0.5;
+        parts.head.rotation.y = headYaw;
 
         parts.legL.rotation.x = swing * 0.55;
         parts.legR.rotation.x = -swing * 0.55;
-        parts.armL.rotation.x = -swing * 0.35;
+        parts.armL.rotation.x = -swing * 0.35 + bodyYaw * 0.5; 
         parts.armR.rotation.x = swing * 0.35 - armPitch; 
       }
     }
