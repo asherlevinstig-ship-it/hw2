@@ -15,10 +15,9 @@
  * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
  * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
  * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
- * NEW: Zone Notification Banner logic included
+ * UPDATED: Zone Notification Banner logic included
  * NEW: 3D Health Bars & Nameplates for Mobs/Players
- * NEW: Day/Night Cycle Rendering (Sky Gradient, Fog, Light Color)
- * FIXED: TypeScript error on CanvasRenderingContext2D for Nameplates
+ * NEW: Full Skybox (Sun, Moon, Stars, Floating Clouds) tied to Day/Night Cycle
  */
 
 import { Engine } from "noa-engine";
