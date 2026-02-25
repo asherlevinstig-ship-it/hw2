@@ -18,6 +18,7 @@
  * UPDATED: Zone Notification Banner logic included
  * NEW: 3D Health Bars & Nameplates for Mobs/Players
  * NEW: REAL 3D Skybox (Sun, Moon, Stars, Drifting Clouds)
+ * FIXED: TypeScript Error in Skybox Cloud Rotation
  */
 
 import { Engine } from "noa-engine";
@@ -2572,9 +2573,6 @@ function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardM
   return mat;
 }
 
-// ----------------------------------------------------
-// NEW: 3D Health Bar / Nameplate logic (Billboarding)
-// ----------------------------------------------------
 function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number, maxHp: number) {
     if (!rpScene) return;
 
@@ -2909,7 +2907,7 @@ function updateRemoteMeshes(dtSec: number) {
     const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
 
-    // Update Nameplate with Health
+    // Update Health Bar / Nameplate
     const hp = t.hp ?? 100;
     const maxHp = t.maxHp ?? 100;
     updateMobNameplate(root, id, hp, maxHp);
@@ -3657,31 +3655,40 @@ function ensureSkybox(scene: BABYLON.Scene) {
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  // SUN: Yellow Sphere
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 20 }, scene);
+  // SUN: Yellow Sphere with Halo
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 40 }, scene);
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
+  (sunMat as any).fogEnabled = false; // Important: Make sun visible through atmosphere
   sunMesh.material = sunMat;
   sunMesh.parent = skyRoot;
-  sunMesh.position.set(0, 0, 100); // Start offset
+  sunMesh.position.set(0, 0, 600); 
 
-  // MOON: White Sphere
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 15 }, scene);
+  // MOON: White Sphere with Detail
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 25 }, scene);
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
+  (moonMat as any).fogEnabled = false; // Important
+  
+  // Add noise for moon craters
+  const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, scene);
+  noiseTex.octaves = 4;
+  noiseTex.persistence = 0.8;
+  moonMat.diffuseTexture = noiseTex;
+  
   moonMesh.material = moonMat;
   moonMesh.parent = skyRoot;
-  moonMesh.position.set(0, 0, -100);
+  moonMesh.position.set(0, 0, -600);
 
   // STARS: Points Cloud
-  const starCount = 500;
+  const starCount = 800;
   const starData = new Float32Array(starCount * 3);
   for (let i=0; i<starCount; i++) {
      const theta = Math.random() * Math.PI * 2;
      const phi = Math.acos(2 * Math.random() - 1);
-     const r = 180 + Math.random() * 20;
+     const r = 550 + Math.random() * 50;
      starData[i*3] = r * Math.sin(phi) * Math.cos(theta);
      starData[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
      starData[i*3+2] = r * Math.cos(phi);
@@ -3691,34 +3698,35 @@ function ensureSkybox(scene: BABYLON.Scene) {
   vertexData.positions = starData;
   vertexData.applyToMesh(stars, true);
   
-  // Create point material manually since PointsMaterial isn't in legacy core
   const starMat = new BABYLON.StandardMaterial("starMat", scene);
   starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   starMat.pointsCloud = true;
-  starMat.pointSize = 3;
+  starMat.pointSize = 2;
+  (starMat as any).fogEnabled = false; // Important
   stars.material = starMat;
   stars.parent = skyRoot;
 
   // CLOUDS: Floating low-poly spheres
   for (let i=0; i<15; i++) {
-     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 15 + Math.random()*20, segments: 4 }, scene);
+     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 30 + Math.random()*40, segments: 4 }, scene);
      const cMat = new BABYLON.StandardMaterial("cloudMat", scene);
-     cMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 0.9);
-     cMat.alpha = 0.4;
+     cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
+     cMat.alpha = 0.3;
      cMat.disableLighting = true;
+     (cMat as any).fogEnabled = false; 
      c.material = cMat;
      c.parent = skyRoot;
      
      // Random pos in upper hemisphere
      const theta = Math.random() * Math.PI * 2;
-     const phi = Math.random() * Math.PI * 0.4; // 0 to ~70 deg
-     const r = 140;
+     const phi = Math.random() * Math.PI * 0.35; // 0 to ~60 deg
+     const r = 450;
      c.position.set(
         r * Math.sin(phi) * Math.cos(theta),
-        r * Math.cos(phi), // high Y
+        Math.abs(r * Math.cos(phi)), // Always above
         r * Math.sin(phi) * Math.sin(theta)
      );
-     c.scaling.y = 0.4; // flatten
+     c.scaling.y = 0.3; // flatten
      (c as any).rotationSpeed = (Math.random() - 0.5) * 0.001;
   }
 }
@@ -3746,10 +3754,22 @@ function updateDayNightCycle(dt: number) {
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
        if (sunMesh) {
-           sunMesh.position.set(Math.cos(angle) * 150, Math.sin(angle) * 150, 0);
+           sunMesh.position.set(Math.cos(angle) * 600, Math.sin(angle) * 600, 0);
+           sunMesh.lookAt(skyRoot.position); // Always face center
        }
        if (moonMesh) {
-           moonMesh.position.set(-Math.cos(angle) * 150, -Math.sin(angle) * 150, 0);
+           moonMesh.position.set(-Math.cos(angle) * 600, -Math.sin(angle) * 600, 0);
+           moonMesh.lookAt(skyRoot.position);
+       }
+       
+       // Clouds slow drift
+       if (skyRoot.getChildren) {
+           for(const child of skyRoot.getChildren()) {
+               if (child.name.startsWith("cloud")) {
+                   // Fix rotation error by casting to Mesh
+                   (child as BABYLON.Mesh).rotation.y += dt * 0.02;
+               }
+           }
        }
     }
 
