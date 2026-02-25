@@ -10,7 +10,7 @@
 // NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
 // NEW: Scaled AI (Spatial Hashing, AI Tick Interleaving, Chunk Sleep, Dharma Spawners)
 // NEW: Mob Stuck/Frustration Mechanic + Projectile System (Rock Throw)
-// NEW: Day/Night Cycle with Persistence and Synchronization
+// NEW: Day/Night Cycle with Persistence, Sync, and Night-Time Aggression Multipliers
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -741,8 +741,12 @@ export class MyRoom extends Room {
           if (mcx === cx && mcz === cz) mobsInChunk++;
         }
 
+        // Night time (0.8 - 0.2) allows higher mob density
+        const isNight = this.worldTime < 0.2 || this.worldTime > 0.8;
+        const limit = isNight ? 5 : 2;
+
         // Station dispensing limit per active chunk
-        if (mobsInChunk < 3) {
+        if (mobsInChunk < limit) {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
@@ -1702,7 +1706,13 @@ export class MyRoom extends Room {
     this.combatants.set(client.sessionId, combatant);
 
     this.sendInvStateToClient(client, inv);
-    client.send("worldMeta", { worldSeed: this.worldSeed });
+    
+    // Load world meta (seed + time)
+    const meta = this.readWorldMeta();
+    if (meta && typeof meta.worldTime === "number") {
+        this.worldTime = meta.worldTime;
+    }
+    client.send("worldMeta", { worldSeed: this.worldSeed, worldTime: this.worldTime });
 
     client.send("safeZone", { cx: this.TOWN_CENTER_X, cz: this.TOWN_CENTER_Z, radius: this.SAFE_RADIUS, name: "Town of Beginnings" });
 
@@ -1808,7 +1818,7 @@ export class MyRoom extends Room {
     return s >>> 0;
   }
 
-  private readWorldMeta(): { worldSeed?: number } | null {
+  private readWorldMeta(): { worldSeed?: number, worldTime?: number } | null {
     try {
       if (!fs.existsSync(this.metaPath)) return null;
       const raw = fs.readFileSync(this.metaPath, "utf8");
@@ -1821,10 +1831,14 @@ export class MyRoom extends Room {
     }
   }
 
-  private writeWorldMeta(meta: { worldSeed: number }): void {
+  private writeWorldMeta(meta: { worldSeed: number, worldTime?: number }): void {
     try {
+      // Preserve existing if passing partial
+      const existing = this.readWorldMeta() || {};
+      const combined = { ...existing, ...meta, worldTime: this.worldTime }; // Always save current time
+      
       const tmp = this.metaPath + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(meta));
+      fs.writeFileSync(tmp, JSON.stringify(combined));
       fs.renameSync(tmp, this.metaPath);
     } catch (e) {
       console.warn("[WORLD] meta write failed:", this.metaPath, e);
