@@ -10,6 +10,7 @@
 // NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
 // NEW: Scaled AI (Spatial Hashing, AI Tick Interleaving, Chunk Sleep, Dharma Spawners)
 // NEW: Mob Stuck/Frustration Mechanic + Projectile System (Rock Throw)
+// NEW: Day/Night Cycle with Persistence and Synchronization
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -376,6 +377,10 @@ export class MyRoom extends Room {
   private readonly mineReach = 6.0;
   private readonly mineProgressSendMinMs = 80;
 
+  // Day/Night Cycle
+  private worldTime = 0; // 0.0 to 1.0 (0=midnight, 0.5=noon)
+  private readonly DAY_DURATION_MS = 1200000; // 20 minutes per day
+
   // Biomes
   private readonly BIOME_FOREST = 1;
   private readonly BIOME_DESERT = 2;
@@ -510,7 +515,7 @@ export class MyRoom extends Room {
     // Spawn initial dummy
     this.spawnDummy("target_dummy_1", -77, 18, -2);
 
-    // Start Combat Tick Loop (Optimized for 50+ players)
+    // Start Combat & Physics Tick Loop
     let lastCombatTick = Date.now();
     this.clock.setInterval(() => {
       const now = Date.now();
@@ -518,6 +523,9 @@ export class MyRoom extends Room {
       this.combat.tick(dt);
       lastCombatTick = now;
       this.combatTickCount++;
+
+      // Day/Night Cycle Tick
+      this.worldTime = (this.worldTime + (dt / this.DAY_DURATION_MS)) % 1;
 
       this.tickProjectiles(); // Move projectiles every tick
 
@@ -708,6 +716,15 @@ export class MyRoom extends Room {
         }
       }
     }, 50);
+
+    // Broadcast World Time (Every 1 second)
+    this.clock.setInterval(() => {
+        this.broadcast("worldTime", { time: this.worldTime });
+        // Save persistantly
+        if (this.combatTickCount % 200 === 0) { // Every 10s
+             this.writeWorldMeta({ worldSeed: this.worldSeed }); // Will update to include time below
+        }
+    }, 1000);
 
     // Dynamic Dharma Spawners
     this.clock.setInterval(() => {

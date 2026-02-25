@@ -1,9 +1,24 @@
 /* client/src/main.ts
  * FULL FILE - with Beacon, TS Fixes AND HUD FIX
- * UPDATED: Fixed HUD Icons (Heart/Mana) to use valid SVG URLs from Iconify API
- * UPDATED: Added fallback to Emoji in renderSlot if SVG fails
- * UPDATED: Removed unused 'stackLabel' function
- * UPDATED: Zone Notification Banner logic included
+ * UPDATED: Added Always-Visible Bottom Hotbar
+ * UPDATED: Moved Stats HUD up to accommodate Hotbar
+ * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
+ * UPDATED: Component-based Combat System Wiring
+ * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
+ * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
+ * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
+ * UPDATED: Class Selection UI & The Warden Class 
+ * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
+ * FIXED: Wired up 'U' key for Cave Teleportation
+ * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
+ * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
+ * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
+ * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
+ * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
+ * NEW: Zone Notification Banner logic included
+ * NEW: 3D Health Bars & Nameplates for Mobs/Players
+ * NEW: Day/Night Cycle Rendering (Sky Gradient, Fog, Light Color)
+ * FIXED: TypeScript error on CanvasRenderingContext2D for Nameplates
  */
 
 import { Engine } from "noa-engine";
@@ -2558,6 +2573,69 @@ function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardM
   return mat;
 }
 
+function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number, maxHp: number) {
+    if (!rpScene) return;
+
+    let plate = (root as any).__nameplate as BABYLON.Mesh;
+    let tex = (root as any).__nameplateTex as BABYLON.DynamicTexture;
+
+    if (!plate) {
+        // Create Plane
+        plate = BABYLON.MeshBuilder.CreatePlane("np:" + id, { width: 1.5, height: 0.4 }, rpScene);
+        plate.parent = root;
+        plate.position.y = 2.2; // Float above head
+        plate.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+        plate.isPickable = false;
+        
+        // Create Texture
+        tex = new BABYLON.DynamicTexture("npTex:" + id, { width: 256, height: 64 }, rpScene, false);
+        tex.hasAlpha = true;
+
+        const mat = new BABYLON.StandardMaterial("npMat:" + id, rpScene);
+        mat.diffuseTexture = tex;
+        mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+        mat.disableLighting = true;
+        mat.backFaceCulling = false;
+        
+        plate.material = mat;
+
+        (root as any).__nameplate = plate;
+        (root as any).__nameplateTex = tex;
+    }
+
+    // Only redraw if HP changed to save perf
+    const lastHp = (root as any).__lastHp;
+    if (lastHp !== hp) {
+        (root as any).__lastHp = hp;
+        
+        const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
+        ctx.clearRect(0, 0, 256, 64);
+
+        // Background Bar (Grey)
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(10, 35, 236, 12);
+
+        // Health Bar (Red)
+        const pct = Math.max(0, hp / maxHp);
+        ctx.fillStyle = pct > 0.5 ? "#00ff00" : (pct > 0.25 ? "#ffff00" : "#ff0000");
+        ctx.fillRect(10, 35, 236 * pct, 12);
+
+        // Name Text
+        ctx.font = "bold 24px monospace";
+        ctx.fillStyle = "white";
+        ctx.textAlign = "center";
+        ctx.shadowColor = "black";
+        ctx.shadowBlur = 4;
+        
+        let name = "Player";
+        if (id.includes("golem")) name = "Deepslate Golem";
+        else if (id.includes("dummy")) name = "Training Dummy";
+        
+        ctx.fillText(name, 128, 25);
+        tex.update();
+    }
+}
+
 function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   if (!rpScene) return null;
 
@@ -2828,9 +2906,12 @@ function updateRemoteMeshes(dtSec: number) {
     const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
 
+    // Update Health Bar / Nameplate
+    const hp = t.hp ?? 100;
+    const maxHp = t.maxHp ?? 100;
+    updateMobNameplate(root, id, hp, maxHp);
+
     if (isMob) {
-      const hp = t.hp ?? 100;
-      const maxHp = t.maxHp ?? 100;
       const healthPct = hp / Math.max(1, maxHp);
       const isRaging = healthPct < 0.5;
 
@@ -2895,10 +2976,12 @@ function updateRemoteMeshes(dtSec: number) {
       if (swingTime && now - swingTime < 600) {
         const elapsed = now - swingTime;
         if (elapsed < 200) {
+          // 200ms Windup: Rear back
           const t = elapsed / 200;
           armPitch = -0.8 * t;
           bodyPitch = -0.2 * t;
         } else {
+          // 400ms Smash: Overhead swing and forward lean
           const t = (elapsed - 200) / 400;
           armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
           bodyPitch = Math.sin(t * Math.PI) * 0.4;
@@ -3008,6 +3091,7 @@ function ensureUserId(): string {
 }
 
 let canSendMoves = false;
+let clientWorldTime = 0; // 0..1
 
 async function connect() {
   try {
@@ -3034,6 +3118,18 @@ async function connect() {
     }
 
     room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
+
+    room.onMessage("worldTime", (msg: any) => {
+        if (Number.isFinite(msg.time)) {
+             clientWorldTime = msg.time; // Resync
+        }
+    });
+
+    room.onMessage("worldMeta", (msg: any) => {
+        if (Number.isFinite(msg.worldTime)) {
+            clientWorldTime = msg.worldTime;
+        }
+    });
 
     room.onMessage("safeZone", (m: any) => {
       if (!m || typeof m !== "object") return;
@@ -3540,6 +3636,42 @@ function updateZoneCheck() {
     }
 }
 
+// 13.2 Day/Night Cycle Render
+function updateDayNightCycle(dt: number) {
+    // Client prediction
+    clientWorldTime = (clientWorldTime + (dt / 1200)) % 1; 
+
+    const scene = getStableScene();
+    if (!scene) return;
+
+    // Gradient Phases: 
+    // 0.0 - Midnight (Dark Blue)
+    // 0.25 - Dawn (Orange/Pink)
+    // 0.5 - Noon (Light Blue)
+    // 0.75 - Dusk (Purple/Orange)
+    
+    let r=0, g=0, b=0;
+    
+    if (clientWorldTime < 0.2) { // Night -> Dawn
+        r = 0.05; g = 0.05; b = 0.15;
+    } else if (clientWorldTime < 0.3) { // Dawn
+        r = 0.8; g = 0.5; b = 0.4;
+    } else if (clientWorldTime < 0.7) { // Day
+        r = 0.6; g = 0.8; b = 1.0;
+    } else if (clientWorldTime < 0.8) { // Dusk
+        r = 0.7; g = 0.4; b = 0.6;
+    } else { // Night
+        r = 0.05; g = 0.05; b = 0.15;
+    }
+
+    // Smooth transition could be added here with lerp, but simple stepping is okay for now
+    scene.clearColor = new BABYLON.Color4(r, g, b, 1);
+    scene.ambientColor = new BABYLON.Color3(r, g, b);
+    if (scene.fogColor) {
+        scene.fogColor = new BABYLON.Color3(r*0.8, g*0.8, b*0.9);
+    }
+}
+
 (noa as any).on("tick", () => {
   tickCount++;
 
@@ -3614,6 +3746,7 @@ function updateZoneCheck() {
   updateRemoteMeshes(dtSec);
   updateDropVisuals(dtSec);
   tryAutoPickup();
+  updateDayNightCycle(dtSec); // 13.2 Call cycle
   
   if (tickCount % 20 === 0) updateZoneCheck();
 
