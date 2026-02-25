@@ -17,7 +17,7 @@
  * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
  * UPDATED: Zone Notification Banner logic included
  * NEW: 3D Health Bars & Nameplates for Mobs/Players
- * NEW: Full Skybox (Sun, Moon, Stars, Floating Clouds) tied to Day/Night Cycle
+ * NEW: REAL 3D Skybox (Sun, Moon, Stars, Drifting Clouds)
  */
 
 import { Engine } from "noa-engine";
@@ -2572,6 +2572,9 @@ function makeRemoteMaterial(id: string, scene: BABYLON.Scene): BABYLON.StandardM
   return mat;
 }
 
+// ----------------------------------------------------
+// NEW: 3D Health Bar / Nameplate logic (Billboarding)
+// ----------------------------------------------------
 function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number, maxHp: number) {
     if (!rpScene) return;
 
@@ -2607,6 +2610,7 @@ function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number,
     if (lastHp !== hp) {
         (root as any).__lastHp = hp;
         
+        // Type assertion to fix 'textAlign' error
         const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
         ctx.clearRect(0, 0, 256, 64);
 
@@ -2905,7 +2909,7 @@ function updateRemoteMeshes(dtSec: number) {
     const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
 
-    // Update Health Bar / Nameplate
+    // Update Nameplate with Health
     const hp = t.hp ?? 100;
     const maxHp = t.maxHp ?? 100;
     updateMobNameplate(root, id, hp, maxHp);
@@ -3635,7 +3639,90 @@ function updateZoneCheck() {
     }
 }
 
-// 13.2 Day/Night Cycle Render
+// 13.2 Day/Night Cycle + Skybox Logic
+let skyRoot: BABYLON.TransformNode | null = null;
+let sunMesh: BABYLON.Mesh | null = null;
+let moonMesh: BABYLON.Mesh | null = null;
+let skyMaterial: BABYLON.StandardMaterial | null = null;
+
+function ensureSkybox(scene: BABYLON.Scene) {
+  if (skyRoot) return;
+
+  // Root node follows camera
+  skyRoot = new BABYLON.TransformNode("skyRoot", scene);
+  
+  // Sky Material (unlit)
+  skyMaterial = new BABYLON.StandardMaterial("skyMat", scene);
+  skyMaterial.disableLighting = true;
+  skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  skyMaterial.backFaceCulling = false;
+
+  // SUN: Yellow Sphere
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 20 }, scene);
+  const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
+  sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
+  sunMat.disableLighting = true;
+  sunMesh.material = sunMat;
+  sunMesh.parent = skyRoot;
+  sunMesh.position.set(0, 0, 100); // Start offset
+
+  // MOON: White Sphere
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 15 }, scene);
+  const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
+  moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
+  moonMat.disableLighting = true;
+  moonMesh.material = moonMat;
+  moonMesh.parent = skyRoot;
+  moonMesh.position.set(0, 0, -100);
+
+  // STARS: Points Cloud
+  const starCount = 500;
+  const starData = new Float32Array(starCount * 3);
+  for (let i=0; i<starCount; i++) {
+     const theta = Math.random() * Math.PI * 2;
+     const phi = Math.acos(2 * Math.random() - 1);
+     const r = 180 + Math.random() * 20;
+     starData[i*3] = r * Math.sin(phi) * Math.cos(theta);
+     starData[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+     starData[i*3+2] = r * Math.cos(phi);
+  }
+  const stars = new BABYLON.Mesh("stars", scene);
+  const vertexData = new BABYLON.VertexData();
+  vertexData.positions = starData;
+  vertexData.applyToMesh(stars, true);
+  
+  // Create point material manually since PointsMaterial isn't in legacy core
+  const starMat = new BABYLON.StandardMaterial("starMat", scene);
+  starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  starMat.pointsCloud = true;
+  starMat.pointSize = 3;
+  stars.material = starMat;
+  stars.parent = skyRoot;
+
+  // CLOUDS: Floating low-poly spheres
+  for (let i=0; i<15; i++) {
+     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 15 + Math.random()*20, segments: 4 }, scene);
+     const cMat = new BABYLON.StandardMaterial("cloudMat", scene);
+     cMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 0.9);
+     cMat.alpha = 0.4;
+     cMat.disableLighting = true;
+     c.material = cMat;
+     c.parent = skyRoot;
+     
+     // Random pos in upper hemisphere
+     const theta = Math.random() * Math.PI * 2;
+     const phi = Math.random() * Math.PI * 0.4; // 0 to ~70 deg
+     const r = 140;
+     c.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi), // high Y
+        r * Math.sin(phi) * Math.sin(theta)
+     );
+     c.scaling.y = 0.4; // flatten
+     (c as any).rotationSpeed = (Math.random() - 0.5) * 0.001;
+  }
+}
+
 function updateDayNightCycle(dt: number) {
     // Client prediction
     clientWorldTime = (clientWorldTime + (dt / 1200)) % 1; 
@@ -3643,27 +3730,45 @@ function updateDayNightCycle(dt: number) {
     const scene = getStableScene();
     if (!scene) return;
 
-    // Gradient Phases: 
-    // 0.0 - Midnight (Dark Blue)
-    // 0.25 - Dawn (Orange/Pink)
-    // 0.5 - Noon (Light Blue)
-    // 0.75 - Dusk (Purple/Orange)
-    
+    ensureSkybox(scene);
+
+    if (skyRoot) {
+       // Lock sky to player position (infinite horizon effect)
+       const p = noa.ents.getPosition(noa.playerEntity);
+       if (p) {
+          skyRoot.position.set(p[0], p[1], p[2]);
+       }
+
+       // Rotate Celestial Bodies based on time (0..1)
+       // Time 0 = Midnight (Sun -Z, Moon +Z)
+       // Time 0.25 = Dawn (Sun +X, Moon -X)
+       // Time 0.5 = Noon (Sun +Y, Moon -Y)
+       const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
+       
+       if (sunMesh) {
+           sunMesh.position.set(Math.cos(angle) * 150, Math.sin(angle) * 150, 0);
+       }
+       if (moonMesh) {
+           moonMesh.position.set(-Math.cos(angle) * 150, -Math.sin(angle) * 150, 0);
+       }
+    }
+
+    // Gradient Phases for Sky Color
     let r=0, g=0, b=0;
     
+    // Simple 4-point gradient interpolation
     if (clientWorldTime < 0.2) { // Night -> Dawn
         r = 0.05; g = 0.05; b = 0.15;
     } else if (clientWorldTime < 0.3) { // Dawn
         r = 0.8; g = 0.5; b = 0.4;
     } else if (clientWorldTime < 0.7) { // Day
-        r = 0.6; g = 0.8; b = 1.0;
+        r = 0.5; g = 0.7; b = 1.0;
     } else if (clientWorldTime < 0.8) { // Dusk
         r = 0.7; g = 0.4; b = 0.6;
     } else { // Night
         r = 0.05; g = 0.05; b = 0.15;
     }
 
-    // Smooth transition could be added here with lerp, but simple stepping is okay for now
     scene.clearColor = new BABYLON.Color4(r, g, b, 1);
     scene.ambientColor = new BABYLON.Color3(r, g, b);
     if (scene.fogColor) {
