@@ -407,9 +407,9 @@ export class MyRoom extends Room {
   // Stats & Mana Constants
   // =========================
   private readonly HP_PER_HEART = 2;
-  private readonly DEFAULT_HEARTS = 10;          
+  private readonly DEFAULT_HEARTS = 10;           
   private readonly DEFAULT_MANA_CONTAINERS = 5;  
-  private readonly MANA_PER_CONTAINER = 10;      
+  private readonly MANA_PER_CONTAINER = 10;       
 
   // =========================
   // World meta / seed
@@ -654,7 +654,7 @@ export class MyRoom extends Room {
 
             if (intentDist <= 1.8) {
                if (c.state.canStartAttack()) {
-                  this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
+                 this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
                }
                intentDist = 0;
             }
@@ -750,15 +750,15 @@ export class MyRoom extends Room {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
-              const spawnX = p.x + (Math.random() * 24 - 12);
-              const spawnZ = p.z + (Math.random() * 24 - 12);
-              // Avoid spawning too close to player or in safe zone
-              const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
-              if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
+             const spawnX = p.x + (Math.random() * 24 - 12);
+             const spawnZ = p.z + (Math.random() * 24 - 12);
+             // Avoid spawning too close to player or in safe zone
+             const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
+             if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
                  const spawnY = this.heightAt(spawnX, spawnZ) + 1;
                  const id = `golem_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
                  this.spawnDummy(id, spawnX, spawnY, spawnZ);
-              }
+             }
            }
         }
       }

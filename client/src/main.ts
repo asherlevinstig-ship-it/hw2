@@ -1,34 +1,21 @@
 /* client/src/main.ts
- * FULL FILE - with Beacon, TS Fixes AND HUD FIX
- * UPDATED: Added Always-Visible Bottom Hotbar
- * UPDATED: Moved Stats HUD up to accommodate Hotbar
- * UPDATED: Cave Biome Blocks (90–97) fully supported client-side
- * UPDATED: Component-based Combat System Wiring
- * UPDATED: Awakening System (Double-click stones, Skill Gem styling, Chat Notifications)
- * UPDATED: Visual Effects (Cleaned of all debugs, rendering completely intact)
- * UPDATED: Procedural Deepslate Golem Mobs with Orbiting Crystals, Rage Mode & Hit Flashes
- * UPDATED: Class Selection UI & The Warden Class 
- * FIXED: Restored robust Colyseus Chunk Decoder to prevent empty chunks
- * FIXED: Wired up 'U' key for Cave Teleportation
- * NEW: Telegraphing, Procedural Weight, and Advanced Mob Kinematics
- * NEW: Upgraded Player Viewmodel Swing (Weight, Z-Thrust, Eased Recovery)
- * NEW: Third-Person Player Kinematics (Spine twisting, wind-ups, heavy strikes)
- * NEW: Inventory UI now renders Icons and Rarity Borders instead of plain text
- * FIXED: Replaced CSS Block HUD with SVG Icon HUD (Hearts & Lightning)
- * UPDATED: Zone Notification Banner logic included
- * NEW: 3D Health Bars & Nameplates for Mobs/Players
- * NEW: REAL 3D Skybox (Sun, Moon, Stars, Drifting Clouds)
- * FIXED: TypeScript Error in Skybox Cloud Rotation
+ * FULL REWRITE - Option B Architecture
+ * Features:
+ * - 3D Skybox with Day/Night Cycle
+ * - Class Awakening System with UI Overlay
+ * - SVG Icon Inventory with Rarity Borders
+ * - Server-Authoritative Combat & Mining
+ * - Advanced Remote Entity Rendering (Mobs + Players)
+ * - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
+ * - Zone Notifications & HUD
  */
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
-/*
- * IMPORTANT:
- * Put your shared items file INSIDE client/src so Vite can resolve it:
- * client/src/shared/items.ts
+/* * Shared items import. 
+ * Ensure client/src/shared/items.ts exists with the content provided previously.
  */
 import {
   Items,
@@ -309,7 +296,6 @@ function createStatIcon(type: "heart" | "mana", fillState: "full" | "half" | "em
   img.style.filter = "invert(1)"; // White icon
   img.style.transition = "all 0.2s ease";
   
-  // Add error handling to hide broken icons in HUD
   img.onerror = () => {
       img.style.display = "none";
   };
@@ -3722,9 +3708,9 @@ function ensureSkybox(scene: BABYLON.Scene) {
      const phi = Math.random() * Math.PI * 0.35; // 0 to ~60 deg
      const r = 450;
      c.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        Math.abs(r * Math.cos(phi)), // Always above
-        r * Math.sin(phi) * Math.sin(theta)
+       r * Math.sin(phi) * Math.cos(theta),
+       Math.abs(r * Math.cos(phi)), // Always above
+       r * Math.sin(phi) * Math.sin(theta)
      );
      c.scaling.y = 0.3; // flatten
      (c as any).rotationSpeed = (Math.random() - 0.5) * 0.001;
