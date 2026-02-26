@@ -1,16 +1,6 @@
 // server/src/rooms/MyRoom.ts
-// FULL FILE - Option B (server authoritative chunks) + multiplayer + persistence
-// Includes: biomes + biome terrain + biome trees + ores + bedrock + inventory + drops + crafting + hold-to-mine
-// Deterministic REGION-grid POIs stamped per-chunk (no half-spawns)
-// Town of Beginnings (central safe zone) stamped per-chunk (deterministic, seam-safe)
-// Path B: Pre-expanded structure stamping (.blocks.json) seam-safe, deterministic anchor placement
-// OPTION B: When loading chunks from disk, re-stamp Town (incl Town Hall) then re-save (upgrades old worlds)
-// CAVE BIOMES: 3D noise carving, biome skinning, triangular ore curves, random-walk veins
-// COMBAT & STATS: Component-Based Authoritative Combat Engine & Awakening System
-// NEW: Upgraded "Spiral Radar" Cave Teleport Developer Tool
-// NEW: Scaled AI (Spatial Hashing, AI Tick Interleaving, Chunk Sleep, Dharma Spawners)
-// NEW: Mob Stuck/Frustration Mechanic + Projectile System (Rock Throw)
-// NEW: Day/Night Cycle with Persistence, Sync, and Night-Time Aggression Multipliers
+// FULL FILE - Fixed TypeScript "Redeclare" Errors
+// Option B (server authoritative chunks) + multiplayer + persistence
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -290,6 +280,7 @@ export class MyRoom extends Room {
 
   // Minerals + bedrock (MUST match client)
   private readonly BEDROCK_ID = 6;
+  private readonly CHEST_ID = 8; // Loot Chest
   private readonly COAL_ORE_ID = 30; 
   private readonly IRON_ORE_ID = 31; 
   private readonly GOLD_ORE_ID = 32; 
@@ -431,6 +422,7 @@ export class MyRoom extends Room {
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
   private inventories = new Map<string, InvState>();
+  private chestLoot = new Map<string, SharedItemStack[]>(); // Key: "x,y,z"
   
   // =========================
   // Spatial Hashing (50+ Player Scaling)
@@ -1212,6 +1204,40 @@ export class MyRoom extends Room {
       if (ms && ms.x === x && ms.y === y && ms.z === z) this.cancelMiningFor(client, "placed_on_target");
 
       this.setBlockAuthoritative(x, y, z, blockId);
+    });
+
+    // Handle Chest Interaction
+    this.onMessage("interact", (client: Client, payload: unknown) => {
+        const p = payload as { x: number, y: number, z: number };
+        if (!p || !isFiniteNumber(p.x)) return;
+        
+        const blockId = this.getBlockAt(p.x, p.y, p.z);
+        if (blockId === this.CHEST_ID) {
+            const key = `${p.x},${p.y},${p.z}`;
+            const loot = this.chestLoot.get(key);
+            
+            if (loot && loot.length > 0) {
+                const inv = this.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
+                
+                let found = "";
+                for(const item of loot) {
+                    this.inventoryAdd(inv, item);
+                    found += `[${ITEM_DEFS[item.id].name} x${item.count}] `;
+                }
+                
+                this.saveInventory(this.players.get(client.sessionId)!.userId, inv);
+                this.sendInvStateToClient(client, inv);
+                client.send("chatMessage", { msg: `Looted Chest: ${found}` });
+                
+                // Empty the chest and break it visualy
+                this.chestLoot.delete(key);
+                this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID); 
+                this.spawnDrop(Items.CHEST, 1, p.x + 0.5, p.y + 0.5, p.z + 0.5); // Drop the chest itself
+            } else {
+                client.send("chatMessage", { msg: "Chest is empty." });
+                this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID);
+            }
+        }
     });
 
     this.onMessage("pickupDrop", (client: Client, payload: unknown) => {
@@ -2341,6 +2367,33 @@ export class MyRoom extends Room {
       const worldY = baseY - this.townHall.anchor.y;
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
       this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
+    }
+
+    // STAMP LOOT CHEST
+    const chestX = this.TOWN_CENTER_X + 2;
+    const chestZ = this.TOWN_CENTER_Z + 2;
+    
+    // Check if this chest falls in current chunk
+    // Use previously declared bounds (chunkMinX, etc.)
+    
+    if (chestX >= chunkMinX && chestX <= chunkMaxX && chestZ >= chunkMinZ && chestZ <= chunkMaxZ) {
+        const townY = this.baseHeight + 2;
+        const chestY = townY + 1; // On top of floor
+        const cyMin = cy * CS; const cyMax = cyMin + CS - 1;
+        
+        if (chestY >= cyMin && chestY <= cyMax) {
+            const ii = this.idx(chestX - chunkMinX, chestY - cyMin, chestZ - chunkMinZ);
+            vox[ii] = this.CHEST_ID;
+            
+            // Register Loot (Idempotent: map.set overwrites)
+            const key = `${chestX},${chestY},${chestZ}`;
+            if (!this.chestLoot.has(key)) {
+                this.chestLoot.set(key, [
+                    { id: Items.STONE_SWORD, count: 1 },
+                    { id: Items.COAL, count: 5 }
+                ]);
+            }
+        }
     }
   }
 

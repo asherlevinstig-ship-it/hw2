@@ -1,5 +1,5 @@
 /* client/src/main.ts
- * FULL REWRITE - Option B Architecture
+ * FULL REWRITE - Fixed Typescript Unused Vars
  * Features:
  * - 3D Skybox with Day/Night Cycle
  * - Class Awakening System with UI Overlay
@@ -8,6 +8,7 @@
  * - Advanced Remote Entity Rendering (Mobs + Players)
  * - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
  * - Zone Notifications & HUD
+ * - Chest Interaction System
  */
 
 import { Engine } from "noa-engine";
@@ -532,6 +533,8 @@ const IRON_ORE_ID = 31;
 const GOLD_ORE_ID = 32;
 const DIAMOND_ORE_ID = 33;
 
+const CHEST_ID = 8; // <--- NEW
+
 const SAND_ID = 11;
 const SNOW_ID = 12;
 
@@ -633,6 +636,9 @@ noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
 noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
 noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 
+// Register Chest (using wood texture for now as per instructions)
+noa.registry.registerBlock(CHEST_ID, { material: "wood" });
+
 /* ===============================
    5.1 Debug Tools: ID Registry & Structure Validation
 ================================ */
@@ -641,6 +647,7 @@ const REGISTERED_BLOCK_IDS = new Set<number>([
   COAL_ORE_ID, IRON_ORE_ID, GOLD_ORE_ID, DIAMOND_ORE_ID,
   SAND_ID, SNOW_ID, DEEPSLATE_ID, TUFF_ID, MOSS_ID,
   MOSSY_STONE_ID, DRIPSTONE_ID, DRIPSTONE_BLOCK_ID, GLOW_SHROOM_ID, CRYSTAL_ID,
+  CHEST_ID
 ]);
 
 function isRegisteredBlockId(id: number) {
@@ -1622,6 +1629,7 @@ window.addEventListener("mouseup", (e: MouseEvent) => {
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
 
+// INPUT HANDLING UPDATE
 noa.inputs.down.on("alt-fire", () => {
   if (classOverlay.style.display !== "none") return;
   if (!hasPointerLock()) return;
@@ -1631,6 +1639,15 @@ noa.inputs.down.on("alt-fire", () => {
   if (!target) return;
 
   triggerPunch();
+
+  // CHECK FOR INTERACTION FIRST
+  const targetedBlockId = noa.world.getBlockID(target.pos.x, target.pos.y, target.pos.z);
+  
+  if (targetedBlockId === CHEST_ID) {
+      // Send Interact
+      if (room) room.send("interact", { x: target.pos.x, y: target.pos.y, z: target.pos.z });
+      return; // Stop processing placement
+  }
 
   const { x, y, z } = target.adj;
 

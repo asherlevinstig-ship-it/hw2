@@ -1,41 +1,45 @@
 // server/src/shared/items.ts
+// FULL FILE - No Omits
 // Shared items/defs/recipes (single source of truth for server).
 //
-// UPDATED: Added Swords and Axes (IDs 40-59)
-// UPDATED: Added Recipes for all new weapons
-// UPDATED: Added 'sword' and 'axe' to ToolKind
+// Includes:
+// - All Terrain & Cave Blocks
+// - Loot Chest (ID 8)
+// - Tools (Picks) & Weapons (Swords, Axes)
+// - Minerals & Crafting Materials
+// - Awakening Stones & Virtual Skills
+// - Full Recipe Registry
 
 export const Items = {
-  // Blocks as items
+  // --- BLOCKS (Placeable) ---
   GRASS: 1,
   DIRT: 2,
   STONE: 3,
   WOOD_LOG: 4,
   LEAVES: 5,
-
-  // Biome blocks
   SAND: 6,
   SNOW: 7,
+  CHEST: 8, // Interactive Container
 
-  // Cave Biome Blocks
+  // --- CAVE BIOME BLOCKS ---
   DEEPSLATE: 90,
   TUFF: 91,
   MOSS: 92,
   MOSSY_STONE: 93,
-  DRIPSTONE: 94,
-  DRIPSTONE_BLOCK: 95,
+  DRIPSTONE: 94,        // Pointed
+  DRIPSTONE_BLOCK: 95,  // Solid
   GLOW_SHROOM: 96,
   CRYSTAL: 97,
 
-  // Basic crafted
+  // --- CRAFTING MATERIALS ---
   PLANK: 10,
   STICK: 11,
 
-  // Tools (Picks)
+  // --- TOOLS (Pickaxes) ---
   WOOD_PICK: 20,
   STONE_PICK: 21,
   IRON_PICK: 22,
-  DIAMOND_PICK: 23, // Added for completeness
+  DIAMOND_PICK: 23,
 
   // --- WEAPONS (Swords) ---
   WOOD_SWORD: 40,
@@ -49,19 +53,19 @@ export const Items = {
   IRON_AXE: 52,
   DIAMOND_AXE: 53,
 
-  // Minerals
+  // --- MINERALS ---
   COAL: 30,
   RAW_IRON: 31,
   RAW_GOLD: 32,
   DIAMOND: 33,
 
-  // --- AWAKENING STONES ---
-  STONE_IRON: 200,
-  STONE_SHADOW: 201,
-  STONE_BLOOD: 202,
-  STONE_ASTRAL: 203,
+  // --- AWAKENING STONES (Class Changers) ---
+  STONE_IRON: 200,   // Vanguard
+  STONE_SHADOW: 201, // Nightblade
+  STONE_BLOOD: 202,  // Bloodrager
+  STONE_ASTRAL: 203, // Spellblade
 
-  // --- VIRTUAL SKILLS ---
+  // --- VIRTUAL SKILLS (Not dropped, used in UI/Logic) ---
   SKILL_AURA_SLASH: 1001,
   SKILL_AURA_HEAVY: 1002,
   SKILL_AURA_THRUST: 1003,
@@ -74,23 +78,24 @@ export type ToolKind = "pick" | "sword" | "axe";
 
 export type ToolDef = {
   kind: ToolKind;
-  tier: number; 
+  tier: number;       // 1=Wood, 2=Stone, 3=Iron, 4=Diamond
   maxDurability: number; 
-  speedMul: number; // Mining speed multiplier
+  speedMul: number;   // Mining speed multiplier (higher is faster)
 };
 
 export type ItemDef = {
   id: number;
   name: string;
-  icon: string;
-  fallback: string;
-  color: string;
+  icon: string;       // Full URL to SVG icon (Iconify)
+  fallback: string;   // Emoji fallback
+  color: string;      // Hex color for UI borders/text
   maxStack: number;
-  placeBlockId?: number;
-  tool?: ToolDef;
+  placeBlockId?: number; // If set, placing this item creates this block ID
+  tool?: ToolDef;     // If set, item functions as a tool/weapon
 };
 
-// Client Block ID Mapping
+// --- CLIENT BLOCK ID MAPPING ---
+// These must match the IDs registered in the client's NOA registry
 const GRASS_ID = 1;
 const DIRT_ID = 2;
 const STONE_ID = 3;
@@ -98,6 +103,8 @@ const WOOD_ID = 4;
 const LEAVES_ID = 5;
 const SAND_ID = 11;
 const SNOW_ID = 12;
+const CHEST_ID = 8;
+
 const DEEPSLATE_ID = 90;
 const TUFF_ID = 91;
 const MOSS_ID = 92;
@@ -107,6 +114,7 @@ const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;      
 const CRYSTAL_ID = 97;
 
+// Iconify Game Icons Collection (Stable CDN)
 const ICON_BASE = "https://api.iconify.design/game-icons";
 
 export const ITEM_DEFS: Record<number, ItemDef> = {
@@ -118,6 +126,7 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   5: { id: 5, name: "Leaves", icon: `${ICON_BASE}/vine-leaf.svg`, fallback: "🍃", color: "#66BB6A", maxStack: 64, placeBlockId: LEAVES_ID },
   6: { id: 6, name: "Sand", icon: `${ICON_BASE}/dust-cloud.svg`, fallback: "🏜️", color: "#FFF59D", maxStack: 64, placeBlockId: SAND_ID },
   7: { id: 7, name: "Snow", icon: `${ICON_BASE}/snowflake-2.svg`, fallback: "❄️", color: "#E0F7FA", maxStack: 64, placeBlockId: SNOW_ID },
+  8: { id: 8, name: "Loot Chest", icon: `${ICON_BASE}/locked-chest.svg`, fallback: "🧳", color: "#FFB74D", maxStack: 64, placeBlockId: CHEST_ID },
 
   // --- CAVE BLOCKS ---
   90: { id: 90, name: "Deepslate", icon: `${ICON_BASE}/rock.svg`, fallback: "⬛", color: "#37474F", maxStack: 64, placeBlockId: DEEPSLATE_ID },
@@ -129,7 +138,7 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   96: { id: 96, name: "Glow Shroom", icon: `${ICON_BASE}/mushroom.svg`, fallback: "🍄", color: "#00E5FF", maxStack: 64, placeBlockId: GLOW_SHROOM_ID },
   97: { id: 97, name: "Cave Crystal", icon: `${ICON_BASE}/crystal-growth.svg`, fallback: "💠", color: "#D500F9", maxStack: 64, placeBlockId: CRYSTAL_ID },
 
-  // --- CRAFTING MATS ---
+  // --- CRAFTING MATERIALS ---
   10: { id: 10, name: "Planks", icon: `${ICON_BASE}/wooden-crate.svg`, fallback: "🪜", color: "#A1887F", maxStack: 64 },
   11: { id: 11, name: "Stick", icon: `${ICON_BASE}/bo.svg`, fallback: "🥢", color: "#8D6E63", maxStack: 64 },
 
@@ -187,14 +196,13 @@ export const RECIPES: Recipe[] = [
   { id: "iron_pick", inputs: [{ id: Items.RAW_IRON, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.IRON_PICK, count: 1 } },
   { id: "diamond_pick", inputs: [{ id: Items.DIAMOND, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.DIAMOND_PICK, count: 1 } },
 
-  // Swords (1 Stick + 2 Material)
+  // Swords
   { id: "wood_sword", inputs: [{ id: Items.PLANK, count: 2 }, { id: Items.STICK, count: 1 }], output: { id: Items.WOOD_SWORD, count: 1 } },
   { id: "stone_sword", inputs: [{ id: Items.STONE, count: 2 }, { id: Items.STICK, count: 1 }], output: { id: Items.STONE_SWORD, count: 1 } },
   { id: "iron_sword", inputs: [{ id: Items.RAW_IRON, count: 2 }, { id: Items.STICK, count: 1 }], output: { id: Items.IRON_SWORD, count: 1 } },
   { id: "diamond_sword", inputs: [{ id: Items.DIAMOND, count: 2 }, { id: Items.STICK, count: 1 }], output: { id: Items.DIAMOND_SWORD, count: 1 } },
 
-  // Axes (2 Stick + 3 Material - Simplified to match Pick cost or Custom)
-  // Standard MC: 3 Material + 2 Sticks. Let's use that.
+  // Axes
   { id: "wood_axe", inputs: [{ id: Items.PLANK, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.WOOD_AXE, count: 1 } },
   { id: "stone_axe", inputs: [{ id: Items.STONE, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.STONE_AXE, count: 1 } },
   { id: "iron_axe", inputs: [{ id: Items.RAW_IRON, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.IRON_AXE, count: 1 } },
