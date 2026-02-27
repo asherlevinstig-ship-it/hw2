@@ -6,7 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
+// - Viewmodel Kinematics (Sway, Punch, Z-Thrust) with 3D Held Items!
 // - Zone Notifications & HUD
 // - Chest Interaction System (with updated visually distinct Gold material)
 
@@ -2416,7 +2416,113 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 }
 
 /* ===============================
-   10.1 Viewmodel animation
+   10.1 Viewmodel Item Mesh Logic
+================================ */
+let currentVmItemId = -1;
+let vmItemMesh: BABYLON.TransformNode | null = null;
+
+function hexToColor3(hex: string): BABYLON.Color3 {
+  const clr = hex.replace("#", "");
+  if (clr.length !== 6) return new BABYLON.Color3(1, 1, 1);
+  const r = parseInt(clr.slice(0, 2), 16) / 255;
+  const g = parseInt(clr.slice(2, 4), 16) / 255;
+  const b = parseInt(clr.slice(4, 6), 16) / 255;
+  return new BABYLON.Color3(r, g, b);
+}
+
+function updateVmItem() {
+  if (!vmScene || !vmArmRoot) return;
+
+  const heldStack = invState.slots[selectedHotbar];
+  const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
+
+  if (heldId === currentVmItemId) return;
+  currentVmItemId = heldId;
+
+  if (vmItemMesh) {
+    vmItemMesh.dispose();
+    vmItemMesh = null;
+  }
+
+  if (heldId === 0) return;
+
+  const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
+  if (!def) return;
+
+  vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
+  vmItemMesh.parent = vmArmRoot;
+  
+  // Position it relative to the hand. Hand is at (0, -0.4, 0.04).
+  vmItemMesh.position.set(0.0, -0.4, 0.04);
+  
+  // Angle forward and slightly diagonal across body
+  vmItemMesh.rotation.x = Math.PI / 2.2; 
+  vmItemMesh.rotation.y = -Math.PI / 8;
+
+  const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
+  mat.disableLighting = true;
+  mat.emissiveColor = def.color ? hexToColor3(def.color) : new BABYLON.Color3(1,1,1);
+  mat.disableDepthWrite = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
+
+  const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
+  stickMat.disableLighting = true;
+  stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
+  stickMat.disableDepthWrite = true;
+  stickMat.depthFunction = BABYLON.Constants.ALWAYS;
+
+  if (def.tool?.kind === "sword") {
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
+     handle.material = stickMat;
+     handle.position.y = -0.05;
+     
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.14, height: 0.03, depth: 0.05 }, vmScene);
+     guard.material = mat;
+     guard.position.y = 0.04;
+     
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.06, height: 0.6, depth: 0.015 }, vmScene);
+     blade.material = mat;
+     blade.position.y = 0.35;
+     
+     handle.parent = vmItemMesh;
+     guard.parent = vmItemMesh;
+     blade.parent = vmItemMesh;
+
+  } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
+     handle.material = stickMat;
+     handle.position.y = 0.2;
+     
+     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.35, height: 0.06, depth: 0.04 }, vmScene);
+     head.material = mat;
+     head.position.y = 0.45;
+
+     if (def.tool.kind === "axe") {
+       head.position.x = 0.08;
+       head.scaling.set(0.6, 2.5, 1);
+     }
+     
+     handle.parent = vmItemMesh;
+     head.parent = vmItemMesh;
+
+  } else {
+     // Blocks or Raw Items (Cubes)
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
+     box.material = mat;
+     box.parent = vmItemMesh;
+     box.position.y = 0.1;
+  }
+
+  // Enforce overlay depth buffer
+  vmItemMesh.getChildMeshes().forEach(m => {
+     m.renderingGroupId = 3;
+     m.isPickable = false;
+     (m as any).isInFrustum = () => true;
+  });
+}
+
+/* ===============================
+   10.2 Viewmodel animation
 ================================ */
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
@@ -2449,6 +2555,9 @@ function wrapPi(a: number) {
 
 function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
+  
+  updateVmItem();
+
   if (!viewModelEnabled) return;
 
   vmArmRoot.scaling.x = vmMirrorX ? -1 : 1;
