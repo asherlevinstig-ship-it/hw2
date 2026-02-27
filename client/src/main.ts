@@ -6,7 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with Item Mesh when equipped.
+// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Blocks)
@@ -610,34 +610,7 @@ registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
 // Register Chest
-noa.registry.registerMaterial("chest_mat", { color: [0.9, 0.7, 0.1] });
-
-noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
-noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
-noa.registry.registerBlock(STONE_ID, { material: "stone" });
-noa.registry.registerBlock(WOOD_ID, { material: "wood" });
-noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
-
-noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
-noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
-noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
-noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
-noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
-
-noa.registry.registerBlock(SAND_ID, { material: "sand" });
-noa.registry.registerBlock(SNOW_ID, { material: "snow" });
-
-noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
-noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
-noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
-noa.registry.registerBlock(MOSSY_STONE_ID, { material: "mossy_stone" });
-noa.registry.registerBlock(DRIPSTONE_ID, { material: "dripstone", opaque: false });
-noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
-noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
-noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
-
-// Register Chest
-noa.registry.registerBlock(CHEST_ID, { material: "chest_mat" });
+noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
 /* ===============================
    5.1 Debug Tools: ID Registry & Structure Validation
@@ -2443,7 +2416,6 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
-  // MINECRAFT LOGIC: If holding an item, hide the arm meshes
   const showArm = heldId === 0;
   if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(showArm);
   if (vmForeArmMesh) vmForeArmMesh.setEnabled(showArm);
@@ -2457,19 +2429,16 @@ function updateVmItem() {
     vmItemMesh = null;
   }
 
-  // If unarmed, we are done (arm meshes shown above)
   if (heldId === 0) return;
 
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
-  // Parent item directly to vmArmRoot (which holds the kinematics)
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   vmItemMesh.parent = vmArmRoot;
   
-  // Angle forward and slightly diagonal across body (Minecraft pose)
-  vmItemMesh.rotation.x = Math.PI / 2.2; 
-  vmItemMesh.rotation.y = -Math.PI / 8;
+  // INCREASED SCALE for Minecraft feel
+  vmItemMesh.scaling.set(1.8, 1.8, 1.8);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2479,12 +2448,14 @@ function updateVmItem() {
 
   const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
   stickMat.disableLighting = true;
-  stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
+  stickMat.emissiveColor = hexToColor3("#8D6E63");
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
   if (def.tool?.kind === "sword") {
-     // Sword creation (relative to vmItemMesh origin)
+     vmItemMesh.rotation.x = Math.PI / 2.5;
+     vmItemMesh.rotation.y = -Math.PI / 6;
+
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
      handle.material = stickMat;
      handle.position.y = -0.05;
@@ -2501,10 +2472,12 @@ function updateVmItem() {
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     // Minecraft shift down/right when holding sword
-     vmItemMesh.position.set(0.08, -0.42, 0.05);
+     vmItemMesh.position.set(0.05, -0.2, 0.15);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
+     vmItemMesh.rotation.x = Math.PI / 2.5;
+     vmItemMesh.rotation.y = -Math.PI / 6;
+
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
      handle.material = stickMat;
      handle.position.y = 0.2;
@@ -2521,20 +2494,19 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.08, -0.42, 0.05);
+     vmItemMesh.position.set(0.05, -0.2, 0.15);
 
   } else {
-     // Blocks or Raw Items (Cubes)
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
+     vmItemMesh.rotation.x = Math.PI / 6;
+     vmItemMesh.rotation.y = -Math.PI / 4;
+
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.25 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
-     box.position.y = 0.1;
      
-     // Position block lower
-     vmItemMesh.position.set(0.08, -0.52, 0.05);
+     vmItemMesh.position.set(0.12, -0.15, 0.15);
   }
 
-  // Enforce overlay depth buffer
   vmItemMesh.getChildMeshes().forEach(m => {
      m.renderingGroupId = 3;
      m.isPickable = false;
