@@ -6,8 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
-// - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
+// - Minecraft-style Dynamic Viewmodel: Massive Vertical Weapons/Blocks & Dynamic Attack Arcs
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
 
@@ -609,31 +608,7 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
-noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
-noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
-noa.registry.registerBlock(STONE_ID, { material: "stone" });
-noa.registry.registerBlock(WOOD_ID, { material: "wood" });
-noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
-
-noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
-noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
-noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
-noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
-noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
-
-noa.registry.registerBlock(SAND_ID, { material: "sand" });
-noa.registry.registerBlock(SNOW_ID, { material: "snow" });
-
-noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
-noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
-noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
-noa.registry.registerBlock(MOSSY_STONE_ID, { material: "mossy_stone" });
-noa.registry.registerBlock(DRIPSTONE_ID, { material: "dripstone", opaque: false });
-noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
-noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
-noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
-
-// Register Chest cleanly using the gold ore texture
+// Register Chest safely using existing atlas texture to prevent mesher crashes
 noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
 /* ===============================
@@ -748,21 +723,16 @@ let vmDebug = false;
 let vmTuning = false;
 let vmMirrorX = true;
 
-let vmBaseXMul = 0.74;
-let vmBaseY = -0.68;
+let vmBaseXMul = 0.5; // Adjusted to center everything perfectly for huge weapons
+let vmBaseY = -0.5;
 
-let vmRotX = 0.22;
-let vmRotY = 0.1;
-let vmRotZ = -0.58;
+let vmRotX = 0;
+let vmRotY = 0;
+let vmRotZ = 0;
 
-// INCREASED MULTIPLIERS FOR HEAVY SWING
 let vmPitchMul = 0.45;
-let vmPunchRotMul = 1.2; // Increased rotation distance
 let vmTurnSwayMulY = 0.35;
 let vmTurnSwayMulZ = 0.25;
-let vmPunchMoveX = 0.25; // Push further horizontally
-let vmPunchMoveY = 0.15; // Push further vertically
-let vmPunchMoveZ = 0.35; // Push weapon deep into the screen Z-axis
 
 /* ===============================
    6.2 Remote state
@@ -2269,7 +2239,7 @@ let vmEngineHooked = false;
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
-// New Scene Node Variables for Arm Meshes to toggle visibility
+// Scene Node Variables for Arm Meshes to toggle visibility
 let vmUpperArmMesh: BABYLON.Mesh | null = null;
 let vmForeArmMesh: BABYLON.Mesh | null = null;
 let vmHandMesh: BABYLON.Mesh | null = null;
@@ -2323,7 +2293,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  // Assign meshes to scene node variables
   vmUpperArmMesh = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
   vmForeArmMesh = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
   vmHandMesh = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
@@ -2463,9 +2432,10 @@ function updateVmItem() {
   // Parent item directly to vmArmRoot (which holds the kinematics)
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   vmItemMesh.parent = vmArmRoot;
+  vmItemMesh.position.set(0, 0, 0); // Anchor perfectly to the root
   
-  // INCREASED SCALE for Minecraft feel
-  vmItemMesh.scaling.set(2.8, 2.8, 2.8);
+  // MASSIVE SCALE for Minecraft feel
+  vmItemMesh.scaling.set(4.0, 4.0, 4.0);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2479,62 +2449,76 @@ function updateVmItem() {
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
-  if (def.tool?.kind === "sword") {
-     vmItemMesh.rotation.x = Math.PI / 2.5;
-     vmItemMesh.rotation.y = -Math.PI / 6;
+  const skinMat = new BABYLON.StandardMaterial("vmSkinMat", vmScene);
+  skinMat.disableLighting = true;
+  skinMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
+  skinMat.disableDepthWrite = true;
+  skinMat.depthFunction = BABYLON.Constants.ALWAYS;
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
+  // Apply Minecraft Item Stance (Tip angled forward and left)
+  vmItemMesh.rotation.x = Math.PI / 6;  // Pitch forward 30 degrees
+  vmItemMesh.rotation.y = -Math.PI / 4; // Yaw left 45 degrees
+  vmItemMesh.rotation.z = Math.PI / 12; // Roll slightly right for natural grip
+
+  if (def.tool?.kind === "sword") {
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.2, depth: 0.04 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = -0.05;
+     handle.position.y = 0.0;
      
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.14, height: 0.03, depth: 0.05 }, vmScene);
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.2, height: 0.04, depth: 0.06 }, vmScene);
      guard.material = mat;
-     guard.position.y = 0.04;
+     guard.position.y = 0.1;
      
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.06, height: 0.6, depth: 0.015 }, vmScene);
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.08, height: 0.7, depth: 0.02 }, vmScene);
      blade.material = mat;
-     blade.position.y = 0.35;
+     blade.position.y = 0.45;
+
+     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
+     hand.material = skinMat;
+     hand.position.y = -0.05;
      
      handle.parent = vmItemMesh;
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
-
-     // Keep the huge mesh anchored firmly in the bottom right corner of the view
-     vmItemMesh.position.set(0.15, -0.3, 0.2);
+     hand.parent = vmItemMesh;
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
-     vmItemMesh.rotation.x = Math.PI / 2.5;
-     vmItemMesh.rotation.y = -Math.PI / 6;
-
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.8, depth: 0.04 }, vmScene);
      handle.material = stickMat;
      handle.position.y = 0.2;
      
-     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.35, height: 0.06, depth: 0.04 }, vmScene);
+     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.08, depth: 0.05 }, vmScene);
      head.material = mat;
-     head.position.y = 0.45;
+     head.position.y = 0.55;
 
      if (def.tool.kind === "axe") {
-       head.position.x = 0.08;
-       head.scaling.set(0.6, 2.5, 1);
+       head.position.x = 0.12;
+       head.scaling.set(0.6, 3.0, 1);
      }
+
+     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
+     hand.material = skinMat;
+     hand.position.y = -0.1;
      
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
-
-     vmItemMesh.position.set(0.15, -0.3, 0.2);
+     hand.parent = vmItemMesh;
 
   } else {
      // Blocks or Raw Items (Cubes)
-     vmItemMesh.rotation.x = Math.PI / 6;
+     vmItemMesh.rotation.x = Math.PI / 5; // Tilt down to see top face
      vmItemMesh.rotation.y = -Math.PI / 4;
+     vmItemMesh.rotation.z = 0;
 
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.35 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
-     
-     // Position the block so it looks like it's resting on the screen corner
-     vmItemMesh.position.set(0.2, -0.3, 0.2);
+     box.position.y = 0.1;
+
+     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
+     hand.material = skinMat;
+     hand.position.y = -0.1;
+     hand.parent = vmItemMesh;
   }
 
   // Enforce overlay depth buffer
@@ -2620,16 +2604,6 @@ function updateViewmodel(dtSec: number) {
 
   const r = (vmCam.orthoRight ?? 1) as number;
 
-  const baseX = r * vmBaseXMul;
-  const baseY = vmBaseY;
-
-  // Increased X, Y translation and added depth (Z-Axis Thrust)
-  const x = baseX + sway * 0.55 - punch01 * vmPunchMoveX;
-  const y = baseY + bob * 0.65 - punch01 * vmPunchMoveY;
-  const z = punch01 * vmPunchMoveZ; // Pushes arm deeper into the screen 
-
-  vmRoot.position.set(x, y, z);
-
   const yawNow = readNoaYaw();
   const pitchNow = readNoaPitch();
 
@@ -2641,14 +2615,53 @@ function updateViewmodel(dtSec: number) {
 
   const pitchInfluence = BABYLON.Scalar.Clamp(pitchNow, -1.2, 1.2);
   const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
-  const lookSway = BABYLON.Scalar.Clamp(dpitch * 1.2, -0.2, 0.2);
-
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // vmPunchRotMul was heavily increased above
-  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
-  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
-  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
+  // Different logic for Unarmed vs Equipped attacks
+  const heldId = invState.slots[selectedHotbar]?.id || 0;
+
+  if (heldId !== 0) {
+      // EQUIPPED POSE: Centered, huge, ready to strike
+      vmRotX = 0;
+      vmRotY = 0;
+      vmRotZ = 0;
+      vmBaseXMul = 0.6; // Push to the right
+      vmBaseY = -0.5;   // Moved up slightly to display massive weapon
+      
+      const baseX = r * vmBaseXMul;
+      const baseY = vmBaseY;
+
+      // Heavy Chop Animation
+      vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul + punch01 * 1.5; 
+      vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY + punch01 * 0.4;
+      vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ - punch01 * 0.3;
+      
+      const x = baseX + sway * 0.55 - punch01 * 0.1;
+      const y = baseY + bob * 0.65 - punch01 * 0.4; // Dive down
+      const z = punch01 * 0.2; // Push forward slightly
+      vmRoot.position.set(x, y, z);
+      
+  } else {
+      // UNARMED POSE: Arm rests lower and angled
+      vmRotX = 0.22;
+      vmRotY = 0.1;
+      vmRotZ = -0.58;
+      vmBaseXMul = 0.74;
+      vmBaseY = -0.68;
+
+      const baseX = r * vmBaseXMul;
+      const baseY = vmBaseY;
+      
+      // Punch Animation
+      vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * 1.2; 
+      vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
+      vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
+      
+      const x = baseX + sway * 0.55 - punch01 * 0.25;
+      const y = baseY + bob * 0.65 - punch01 * 0.15;
+      const z = punch01 * 0.35; // Drive deep into Z axis
+      vmRoot.position.set(x, y, z);
+  }
 }
 
 /* ===============================
