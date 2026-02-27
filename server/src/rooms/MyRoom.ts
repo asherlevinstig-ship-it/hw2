@@ -1,6 +1,6 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - No Omits
-// Option B (server authoritative chunks) + multiplayer + persistence
+// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -1212,6 +1212,8 @@ export class MyRoom extends Room {
         if (!p || !isFiniteNumber(p.x)) return;
         
         const blockId = this.getBlockAt(p.x, p.y, p.z);
+        console.log(`[CHEST DEBUG] Player interacted at ${p.x}, ${p.y}, ${p.z}. Found blockId: ${blockId}`);
+        
         if (blockId === this.CHEST_ID) {
             const key = `${p.x},${p.y},${p.z}`;
             const loot = this.chestLoot.get(key);
@@ -2378,16 +2380,19 @@ export class MyRoom extends Room {
     
     if (chestX >= chunkMinX && chestX <= chunkMaxX && chestZ >= chunkMinZ && chestZ <= chunkMaxZ) {
         const townY = this.baseHeight + 2;
-        const chestY = townY + 2; // FIX: Raised to townY + 2 to sit on top of the town hall floor!
+        const chestY = townY + 2;
         const cyMin = cy * CS; const cyMax = cyMin + CS - 1;
         
         if (chestY >= cyMin && chestY <= cyMax) {
             const ii = this.idx(chestX - chunkMinX, chestY - cyMin, chestZ - chunkMinZ);
             vox[ii] = this.CHEST_ID;
             
+            console.log(`[CHEST DEBUG] 📦 Loot Chest physically stamped into chunk voxels at World XYZ: ${chestX}, ${chestY}, ${chestZ}`);
+            
             // Register Loot (Idempotent: map.set overwrites)
             const key = `${chestX},${chestY},${chestZ}`;
             if (!this.chestLoot.has(key)) {
+                console.log(`[CHEST DEBUG] 💎 Loot registered for chest at ${key}`);
                 this.chestLoot.set(key, [
                     { id: Items.STONE_SWORD, count: 1 },
                     { id: Items.COAL, count: 5 }
