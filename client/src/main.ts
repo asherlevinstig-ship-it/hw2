@@ -9,7 +9,7 @@
 // - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
-// - Chest Interaction System (Interactive Gold Blocks)
+// - Chest Interaction System (Interactive Gold Ore Blocks)
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
@@ -609,7 +609,31 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
-// Register Chest
+noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
+noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
+noa.registry.registerBlock(STONE_ID, { material: "stone" });
+noa.registry.registerBlock(WOOD_ID, { material: "wood" });
+noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
+
+noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
+noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
+noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
+noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
+noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
+
+noa.registry.registerBlock(SAND_ID, { material: "sand" });
+noa.registry.registerBlock(SNOW_ID, { material: "snow" });
+
+noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
+noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
+noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
+noa.registry.registerBlock(MOSSY_STONE_ID, { material: "mossy_stone" });
+noa.registry.registerBlock(DRIPSTONE_ID, { material: "dripstone", opaque: false });
+noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
+noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
+noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
+
+// Register Chest cleanly using the gold ore texture
 noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
 /* ===============================
@@ -2416,6 +2440,7 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
+  // MINECRAFT LOGIC: If holding an item, hide the arm meshes
   const showArm = heldId === 0;
   if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(showArm);
   if (vmForeArmMesh) vmForeArmMesh.setEnabled(showArm);
@@ -2429,16 +2454,18 @@ function updateVmItem() {
     vmItemMesh = null;
   }
 
+  // If unarmed, we are done (arm meshes shown above)
   if (heldId === 0) return;
 
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
+  // Parent item directly to vmArmRoot (which holds the kinematics)
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   vmItemMesh.parent = vmArmRoot;
   
   // INCREASED SCALE for Minecraft feel
-  vmItemMesh.scaling.set(1.8, 1.8, 1.8);
+  vmItemMesh.scaling.set(2.8, 2.8, 2.8);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2448,7 +2475,7 @@ function updateVmItem() {
 
   const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
   stickMat.disableLighting = true;
-  stickMat.emissiveColor = hexToColor3("#8D6E63");
+  stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
@@ -2472,7 +2499,8 @@ function updateVmItem() {
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.05, -0.2, 0.15);
+     // Keep the huge mesh anchored firmly in the bottom right corner of the view
+     vmItemMesh.position.set(0.15, -0.3, 0.2);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
      vmItemMesh.rotation.x = Math.PI / 2.5;
@@ -2494,19 +2522,22 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.05, -0.2, 0.15);
+     vmItemMesh.position.set(0.15, -0.3, 0.2);
 
   } else {
+     // Blocks or Raw Items (Cubes)
      vmItemMesh.rotation.x = Math.PI / 6;
      vmItemMesh.rotation.y = -Math.PI / 4;
 
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.25 }, vmScene);
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
      
-     vmItemMesh.position.set(0.12, -0.15, 0.15);
+     // Position the block so it looks like it's resting on the screen corner
+     vmItemMesh.position.set(0.2, -0.3, 0.2);
   }
 
+  // Enforce overlay depth buffer
   vmItemMesh.getChildMeshes().forEach(m => {
      m.renderingGroupId = 3;
      m.isPickable = false;
