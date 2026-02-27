@@ -636,7 +636,7 @@ noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: fa
 noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 
 // Register Chest
-noa.registry.registerBlock(CHEST_ID, { material: "chest_mat" });
+noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
 /* ===============================
    5.1 Debug Tools: ID Registry & Structure Validation
