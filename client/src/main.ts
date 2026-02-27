@@ -1,23 +1,19 @@
-/* client/src/main.ts
- * FULL REWRITE - Fixed Typescript Unused Vars
- * Features:
- * - 3D Skybox with Day/Night Cycle
- * - Class Awakening System with UI Overlay
- * - SVG Icon Inventory with Rarity Borders
- * - Server-Authoritative Combat & Mining
- * - Advanced Remote Entity Rendering (Mobs + Players)
- * - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
- * - Zone Notifications & HUD
- * - Chest Interaction System
- */
+// client/src/main.ts
+// FULL FILE - No Omits, All Logic
+// Features:
+// - 3D Skybox with Day/Night Cycle
+// - Class Awakening System with UI Overlay
+// - SVG Icon Inventory with Rarity Borders
+// - Server-Authoritative Combat & Mining
+// - Advanced Remote Entity Rendering (Mobs + Players)
+// - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
+// - Zone Notifications & HUD
+// - Chest Interaction System (with updated visually distinct Gold material)
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
 
-/* * Shared items import. 
- * Ensure client/src/shared/items.ts exists with the content provided previously.
- */
 import {
   Items,
   ITEM_DEFS,
@@ -284,7 +280,7 @@ function showZoneNotification(title: string, sub: string, subColor: string) {
     }, 4000);
 }
 
-// Use persistent URLs for HUD icons - CORRECTED TO ICONIFY API
+// Use persistent URLs for HUD icons
 const HUD_ICON_BASE = "https://api.iconify.design/game-icons";
 const HEART_ICON = `${HUD_ICON_BASE}/heart-beats.svg`;
 const MANA_ICON = `${HUD_ICON_BASE}/power-lightning.svg`;
@@ -533,7 +529,7 @@ const IRON_ORE_ID = 31;
 const GOLD_ORE_ID = 32;
 const DIAMOND_ORE_ID = 33;
 
-const CHEST_ID = 8; // <--- NEW
+const CHEST_ID = 8; // Interactive container
 
 const SAND_ID = 11;
 const SNOW_ID = 12;
@@ -612,6 +608,9 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
+// Register Chest with a highly visible golden color to differentiate from wood
+noa.registry.registerMaterial("chest_mat", { color: [0.9, 0.7, 0.1] });
+
 noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
@@ -636,8 +635,8 @@ noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
 noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
 noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 
-// Register Chest (using wood texture for now as per instructions)
-noa.registry.registerBlock(CHEST_ID, { material: "wood" });
+// Register Chest
+noa.registry.registerBlock(CHEST_ID, { material: "chest_mat" });
 
 /* ===============================
    5.1 Debug Tools: ID Registry & Structure Validation
@@ -899,7 +898,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
-      // Tiny durability bar? Or just number
       dEl.textContent = `${dur}`;
       dEl.style.position = "absolute";
       dEl.style.left = "4px";
@@ -2481,10 +2479,10 @@ function updateViewmodel(dtSec: number) {
     }
   }
 
-  // FIX: Slower animation (3.5x multiplier instead of 10.0x => ~285ms swing)
+  // Slower animation (3.5x multiplier instead of 10.0x => ~285ms swing)
   punchT = Math.min(1, punchT + dtSec * 3.5);
   
-  // FIX: Easing curve for fast attack, slow recovery
+  // Easing curve for fast attack, slow recovery
   const punch01 = Math.sin(Math.pow(punchT, 0.6) * Math.PI);
 
   const r = (vmCam.orthoRight ?? 1) as number;
@@ -2492,7 +2490,7 @@ function updateViewmodel(dtSec: number) {
   const baseX = r * vmBaseXMul;
   const baseY = vmBaseY;
 
-  // FIX: Increased X, Y translation and added depth (Z-Axis Thrust)
+  // Increased X, Y translation and added depth (Z-Axis Thrust)
   const x = baseX + sway * 0.55 - punch01 * vmPunchMoveX;
   const y = baseY + bob * 0.65 - punch01 * vmPunchMoveY;
   const z = punch01 * vmPunchMoveZ; // Pushes arm deeper into the screen 
@@ -2514,7 +2512,7 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // FIX: vmPunchRotMul was heavily increased above
+  // vmPunchRotMul was heavily increased above
   vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;

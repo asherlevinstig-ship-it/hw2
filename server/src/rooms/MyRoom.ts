@@ -1,5 +1,5 @@
 // server/src/rooms/MyRoom.ts
-// FULL FILE - Fixed TypeScript "Redeclare" Errors
+// FULL FILE - No Omits
 // Option B (server authoritative chunks) + multiplayer + persistence
 
 import { Room, Client } from "colyseus";
@@ -398,9 +398,9 @@ export class MyRoom extends Room {
   // Stats & Mana Constants
   // =========================
   private readonly HP_PER_HEART = 2;
-  private readonly DEFAULT_HEARTS = 10;           
+  private readonly DEFAULT_HEARTS = 10;            
   private readonly DEFAULT_MANA_CONTAINERS = 5;  
-  private readonly MANA_PER_CONTAINER = 10;       
+  private readonly MANA_PER_CONTAINER = 10;        
 
   // =========================
   // World meta / seed
@@ -2378,7 +2378,7 @@ export class MyRoom extends Room {
     
     if (chestX >= chunkMinX && chestX <= chunkMaxX && chestZ >= chunkMinZ && chestZ <= chunkMaxZ) {
         const townY = this.baseHeight + 2;
-        const chestY = townY + 1; // On top of floor
+        const chestY = townY + 2; // FIX: Raised to townY + 2 to sit on top of the town hall floor!
         const cyMin = cy * CS; const cyMax = cyMin + CS - 1;
         
         if (chestY >= cyMin && chestY <= cyMax) {
