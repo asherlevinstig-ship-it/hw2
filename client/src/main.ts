@@ -2293,7 +2293,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
-  // FIX D: Switch to perspective camera for authentic Minecraft feel
   vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, 0), vmScene);
   vmCam.mode = BABYLON.Camera.PERSPECTIVE_CAMERA;
   vmCam.fov = 0.75;
@@ -2324,7 +2323,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmForeArmMesh.position.set(0.0, -0.14, 0.02);
   vmHandMesh.position.set(0.0, -0.4, 0.04);
 
-  // FIX B: Dedicated grip node that rides the hand mesh
+  // Dedicated grip node that rides the hand mesh
   vmGrip = new BABYLON.TransformNode("vmGrip", vmScene);
   vmGrip.parent = vmHandMesh;
   vmGrip.position.set(0.0, -0.06, 0.10); // Forward from palm
@@ -2417,13 +2416,30 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 let currentVmItemId = -1;
 let vmItemMesh: BABYLON.TransformNode | null = null;
 
-function hexToColor3(hex: string): BABYLON.Color3 {
-  const clr = hex.replace("#", "");
-  if (clr.length !== 6) return new BABYLON.Color3(1, 1, 1);
-  const r = parseInt(clr.slice(0, 2), 16) / 255;
-  const g = parseInt(clr.slice(2, 4), 16) / 255;
-  const b = parseInt(clr.slice(4, 6), 16) / 255;
-  return new BABYLON.Color3(r, g, b);
+function getVmAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
+  const mat = new BABYLON.StandardMaterial(`vmAtlasMat:${atlasIndex}:${alpha ? 1 : 0}`, scene);
+  mat.disableLighting = true;           // Minecraft look (unlit texture)
+  mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.backFaceCulling = false;
+  mat.disableDepthWrite = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
+
+  const tex = new BABYLON.Texture(TERRAIN_ATLAS_URL, scene, false, false);
+  tex.hasAlpha = !!alpha;
+  tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+
+  const idx = Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0));
+  tex.uScale = 1;
+  tex.vScale = 1 / ATLAS_TILE_COUNT;
+  tex.uOffset = 0;
+  tex.vOffset = 1 - (idx + 1) / ATLAS_TILE_COUNT;
+
+  mat.diffuseTexture = tex;
+  mat.opacityTexture = alpha ? tex : null;   // cutout-ish look
+  return mat;
 }
 
 function updateVmItem() {
@@ -2432,7 +2448,7 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
-  // FIX A: Always show the arm so we see the hand holding the weapon
+  // Always show the arm so we see the hand holding the weapon
   const showArm = true;
   if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(showArm);
   if (vmForeArmMesh) vmForeArmMesh.setEnabled(showArm);
@@ -2454,25 +2470,20 @@ function updateVmItem() {
 
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   
-  // FIX B: Attach to the dedicated grip on the hand
+  // Attach to the dedicated grip on the hand
   vmItemMesh.parent = vmGrip ?? vmArmRoot;
   
-  // FIX C: Ensure scaling allows it to be visible alongside thicker geometry
+  // Ensure scaling allows it to be visible alongside thicker geometry
   vmItemMesh.scaling.set(1.4, 1.4, 1.4);
 
-  const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
-  mat.disableLighting = true;
-  mat.emissiveColor = def.color ? hexToColor3(def.color) : new BABYLON.Color3(1,1,1);
-  mat.disableDepthWrite = true;
-  mat.depthFunction = BABYLON.Constants.ALWAYS;
-  mat.backFaceCulling = false; // IMPORTANT for mirrored hand visibility
+  const headTile =
+    def.tool?.kind === "sword" ? ATLAS.IRON_ORE :
+    def.tool?.kind === "pick" ? ATLAS.STONE :
+    def.tool?.kind === "axe" ? ATLAS.WOOD :
+    ATLAS.STONE;
 
-  const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
-  stickMat.disableLighting = true;
-  stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
-  stickMat.disableDepthWrite = true;
-  stickMat.depthFunction = BABYLON.Constants.ALWAYS;
-  stickMat.backFaceCulling = false; // IMPORTANT for mirrored hand visibility
+  const headMat = getVmAtlasMaterial(vmScene, headTile, false);
+  const handleMat = getVmAtlasMaterial(vmScene, ATLAS.WOOD, false);
 
   if (def.tool?.kind === "sword") {
      vmItemMesh.rotation.x = Math.PI / 4; 
@@ -2481,15 +2492,15 @@ function updateVmItem() {
 
      // Thicker sword geometry adjusted for correct alignments
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
-     handle.material = stickMat;
+     handle.material = handleMat;
      handle.position.y = 0.02;
      
      const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
-     guard.material = mat;
+     guard.material = headMat;
      guard.position.y = 0.16;
      
      const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
-     blade.material = mat;
+     blade.material = headMat;
      blade.position.y = 0.56;
      
      handle.parent = vmItemMesh;
@@ -2506,11 +2517,11 @@ function updateVmItem() {
 
      // Thicker tool geometry adjusted for visibility
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
-     handle.material = stickMat;
+     handle.material = handleMat;
      handle.position.y = 0.2;
      
      const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
-     head.material = mat;
+     head.material = headMat;
      head.position.y = 0.45;
 
      if (def.tool.kind === "axe") {
@@ -2529,10 +2540,20 @@ function updateVmItem() {
      vmItemMesh.rotation.y = Math.PI / 4;
      vmItemMesh.rotation.z = 0;
 
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
-     box.material = mat;
+     const tile = itemIdToAtlasIndex(heldId);
+     const alpha =
+       heldId === Items.LEAVES ||
+       heldId === (Items as any).MOSS ||
+       heldId === (Items as any).DRIPSTONE ||
+       heldId === (Items as any).GLOW_SHROOM ||
+       heldId === (Items as any).CRYSTAL;
+
+     const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
+
+     // Same texture on all faces for now (Minecraft-ish enough)
+     box.material = getVmAtlasMaterial(vmScene, tile, !!alpha);
      box.parent = vmItemMesh;
-     
+
      vmItemMesh.position.set(0.05, 0.05, 0.12);
   }
 
