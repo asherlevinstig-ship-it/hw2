@@ -2457,45 +2457,46 @@ function updateVmItem() {
   // FIX B: Attach to the dedicated grip on the hand
   vmItemMesh.parent = vmGrip ?? vmArmRoot;
   
-  // Scale down heavily since it is no longer floating freely in perspective space
-  vmItemMesh.scaling.set(0.55, 0.55, 0.55);
+  // FIX C: Ensure scaling allows it to be visible alongside thicker geometry
+  vmItemMesh.scaling.set(1.4, 1.4, 1.4);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
   mat.emissiveColor = def.color ? hexToColor3(def.color) : new BABYLON.Color3(1,1,1);
   mat.disableDepthWrite = true;
   mat.depthFunction = BABYLON.Constants.ALWAYS;
-  mat.backFaceCulling = false; // IMPORTANT for mirrored hand
+  mat.backFaceCulling = false; // IMPORTANT for mirrored hand visibility
 
   const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
   stickMat.disableLighting = true;
   stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
-  stickMat.backFaceCulling = false; // IMPORTANT for mirrored hand
+  stickMat.backFaceCulling = false; // IMPORTANT for mirrored hand visibility
 
   if (def.tool?.kind === "sword") {
      vmItemMesh.rotation.x = Math.PI / 4; 
      vmItemMesh.rotation.y = 0;
      vmItemMesh.rotation.z = 0;
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
+     // Thicker sword geometry adjusted for correct alignments
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
      handle.material = stickMat;
      handle.position.y = 0.02;
      
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.14, height: 0.03, depth: 0.05 }, vmScene);
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
      guard.material = mat;
-     guard.position.y = 0.10;
+     guard.position.y = 0.16;
      
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.06, height: 0.6, depth: 0.015 }, vmScene);
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
      blade.material = mat;
-     blade.position.y = 0.42;
+     blade.position.y = 0.56;
      
      handle.parent = vmItemMesh;
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     // FIX C: Keep relative to the hand rather than floating center screen
+     // Keep relative to the hand rather than floating center screen
      vmItemMesh.position.set(0.05, -0.03, 0.12);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
@@ -2503,11 +2504,12 @@ function updateVmItem() {
      vmItemMesh.rotation.y = -Math.PI / 10;
      vmItemMesh.rotation.z = 0;
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
+     // Thicker tool geometry adjusted for visibility
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
      handle.material = stickMat;
      handle.position.y = 0.2;
      
-     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.35, height: 0.06, depth: 0.04 }, vmScene);
+     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
      head.material = mat;
      head.position.y = 0.45;
 
