@@ -6,7 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Minecraft-style Dynamic Viewmodel: Massive Vertical Weapons/Blocks & Dynamic Attack Arcs
+// - Minecraft-style Dynamic Viewmodel: Flawless scaling and positioning for Tools/Blocks
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
@@ -2424,8 +2424,8 @@ function updateVmItem() {
   vmItemMesh.parent = vmArmRoot;
   vmItemMesh.position.set(0, 0, 0); // Anchor perfectly to the root
   
-  // MASSIVE SCALE for Minecraft feel
-  vmItemMesh.scaling.set(4.0, 4.0, 4.0);
+  // Custom Scale to fit exactly in orthographic view without clipping
+  vmItemMesh.scaling.set(1.4, 1.4, 1.4);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2439,76 +2439,55 @@ function updateVmItem() {
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
-  const skinMat = new BABYLON.StandardMaterial("vmSkinMat", vmScene);
-  skinMat.disableLighting = true;
-  skinMat.emissiveColor = new BABYLON.Color3(0.85, 0.72, 0.55);
-  skinMat.disableDepthWrite = true;
-  skinMat.depthFunction = BABYLON.Constants.ALWAYS;
-
   // Apply Minecraft Item Stance (Tip angled forward and left)
-  vmItemMesh.rotation.x = Math.PI / 6;  // Pitch forward 30 degrees
-  vmItemMesh.rotation.y = -Math.PI / 4; // Yaw left 45 degrees
-  vmItemMesh.rotation.z = Math.PI / 12; // Roll slightly right for natural grip
+  vmItemMesh.rotation.x = Math.PI / 8;  // Pitch forward
+  vmItemMesh.rotation.y = -Math.PI / 4; // Yaw left
+  vmItemMesh.rotation.z = 0; 
 
   if (def.tool?.kind === "sword") {
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.2, depth: 0.04 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = 0.0;
+     handle.position.y = 0.1;
      
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.2, height: 0.04, depth: 0.06 }, vmScene);
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.24, height: 0.04, depth: 0.08 }, vmScene);
      guard.material = mat;
-     guard.position.y = 0.1;
+     guard.position.y = 0.22;
      
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.08, height: 0.7, depth: 0.02 }, vmScene);
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.1, height: 0.7, depth: 0.03 }, vmScene);
      blade.material = mat;
-     blade.position.y = 0.45;
-
-     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
-     hand.material = skinMat;
-     hand.position.y = -0.05;
+     blade.position.y = 0.59;
      
      handle.parent = vmItemMesh;
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
-     hand.parent = vmItemMesh;
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.8, depth: 0.04 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = 0.2;
+     handle.position.y = 0.4;
      
-     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.08, depth: 0.05 }, vmScene);
+     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.5, height: 0.1, depth: 0.06 }, vmScene);
      head.material = mat;
-     head.position.y = 0.55;
+     head.position.y = 0.75;
 
      if (def.tool.kind === "axe") {
-       head.position.x = 0.12;
-       head.scaling.set(0.6, 3.0, 1);
+       head.position.x = 0.15;
+       head.scaling.set(0.6, 2.5, 1);
      }
-
-     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
-     hand.material = skinMat;
-     hand.position.y = -0.1;
      
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
-     hand.parent = vmItemMesh;
 
   } else {
      // Blocks or Raw Items (Cubes)
-     vmItemMesh.rotation.x = Math.PI / 5; // Tilt down to see top face
+     vmItemMesh.rotation.x = Math.PI / 6; // Tilt down to see top face
      vmItemMesh.rotation.y = -Math.PI / 4;
      vmItemMesh.rotation.z = 0;
 
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.35 }, vmScene);
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.4 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
-     box.position.y = 0.1;
-
-     const hand = BABYLON.MeshBuilder.CreateBox("itemHand", { size: 0.12 }, vmScene);
-     hand.material = skinMat;
-     hand.position.y = -0.1;
-     hand.parent = vmItemMesh;
+     box.position.y = 0.2;
   }
 
   // Enforce overlay depth buffer
@@ -2586,12 +2565,12 @@ function updateViewmodel(dtSec: number) {
   const heldId = invState.slots[selectedHotbar]?.id || 0;
 
   if (heldId !== 0) {
-      // EQUIPPED POSE: Centered, huge, ready to strike
+      // EQUIPPED POSE: Centered, prominent, ready to strike
       vmRotX = 0;
       vmRotY = 0;
       vmRotZ = 0;
-      vmBaseXMul = 0.6; // Push to the right
-      vmBaseY = -0.5;   // Moved up slightly to display massive weapon
+      vmBaseXMul = 0.65; // Push to the right side of screen
+      vmBaseY = -0.6;    // Push down
       
       const baseX = r * vmBaseXMul;
       const baseY = vmBaseY;
@@ -2601,9 +2580,9 @@ function updateViewmodel(dtSec: number) {
       vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY + punch01 * 0.4;
       vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ - punch01 * 0.3;
       
-      const x = baseX + sway * 0.55 - punch01 * 0.1;
+      const x = baseX + sway * 0.55 - punch01 * 0.3;
       const y = baseY + bob * 0.65 - punch01 * 0.4; // Dive down
-      const z = punch01 * 0.2; // Push forward slightly
+      const z = 2.0 + punch01 * 0.5; // Fixed base Z so it never clips!
       vmRoot.position.set(x, y, z);
       
   } else {
@@ -2624,7 +2603,7 @@ function updateViewmodel(dtSec: number) {
       
       const x = baseX + sway * 0.55 - punch01 * 0.25;
       const y = baseY + bob * 0.65 - punch01 * 0.15;
-      const z = punch01 * 0.35; // Drive deep into Z axis
+      const z = 2.0 + punch01 * 0.5; // Fixed base Z
       vmRoot.position.set(x, y, z);
   }
 }
