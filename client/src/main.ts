@@ -2264,12 +2264,13 @@ let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
+let vmGrip: BABYLON.TransformNode | null = null; // Dedicated item anchor
 let vmEngineHooked = false;
 
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
-// New Scene Node Variables for Arm Meshes to toggle visibility
+// New Scene Node Variables for Arm Meshes
 let vmUpperArmMesh: BABYLON.Mesh | null = null;
 let vmForeArmMesh: BABYLON.Mesh | null = null;
 let vmHandMesh: BABYLON.Mesh | null = null;
@@ -2285,36 +2286,14 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmScene.autoClear = false;
   vmScene.autoClearDepthAndStencil = true;
 
-  vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -10), vmScene);
-  vmCam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+  // FIX D: Switch to perspective camera for authentic Minecraft feel
+  vmCam = new BABYLON.FreeCamera("vmCam", new BABYLON.Vector3(0, 0, -2.2), vmScene);
+  vmCam.mode = BABYLON.Camera.PERSPECTIVE_CAMERA;
+  vmCam.fov = 0.9;
+  vmCam.minZ = 0.01;
+  vmCam.maxZ = 100;
   vmCam.setTarget(BABYLON.Vector3.Zero());
   vmScene.activeCamera = vmCam;
-
-  const updateOrtho = () => {
-    if (!vmCam) return;
-    const w = engine.getRenderWidth();
-    const h = engine.getRenderHeight();
-    const r = w / Math.max(1, h);
-
-    vmCam.orthoLeft = -r;
-    vmCam.orthoRight = r;
-    vmCam.orthoTop = 1;
-    vmCam.orthoBottom = -1;
-
-    if (vmFrame && vmFrame.getScene()) {
-      const pts = [
-        new BABYLON.Vector3(-r, -1, 0),
-        new BABYLON.Vector3(r, -1, 0),
-        new BABYLON.Vector3(r, 1, 0),
-        new BABYLON.Vector3(-r, 1, 0),
-        new BABYLON.Vector3(-r, -1, 0),
-      ];
-      BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts, instance: vmFrame });
-    }
-  };
-
-  updateOrtho();
-  engine.onResizeObservable.add(() => updateOrtho());
 
   vmRoot = new BABYLON.TransformNode("vmRoot", vmScene);
   vmRoot.position.set(0, 0, 0);
@@ -2337,6 +2316,12 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmUpperArmMesh.position.set(0.0, 0.22, 0.0);
   vmForeArmMesh.position.set(0.0, -0.14, 0.02);
   vmHandMesh.position.set(0.0, -0.4, 0.04);
+
+  // FIX B: Dedicated grip node that rides the hand mesh
+  vmGrip = new BABYLON.TransformNode("vmGrip", vmScene);
+  vmGrip.parent = vmHandMesh;
+  vmGrip.position.set(0.0, -0.06, 0.10); // Forward from palm
+  vmGrip.rotation.set(0, 0, 0);
 
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
@@ -2382,13 +2367,13 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     }
 
     if (!vmFrame) {
-      const r = (vmCam.orthoRight ?? 1) as number;
+      // Perspective static frame box
       const pts = [
-        new BABYLON.Vector3(-r, -1, 0),
-        new BABYLON.Vector3(r, -1, 0),
-        new BABYLON.Vector3(r, 1, 0),
-        new BABYLON.Vector3(-r, 1, 0),
-        new BABYLON.Vector3(-r, -1, 0),
+        new BABYLON.Vector3(-1, -1, 0),
+        new BABYLON.Vector3(1, -1, 0),
+        new BABYLON.Vector3(1, 1, 0),
+        new BABYLON.Vector3(-1, 1, 0),
+        new BABYLON.Vector3(-1, -1, 0),
       ];
       vmFrame = BABYLON.MeshBuilder.CreateLines("vmFrame", { points: pts }, vmScene);
       vmFrame.color = new BABYLON.Color3(1, 1, 0);
@@ -2440,8 +2425,8 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
-  // MINECRAFT LOGIC: If holding an item, hide the arm meshes
-  const showArm = heldId === 0;
+  // FIX A: Always show the arm so we see the hand holding the weapon
+  const showArm = true;
   if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(showArm);
   if (vmForeArmMesh) vmForeArmMesh.setEnabled(showArm);
   if (vmHandMesh) vmHandMesh.setEnabled(showArm);
@@ -2454,18 +2439,19 @@ function updateVmItem() {
     vmItemMesh = null;
   }
 
-  // If unarmed, we are done (arm meshes shown above)
+  // If unarmed, we are done
   if (heldId === 0) return;
 
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
-  // Parent item directly to vmArmRoot (which holds the kinematics)
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
-  vmItemMesh.parent = vmArmRoot;
   
-  // INCREASED SCALE for Minecraft feel
-  vmItemMesh.scaling.set(2.8, 2.8, 2.8);
+  // FIX B: Attach to the dedicated grip on the hand
+  vmItemMesh.parent = vmGrip ?? vmArmRoot;
+  
+  // Scale down heavily since it is no longer floating freely in perspective space
+  vmItemMesh.scaling.set(1.2, 1.2, 1.2);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2480,10 +2466,10 @@ function updateVmItem() {
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
   if (def.tool?.kind === "sword") {
-     // Stand vertically, tilt slightly forward, and point inward toward the crosshair
-     vmItemMesh.rotation.x = 0.2;
-     vmItemMesh.rotation.y = -0.5;
-     vmItemMesh.rotation.z = -0.3;
+     // Angle so it points up and slightly forward out of the fist
+     vmItemMesh.rotation.x = Math.PI / 4; 
+     vmItemMesh.rotation.y = 0;
+     vmItemMesh.rotation.z = 0;
 
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
      handle.material = stickMat;
@@ -2501,14 +2487,14 @@ function updateVmItem() {
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     // Raise the item much higher vertically on screen
-     vmItemMesh.position.set(0.0, 0.25, 0.3);
+     // FIX C: Keep relative to the hand rather than floating center screen
+     vmItemMesh.position.set(0.0, 0.0, 0.0);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
-     // Stand vertically, tilt slightly forward, and point inward toward the crosshair
-     vmItemMesh.rotation.x = 0.2;
-     vmItemMesh.rotation.y = -0.5;
-     vmItemMesh.rotation.z = -0.3;
+     // Angle so it points up and slightly forward out of the fist
+     vmItemMesh.rotation.x = Math.PI / 4;
+     vmItemMesh.rotation.y = -Math.PI / 10;
+     vmItemMesh.rotation.z = 0;
 
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
      handle.material = stickMat;
@@ -2526,21 +2512,21 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     // Raise the item much higher vertically on screen
-     vmItemMesh.position.set(0.0, 0.25, 0.3);
+     // FIX C: Center perfectly in grip
+     vmItemMesh.position.set(0.0, 0.0, 0.0);
 
   } else {
      // Blocks or Raw Items (Cubes)
-     vmItemMesh.rotation.x = 0.2;
-     vmItemMesh.rotation.y = -0.8;
+     vmItemMesh.rotation.x = Math.PI / 8;
+     vmItemMesh.rotation.y = Math.PI / 4;
      vmItemMesh.rotation.z = 0;
 
      const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
      
-     // Position the block higher up
-     vmItemMesh.position.set(0.0, 0.1, 0.3);
+     // Hover slightly above the palm
+     vmItemMesh.position.set(0.0, 0.1, 0.05);
   }
 
   // Enforce overlay depth buffer
@@ -2624,9 +2610,8 @@ function updateViewmodel(dtSec: number) {
   // Easing curve for fast attack, slow recovery
   const punch01 = Math.sin(Math.pow(punchT, 0.6) * Math.PI);
 
-  const r = (vmCam.orthoRight ?? 1) as number;
-
-  const baseX = r * vmBaseXMul;
+  // Perspective usage means no more orthogonal ratios. We use absolute units.
+  const baseX = vmBaseXMul;
   const baseY = vmBaseY;
 
   // Increased X, Y translation and added depth (Z-Axis Thrust)
@@ -2651,7 +2636,6 @@ function updateViewmodel(dtSec: number) {
 
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // vmPunchRotMul was heavily increased above
   vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
   vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
   vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
