@@ -384,15 +384,16 @@ export class MyRoom extends Room {
 
   // =========================
   // Town of Beginnings (safe zone)
+  // MASSIVE EXPANSION VARIABLES
   // =========================
   private readonly TOWN_CENTER_X = 0;
   private readonly TOWN_CENTER_Z = 0;
-  private readonly SAFE_RADIUS = 28;
+  private readonly SAFE_RADIUS = 64; 
 
-  private readonly TOWN_PLAZA_RADIUS = 10;
-  private readonly TOWN_RING_RADIUS = 24; 
-  private readonly TOWN_PATH_HALF_W = 2; 
-  private readonly TOWN_CLEAR_HEIGHT = 18; 
+  private readonly TOWN_PLAZA_RADIUS = 24; 
+  private readonly TOWN_RING_RADIUS = 56;  
+  private readonly TOWN_PATH_HALF_W = 3;  
+  private readonly TOWN_CLEAR_HEIGHT = 24; 
 
   // =========================
   // Stats & Mana Constants
@@ -2243,8 +2244,8 @@ export class MyRoom extends Room {
 
     // Define Ring Pillars
     const pillars = [
-      { px: 24, pz: 0 }, { px: -24, pz: 0 }, { px: 0, pz: 24 }, { px: 0, pz: -24 },
-      { px: 17, pz: 17 }, { px: -17, pz: 17 }, { px: 17, pz: -17 }, { px: -17, pz: -17 }
+      { px: 56, pz: 0 }, { px: -56, pz: 0 }, { px: 0, pz: 56 }, { px: 0, pz: -56 },
+      { px: 40, pz: 40 }, { px: -40, pz: 40 }, { px: 40, pz: -40 }, { px: -40, pz: -40 }
     ];
 
     for (let lx = 0; lx < CS; lx++) {
@@ -2264,6 +2265,15 @@ export class MyRoom extends Room {
         const inRingWall = dist >= this.TOWN_RING_RADIUS && dist <= this.TOWN_RING_RADIUS + 1.5;
         const inPath = (Math.abs(dz) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS) || 
                        (Math.abs(dx) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS);
+
+        // --- NEW ZONES ---
+        const dxGambling = wx - (this.TOWN_CENTER_X - 25);
+        const dzGambling = wz - (this.TOWN_CENTER_Z - 25);
+        const inGambling = dxGambling * dxGambling + dzGambling * dzGambling <= 169; // R=13
+
+        const dxMarket = wx - (this.TOWN_CENTER_X + 25);
+        const dzMarket = wz - (this.TOWN_CENTER_Z);
+        const inMarket = dxMarket * dxMarket + dzMarket * dzMarket <= 196; // R=14
 
         // Find if we are in a shrine
         let shrineLocal: { ox: number; oz: number } | null = null;
@@ -2302,6 +2312,8 @@ export class MyRoom extends Room {
                // Grand mosaic center
                const checker = (Math.abs(wx) + Math.abs(wz)) % 2 === 0;
                vox[ii] = checker ? this.STONE_ID : this.TUFF_ID;
+            } else if (inGambling || inMarket) {
+               vox[ii] = this.WOOD_ID; // Wooden floor for districts
             } else {
                // General plaza floor (grass with occasional moss/stone)
                const r = this.hash2i(wx, wz, 999);
@@ -2357,6 +2369,39 @@ export class MyRoom extends Room {
               else vox[ii] = this.AIR_ID;
             }
           }
+
+          // --- GAMBLING WING PROCEDURAL GENERATION ---
+          if (inGambling && wy > townY && wy <= townY + 6) {
+             const distToG = Math.sqrt(dxGambling * dxGambling + dzGambling * dzGambling);
+             if (wy === townY + 1) {
+                 if (Math.abs(dxGambling) % 4 === 0 && Math.abs(dzGambling) % 4 === 0) vox[ii] = this.WOOD_ID; // Wooden stools
+                 else if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.WOOD_ID; // Table base
+             } else if (wy === townY + 2) {
+                 if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.MOSS_ID; // Green felt center
+                 else if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 1) vox[ii] = this.MOSS_ID; // Green felt edge
+                 else if (Math.abs(dxGambling) % 4 === 1 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.MOSS_ID; // Green felt edge
+             } else if (wy > townY + 2 && wy < townY + 6) {
+                 if (Math.abs(dxGambling) === 10 && Math.abs(dzGambling) === 10) vox[ii] = this.WOOD_ID; // Corner tent poles
+             } else if (wy === townY + 6) {
+                 if (distToG <= 12) vox[ii] = this.DEEPSLATE_ID; // Dark ceiling above tables
+             }
+          }
+
+          // --- MARKET WING PROCEDURAL GENERATION ---
+          if (inMarket && wy > townY && wy <= townY + 5) {
+             const localStallX = Math.abs(dxMarket) % 6;
+             const localStallZ = Math.abs(dzMarket) % 6;
+
+             if (wy === townY + 1) {
+                 if (localStallX === 1 && localStallZ === 1) vox[ii] = this.CHEST_ID; // Crates/Goods
+                 else if (localStallX === 1 || localStallZ === 1) vox[ii] = this.WOOD_ID; // Wooden Counter
+             } else if (wy === townY + 2 || wy === townY + 3) {
+                 if ((localStallX === 0 && localStallZ === 0) || (localStallX === 4 && localStallZ === 4)) vox[ii] = this.WOOD_ID; // Canopy poles
+             } else if (wy === townY + 4) {
+                 if (localStallX <= 4 && localStallZ <= 4) vox[ii] = this.LEAVES_ID; // Awning
+             }
+          }
+
         }
       }
     }
