@@ -6,7 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with Item Mesh when equipped.
+// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
@@ -609,7 +609,31 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
-// Register Chest safely using existing atlas texture to prevent mesher crashes
+noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
+noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
+noa.registry.registerBlock(STONE_ID, { material: "stone" });
+noa.registry.registerBlock(WOOD_ID, { material: "wood" });
+noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
+
+noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
+noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
+noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
+noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
+noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
+
+noa.registry.registerBlock(SAND_ID, { material: "sand" });
+noa.registry.registerBlock(SNOW_ID, { material: "snow" });
+
+noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
+noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
+noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
+noa.registry.registerBlock(MOSSY_STONE_ID, { material: "mossy_stone" });
+noa.registry.registerBlock(DRIPSTONE_ID, { material: "dripstone", opaque: false });
+noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
+noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
+noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
+
+// Register Chest cleanly using the gold ore texture
 noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
 /* ===============================
@@ -724,15 +748,21 @@ let vmDebug = false;
 let vmTuning = false;
 let vmMirrorX = true;
 
-let vmBaseXMul = 0.5; 
-let vmBaseY = -0.5;
+let vmBaseXMul = 0.74;
+let vmBaseY = -0.68;
 
-let vmRotX = 0;
-let vmRotY = 0;
-let vmRotZ = 0;
+let vmRotX = 0.22;
+let vmRotY = 0.1;
+let vmRotZ = -0.58;
 
+// INCREASED MULTIPLIERS FOR HEAVY SWING
+let vmPitchMul = 0.45;
+let vmPunchRotMul = 1.2; // Increased rotation distance
 let vmTurnSwayMulY = 0.35;
 let vmTurnSwayMulZ = 0.25;
+let vmPunchMoveX = 0.25; // Push further horizontally
+let vmPunchMoveY = 0.15; // Push further vertically
+let vmPunchMoveZ = 0.35; // Push weapon deep into the screen Z-axis
 
 /* ===============================
    6.2 Remote state
@@ -1336,46 +1366,84 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 });
 
 /* ===============================
-   7.1 Voxel Decoding (Bulletproof Format Handler)
+   7.1 Voxel Decoding
 ================================ */
 function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[] | null {
-  if (!msgVoxels) return null;
+  if (msgVoxels == null) return null;
 
-  try {
-    // 1. If it's already an array of correct length
-    if (Array.isArray(msgVoxels) && msgVoxels.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = msgVoxels[i] | 0;
-      return out;
+  if (Array.isArray(msgVoxels)) {
+    if (msgVoxels.length !== expectedLen) return null;
+    const out = new Array<number>(expectedLen);
+    for (let i = 0; i < expectedLen; i++) {
+      out[i] = (msgVoxels[i] as any) | 0;
     }
+    return out;
+  }
 
-    // 2. If it's a typed array or buffer
-    if (msgVoxels.buffer || msgVoxels instanceof ArrayBuffer || ArrayBuffer.isView(msgVoxels)) {
-      const view = new Uint8Array(msgVoxels.buffer || msgVoxels);
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) out[i] = view[i] | 0;
-      return out;
-    }
-
-    // 3. If it's an object with a .data buffer array (Node Buffer serialized)
-    if (msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data) && msgVoxels.data.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      const d = msgVoxels.data;
-      for (let i = 0; i < expectedLen; i++) out[i] = d[i] | 0;
-      return out;
-    }
-
-    // 4. Fallback for weird Colyseus JSON Object mappings: { "0": 1, "1": 3, ... }
-    if (typeof msgVoxels === "object") {
+  if (msgVoxels instanceof ArrayBuffer) {
+    if (msgVoxels.byteLength === expectedLen * 2) {
+      const u16 = new Uint16Array(msgVoxels);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
-        out[i] = (msgVoxels[i] ?? msgVoxels[i.toString()] ?? 0) | 0;
+        out[i] = u16[i] | 0;
       }
       return out;
     }
-  } catch (e) {
-    console.warn("Voxel decode exception:", e);
+    if (msgVoxels.byteLength === expectedLen) {
+      const u8 = new Uint8Array(msgVoxels);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u8[i] | 0;
+      }
+      return out;
+    }
     return null;
+  }
+
+  if (ArrayBuffer.isView(msgVoxels)) {
+    const view = msgVoxels as any;
+    if (view.byteLength === expectedLen * 2) {
+      const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u16[i] | 0;
+      }
+      return out;
+    }
+    if (view.byteLength === expectedLen) {
+      const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = u8[i] | 0;
+      }
+      return out;
+    }
+    if (typeof view.length === "number" && view.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = view[i] | 0;
+      }
+      return out;
+    }
+  }
+
+  if (typeof msgVoxels === "object" && typeof msgVoxels.length === "number" && msgVoxels.length === expectedLen) {
+    const out = new Array<number>(expectedLen);
+    for (let i = 0; i < expectedLen; i++) {
+      out[i] = msgVoxels[i] | 0;
+    }
+    return out;
+  }
+
+  if (msgVoxels && msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data)) {
+    const data = msgVoxels.data;
+    if (data.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) {
+        out[i] = data[i] | 0;
+      }
+      return out;
+    }
   }
 
   return null;
@@ -1410,33 +1478,6 @@ function applyChunkFromServer(msg: any) {
   noa.world.setChunkData(msg.id, data);
   pendingChunks.delete(msg.id);
   queuedRequests.delete(msg.id);
-}
-
-/* ===============================
-   7.2 Math & Camera Helpers
-================================ */
-function readNoaYaw(): number {
-  const h = (noa as any).camera?.heading;
-  return typeof h === "number" && Number.isFinite(h) ? h : 0;
-}
-
-function readNoaPitch(): number {
-  const camAny = (noa as any).camera as any;
-  const p1 = camAny?.pitch;
-  const p2 = camAny?._pitch;
-  const p3 = camAny?.rotX;
-  const p4 = camAny?.rotation?.[0];
-  const v = typeof p1 === "number" && Number.isFinite(p1) ? p1
-    : typeof p2 === "number" && Number.isFinite(p2) ? p2
-    : typeof p3 === "number" && Number.isFinite(p3) ? p3
-    : typeof p4 === "number" && Number.isFinite(p4) ? p4 : 0;
-  return v;
-}
-
-function wrapPi(a: number) {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
 }
 
 /* ===============================
@@ -2228,7 +2269,7 @@ let vmEngineHooked = false;
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
-// Scene Node Variables for Arm Meshes to toggle visibility
+// New Scene Node Variables for Arm Meshes to toggle visibility
 let vmUpperArmMesh: BABYLON.Mesh | null = null;
 let vmForeArmMesh: BABYLON.Mesh | null = null;
 let vmHandMesh: BABYLON.Mesh | null = null;
@@ -2423,8 +2464,8 @@ function updateVmItem() {
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   vmItemMesh.parent = vmArmRoot;
   
-  // Proper Minecraft scale (fits ortho camera perfectly)
-  vmItemMesh.scaling.set(1.5, 1.5, 1.5);
+  // INCREASED SCALE for Minecraft feel
+  vmItemMesh.scaling.set(2.8, 2.8, 2.8);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2439,61 +2480,64 @@ function updateVmItem() {
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
   if (def.tool?.kind === "sword") {
-     // Point straight up, angle inward towards crosshair, tilt slightly forward
-     vmItemMesh.rotation.x = 0; 
-     vmItemMesh.rotation.y = -Math.PI / 3.5; 
-     vmItemMesh.rotation.z = Math.PI / 16; 
-     vmItemMesh.position.set(0.6, -0.8, 0.5); 
+     // Minecraft vertical style: less forward tilt, counter-tilt the arm's Z rotation
+     vmItemMesh.rotation.x = Math.PI / 10;
+     vmItemMesh.rotation.y = -Math.PI / 5;
+     vmItemMesh.rotation.z = Math.PI / 5;
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.25, depth: 0.03 }, vmScene);
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = 0.125;
+     handle.position.y = -0.05;
      
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.2, height: 0.04, depth: 0.06 }, vmScene);
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.14, height: 0.03, depth: 0.05 }, vmScene);
      guard.material = mat;
-     guard.position.y = 0.27;
+     guard.position.y = 0.04;
      
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.08, height: 0.6, depth: 0.02 }, vmScene);
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.06, height: 0.6, depth: 0.015 }, vmScene);
      blade.material = mat;
-     blade.position.y = 0.59;
+     blade.position.y = 0.35;
      
      handle.parent = vmItemMesh;
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-  } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
-     vmItemMesh.rotation.x = 0; 
-     vmItemMesh.rotation.y = -Math.PI / 3.5; 
-     vmItemMesh.rotation.z = Math.PI / 16; 
-     vmItemMesh.position.set(0.6, -0.8, 0.5); 
+     // Keep the huge mesh anchored firmly in the bottom right corner of the view
+     vmItemMesh.position.set(0.25, -0.45, 0.4);
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.8, depth: 0.04 }, vmScene);
+  } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
+     vmItemMesh.rotation.x = Math.PI / 10;
+     vmItemMesh.rotation.y = -Math.PI / 5;
+     vmItemMesh.rotation.z = Math.PI / 5;
+
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = 0.4;
+     handle.position.y = 0.2;
      
-     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.5, height: 0.1, depth: 0.06 }, vmScene);
+     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.35, height: 0.06, depth: 0.04 }, vmScene);
      head.material = mat;
-     head.position.y = 0.75;
+     head.position.y = 0.45;
 
      if (def.tool.kind === "axe") {
-       head.position.x = 0.15;
+       head.position.x = 0.08;
        head.scaling.set(0.6, 2.5, 1);
      }
      
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
+     vmItemMesh.position.set(0.25, -0.45, 0.4);
+
   } else {
      // Blocks or Raw Items (Cubes)
-     vmItemMesh.rotation.x = Math.PI / 6; // Tilt down to see top face
+     vmItemMesh.rotation.x = Math.PI / 6;
      vmItemMesh.rotation.y = -Math.PI / 4;
-     vmItemMesh.rotation.z = 0;
-     vmItemMesh.position.set(0.6, -0.6, 0.0);
 
-     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.4 }, vmScene);
+     const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
-     box.position.y = 0.2;
+     
+     // Position the block so it looks like it's resting on the screen corner
+     vmItemMesh.position.set(0.2, -0.3, 0.2);
   }
 
   // Enforce overlay depth buffer
@@ -2510,15 +2554,36 @@ function updateVmItem() {
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
 let lastYawVM: number | null = null;
+let lastPitchVM: number | null = null;
+
+function readNoaYaw(): number {
+  const h = (noa as any).camera?.heading;
+  return typeof h === "number" && Number.isFinite(h) ? h : 0;
+}
+
+function readNoaPitch(): number {
+  const camAny = (noa as any).camera as any;
+  const p1 = camAny?.pitch;
+  const p2 = camAny?._pitch;
+  const p3 = camAny?.rotX;
+  const p4 = camAny?.rotation?.[0];
+  const v = typeof p1 === "number" && Number.isFinite(p1) ? p1
+    : typeof p2 === "number" && Number.isFinite(p2) ? p2
+    : typeof p3 === "number" && Number.isFinite(p3) ? p3
+    : typeof p4 === "number" && Number.isFinite(p4) ? p4 : 0;
+  return v;
+}
+
+function wrapPi(a: number) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
 
 function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   
-  try {
-    updateVmItem();
-  } catch (e) {
-    console.warn("Viewmodel Item error:", e);
-  }
+  updateVmItem();
 
   if (!viewModelEnabled) return;
 
@@ -2558,60 +2623,35 @@ function updateViewmodel(dtSec: number) {
 
   const r = (vmCam.orthoRight ?? 1) as number;
 
+  const baseX = r * vmBaseXMul;
+  const baseY = vmBaseY;
+
+  // Increased X, Y translation and added depth (Z-Axis Thrust)
+  const x = baseX + sway * 0.55 - punch01 * vmPunchMoveX;
+  const y = baseY + bob * 0.65 - punch01 * vmPunchMoveY;
+  const z = punch01 * vmPunchMoveZ; // Pushes arm deeper into the screen 
+
+  vmRoot.position.set(x, y, z);
+
   const yawNow = readNoaYaw();
+  const pitchNow = readNoaPitch();
 
   const dyaw = lastYawVM == null ? 0 : wrapPi(yawNow - lastYawVM);
+  const dpitch = lastPitchVM == null ? 0 : pitchNow - lastPitchVM;
 
   lastYawVM = yawNow;
+  lastPitchVM = pitchNow;
 
+  const pitchInfluence = BABYLON.Scalar.Clamp(pitchNow, -1.2, 1.2);
   const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
+  const lookSway = BABYLON.Scalar.Clamp(dpitch * 1.2, -0.2, 0.2);
+
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
-  // Different logic for Unarmed vs Equipped attacks
-  const heldId = invState.slots[selectedHotbar]?.id || 0;
-
-  if (heldId !== 0) {
-      // EQUIPPED POSE
-      vmRotX = 0;
-      vmRotY = 0;
-      vmRotZ = 0;
-      vmBaseXMul = 0; // ArmRoot centered, item is offset natively
-      vmBaseY = 0;   
-      
-      const baseX = r * vmBaseXMul;
-      const baseY = vmBaseY;
-
-      // Heavy Chop Animation
-      vmArmRoot.rotation.x = punch01 * 1.5; 
-      vmArmRoot.rotation.y = turnSway * vmTurnSwayMulY - punch01 * 0.5;
-      vmArmRoot.rotation.z = swing - turnSway * vmTurnSwayMulZ;
-      
-      const x = baseX + sway * 0.55 - punch01 * 0.2;
-      const y = baseY + bob * 0.65 - punch01 * 0.3; 
-      const z = 2.0; // Fixed base Z so it never clips!
-      vmRoot.position.set(x, y, z);
-      
-  } else {
-      // UNARMED POSE: Arm rests lower and angled
-      vmRotX = 0.22;
-      vmRotY = 0.1;
-      vmRotZ = -0.58;
-      vmBaseXMul = 0.74;
-      vmBaseY = -0.68;
-
-      const baseX = r * vmBaseXMul;
-      const baseY = vmBaseY;
-      
-      // Punch Animation
-      vmArmRoot.rotation.x = vmRotX - punch01 * 1.2; 
-      vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
-      vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
-      
-      const x = baseX + sway * 0.55 - punch01 * 0.25;
-      const y = baseY + bob * 0.65 - punch01 * 0.15;
-      const z = 2.0 + punch01 * 0.35; // Drive deep into Z axis
-      vmRoot.position.set(x, y, z);
-  }
+  // vmPunchRotMul was heavily increased above
+  vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * vmPunchRotMul + lookSway * 0.35;
+  vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
+  vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
 }
 
 /* ===============================
@@ -3963,21 +4003,11 @@ function updateDayNightCycle(dt: number) {
     }
   }
 
-  try {
-    updateViewmodel(dtSec);
-  } catch (e) {
-    console.error("Viewmodel Error:", e);
-  }
-
-  try {
-    updateRemoteMeshes(dtSec);
-  } catch (e) {
-    console.error("Remote Meshes Error:", e);
-  }
-
+  updateViewmodel(dtSec);
+  updateRemoteMeshes(dtSec);
   updateDropVisuals(dtSec);
   tryAutoPickup();
-  updateDayNightCycle(dtSec); 
+  updateDayNightCycle(dtSec); // 13.2 Call cycle
   
   if (tickCount % 20 === 0) updateZoneCheck();
 
