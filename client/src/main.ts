@@ -7,6 +7,7 @@
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
 // - Minecraft-style Dynamic Viewmodel: Massive Vertical Weapons/Blocks & Dynamic Attack Arcs
+// - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
 
@@ -2293,6 +2294,7 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
+  // Assign meshes to scene node variables
   vmUpperArmMesh = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
   vmForeArmMesh = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
   vmHandMesh = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
@@ -2535,7 +2537,6 @@ function updateVmItem() {
 let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
 let lastYawVM: number | null = null;
-let lastPitchVM: number | null = null;
 
 function readNoaYaw(): number {
   const h = (noa as any).camera?.heading;
@@ -2608,10 +2609,8 @@ function updateViewmodel(dtSec: number) {
   const pitchNow = readNoaPitch();
 
   const dyaw = lastYawVM == null ? 0 : wrapPi(yawNow - lastYawVM);
-  const dpitch = lastPitchVM == null ? 0 : pitchNow - lastPitchVM;
 
   lastYawVM = yawNow;
-  lastPitchVM = pitchNow;
 
   const pitchInfluence = BABYLON.Scalar.Clamp(pitchNow, -1.2, 1.2);
   const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
