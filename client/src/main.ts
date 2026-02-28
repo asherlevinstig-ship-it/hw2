@@ -2480,10 +2480,10 @@ function updateVmItem() {
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
   if (def.tool?.kind === "sword") {
-     // Minecraft vertical style: less forward tilt, counter-tilt the arm's Z rotation
-     vmItemMesh.rotation.x = Math.PI / 10;
-     vmItemMesh.rotation.y = -Math.PI / 5;
-     vmItemMesh.rotation.z = Math.PI / 5;
+     // Stand vertically, tilt slightly forward, and point inward toward the crosshair
+     vmItemMesh.rotation.x = 0.2;
+     vmItemMesh.rotation.y = -0.5;
+     vmItemMesh.rotation.z = -0.3;
 
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.15, depth: 0.03 }, vmScene);
      handle.material = stickMat;
@@ -2501,13 +2501,14 @@ function updateVmItem() {
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     // Keep the huge mesh anchored firmly in the bottom right corner of the view
-     vmItemMesh.position.set(0.25, -0.45, 0.4);
+     // Raise the item much higher vertically on screen
+     vmItemMesh.position.set(0.0, 0.25, 0.3);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
-     vmItemMesh.rotation.x = Math.PI / 10;
-     vmItemMesh.rotation.y = -Math.PI / 5;
-     vmItemMesh.rotation.z = Math.PI / 5;
+     // Stand vertically, tilt slightly forward, and point inward toward the crosshair
+     vmItemMesh.rotation.x = 0.2;
+     vmItemMesh.rotation.y = -0.5;
+     vmItemMesh.rotation.z = -0.3;
 
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.6, depth: 0.03 }, vmScene);
      handle.material = stickMat;
@@ -2525,19 +2526,21 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.25, -0.45, 0.4);
+     // Raise the item much higher vertically on screen
+     vmItemMesh.position.set(0.0, 0.25, 0.3);
 
   } else {
      // Blocks or Raw Items (Cubes)
-     vmItemMesh.rotation.x = Math.PI / 6;
-     vmItemMesh.rotation.y = -Math.PI / 4;
+     vmItemMesh.rotation.x = 0.2;
+     vmItemMesh.rotation.y = -0.8;
+     vmItemMesh.rotation.z = 0;
 
      const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.18 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
      
-     // Position the block so it looks like it's resting on the screen corner
-     vmItemMesh.position.set(0.2, -0.3, 0.2);
+     // Position the block higher up
+     vmItemMesh.position.set(0.0, 0.1, 0.3);
   }
 
   // Enforce overlay depth buffer
