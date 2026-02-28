@@ -731,7 +731,6 @@ let vmRotX = 0;
 let vmRotY = 0;
 let vmRotZ = 0;
 
-let vmPitchMul = 0.45;
 let vmTurnSwayMulY = 0.35;
 let vmTurnSwayMulZ = 0.25;
 
@@ -1337,84 +1336,46 @@ worldAny.on("worldDataNeeded", (id: string, data: any, x: number, y: number, z: 
 });
 
 /* ===============================
-   7.1 Voxel Decoding
+   7.1 Voxel Decoding (Bulletproof Format Handler)
 ================================ */
 function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[] | null {
-  if (msgVoxels == null) return null;
+  if (!msgVoxels) return null;
 
-  if (Array.isArray(msgVoxels)) {
-    if (msgVoxels.length !== expectedLen) return null;
-    const out = new Array<number>(expectedLen);
-    for (let i = 0; i < expectedLen; i++) {
-      out[i] = (msgVoxels[i] as any) | 0;
+  try {
+    // 1. If it's already an array of correct length
+    if (Array.isArray(msgVoxels) && msgVoxels.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = msgVoxels[i] | 0;
+      return out;
     }
-    return out;
-  }
 
-  if (msgVoxels instanceof ArrayBuffer) {
-    if (msgVoxels.byteLength === expectedLen * 2) {
-      const u16 = new Uint16Array(msgVoxels);
+    // 2. If it's a typed array or buffer
+    if (msgVoxels.buffer || msgVoxels instanceof ArrayBuffer || ArrayBuffer.isView(msgVoxels)) {
+      const view = new Uint8Array(msgVoxels.buffer || msgVoxels);
+      const out = new Array<number>(expectedLen);
+      for (let i = 0; i < expectedLen; i++) out[i] = view[i] | 0;
+      return out;
+    }
+
+    // 3. If it's an object with a .data buffer array (Node Buffer serialized)
+    if (msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data) && msgVoxels.data.length === expectedLen) {
+      const out = new Array<number>(expectedLen);
+      const d = msgVoxels.data;
+      for (let i = 0; i < expectedLen; i++) out[i] = d[i] | 0;
+      return out;
+    }
+
+    // 4. Fallback for weird Colyseus JSON Object mappings: { "0": 1, "1": 3, ... }
+    if (typeof msgVoxels === "object") {
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
-        out[i] = u16[i] | 0;
+        out[i] = (msgVoxels[i] ?? msgVoxels[i.toString()] ?? 0) | 0;
       }
       return out;
     }
-    if (msgVoxels.byteLength === expectedLen) {
-      const u8 = new Uint8Array(msgVoxels);
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = u8[i] | 0;
-      }
-      return out;
-    }
+  } catch (e) {
+    console.warn("Voxel decode exception:", e);
     return null;
-  }
-
-  if (ArrayBuffer.isView(msgVoxels)) {
-    const view = msgVoxels as any;
-    if (view.byteLength === expectedLen * 2) {
-      const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = u16[i] | 0;
-      }
-      return out;
-    }
-    if (view.byteLength === expectedLen) {
-      const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = u8[i] | 0;
-      }
-      return out;
-    }
-    if (typeof view.length === "number" && view.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = view[i] | 0;
-      }
-      return out;
-    }
-  }
-
-  if (typeof msgVoxels === "object" && typeof msgVoxels.length === "number" && msgVoxels.length === expectedLen) {
-    const out = new Array<number>(expectedLen);
-    for (let i = 0; i < expectedLen; i++) {
-      out[i] = msgVoxels[i] | 0;
-    }
-    return out;
-  }
-
-  if (msgVoxels && msgVoxels.type === "Buffer" && Array.isArray(msgVoxels.data)) {
-    const data = msgVoxels.data;
-    if (data.length === expectedLen) {
-      const out = new Array<number>(expectedLen);
-      for (let i = 0; i < expectedLen; i++) {
-        out[i] = data[i] | 0;
-      }
-      return out;
-    }
   }
 
   return null;
@@ -1449,6 +1410,33 @@ function applyChunkFromServer(msg: any) {
   noa.world.setChunkData(msg.id, data);
   pendingChunks.delete(msg.id);
   queuedRequests.delete(msg.id);
+}
+
+/* ===============================
+   7.2 Math & Camera Helpers
+================================ */
+function readNoaYaw(): number {
+  const h = (noa as any).camera?.heading;
+  return typeof h === "number" && Number.isFinite(h) ? h : 0;
+}
+
+function readNoaPitch(): number {
+  const camAny = (noa as any).camera as any;
+  const p1 = camAny?.pitch;
+  const p2 = camAny?._pitch;
+  const p3 = camAny?.rotX;
+  const p4 = camAny?.rotation?.[0];
+  const v = typeof p1 === "number" && Number.isFinite(p1) ? p1
+    : typeof p2 === "number" && Number.isFinite(p2) ? p2
+    : typeof p3 === "number" && Number.isFinite(p3) ? p3
+    : typeof p4 === "number" && Number.isFinite(p4) ? p4 : 0;
+  return v;
+}
+
+function wrapPi(a: number) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
 }
 
 /* ===============================
@@ -2538,34 +2526,14 @@ let vmTime = 0;
 let lastLocalPosVM: [number, number, number] | null = null;
 let lastYawVM: number | null = null;
 
-function readNoaYaw(): number {
-  const h = (noa as any).camera?.heading;
-  return typeof h === "number" && Number.isFinite(h) ? h : 0;
-}
-
-function readNoaPitch(): number {
-  const camAny = (noa as any).camera as any;
-  const p1 = camAny?.pitch;
-  const p2 = camAny?._pitch;
-  const p3 = camAny?.rotX;
-  const p4 = camAny?.rotation?.[0];
-  const v = typeof p1 === "number" && Number.isFinite(p1) ? p1
-    : typeof p2 === "number" && Number.isFinite(p2) ? p2
-    : typeof p3 === "number" && Number.isFinite(p3) ? p3
-    : typeof p4 === "number" && Number.isFinite(p4) ? p4 : 0;
-  return v;
-}
-
-function wrapPi(a: number) {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
-}
-
 function updateViewmodel(dtSec: number) {
   if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   
-  updateVmItem();
+  try {
+    updateVmItem();
+  } catch (e) {
+    console.warn("Viewmodel Item error:", e);
+  }
 
   if (!viewModelEnabled) return;
 
@@ -2606,13 +2574,11 @@ function updateViewmodel(dtSec: number) {
   const r = (vmCam.orthoRight ?? 1) as number;
 
   const yawNow = readNoaYaw();
-  const pitchNow = readNoaPitch();
 
   const dyaw = lastYawVM == null ? 0 : wrapPi(yawNow - lastYawVM);
 
   lastYawVM = yawNow;
 
-  const pitchInfluence = BABYLON.Scalar.Clamp(pitchNow, -1.2, 1.2);
   const turnSway = BABYLON.Scalar.Clamp(dyaw * 2.0, -0.25, 0.25);
   const swing = Math.sin(vmTime * 1.7) * 0.18 * walk;
 
@@ -2631,7 +2597,7 @@ function updateViewmodel(dtSec: number) {
       const baseY = vmBaseY;
 
       // Heavy Chop Animation
-      vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul + punch01 * 1.5; 
+      vmArmRoot.rotation.x = vmRotX + punch01 * 1.5; 
       vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY + punch01 * 0.4;
       vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ - punch01 * 0.3;
       
@@ -2652,7 +2618,7 @@ function updateViewmodel(dtSec: number) {
       const baseY = vmBaseY;
       
       // Punch Animation
-      vmArmRoot.rotation.x = vmRotX + pitchInfluence * vmPitchMul - punch01 * 1.2; 
+      vmArmRoot.rotation.x = vmRotX - punch01 * 1.2; 
       vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
       vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
       
@@ -4012,11 +3978,21 @@ function updateDayNightCycle(dt: number) {
     }
   }
 
-  updateViewmodel(dtSec);
-  updateRemoteMeshes(dtSec);
+  try {
+    updateViewmodel(dtSec);
+  } catch (e) {
+    console.error("Viewmodel Error:", e);
+  }
+
+  try {
+    updateRemoteMeshes(dtSec);
+  } catch (e) {
+    console.error("Remote Meshes Error:", e);
+  }
+
   updateDropVisuals(dtSec);
   tryAutoPickup();
-  updateDayNightCycle(dtSec); // 13.2 Call cycle
+  updateDayNightCycle(dtSec); 
   
   if (tickCount % 20 === 0) updateZoneCheck();
 
