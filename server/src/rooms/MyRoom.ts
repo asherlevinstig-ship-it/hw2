@@ -757,16 +757,12 @@ export class MyRoom extends Room {
       }
     }, 5000);
 
-    // Load pre-expanded structures (Path B)
+    // GENERATE MASSIVE PROCEDURAL TOWN HALL
     try {
-      let structPath = path.join(process.cwd(), "src", "structures", "town_hall.blocks.json");
-      if (!fs.existsSync(structPath)) structPath = path.join(process.cwd(), "server", "src", "structures", "town_hall.blocks.json");
-      if (!fs.existsSync(structPath)) throw new Error(`FILE NOT FOUND at path: ${structPath}`);
-
-      this.townHall = loadBlockStructure(structPath);
-      console.log(`[STRUCT] TownHall loaded. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
+      this.townHall = this.buildMassiveTownHall();
+      console.log(`[STRUCT] Massive TownHall generated in-memory. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
     } catch (e) {
-      console.error("[STRUCT] FATAL: TownHall failed to load!", (e as Error).message);
+      console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
       this.townHall = null;
     }
 
@@ -2266,15 +2262,6 @@ export class MyRoom extends Room {
         const inPath = (Math.abs(dz) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS) || 
                        (Math.abs(dx) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS);
 
-        // --- NEW ZONES ---
-        const dxGambling = wx - (this.TOWN_CENTER_X - 25);
-        const dzGambling = wz - (this.TOWN_CENTER_Z - 25);
-        const inGambling = dxGambling * dxGambling + dzGambling * dzGambling <= 169; // R=13
-
-        const dxMarket = wx - (this.TOWN_CENTER_X + 25);
-        const dzMarket = wz - (this.TOWN_CENTER_Z);
-        const inMarket = dxMarket * dxMarket + dzMarket * dzMarket <= 196; // R=14
-
         // Find if we are in a shrine
         let shrineLocal: { ox: number; oz: number } | null = null;
         for (const c of shrines) {
@@ -2312,8 +2299,6 @@ export class MyRoom extends Room {
                // Grand mosaic center
                const checker = (Math.abs(wx) + Math.abs(wz)) % 2 === 0;
                vox[ii] = checker ? this.STONE_ID : this.TUFF_ID;
-            } else if (inGambling || inMarket) {
-               vox[ii] = this.WOOD_ID; // Wooden floor for districts
             } else {
                // General plaza floor (grass with occasional moss/stone)
                const r = this.hash2i(wx, wz, 999);
@@ -2369,39 +2354,6 @@ export class MyRoom extends Room {
               else vox[ii] = this.AIR_ID;
             }
           }
-
-          // --- GAMBLING WING PROCEDURAL GENERATION ---
-          if (inGambling && wy > townY && wy <= townY + 6) {
-             const distToG = Math.sqrt(dxGambling * dxGambling + dzGambling * dzGambling);
-             if (wy === townY + 1) {
-                 if (Math.abs(dxGambling) % 4 === 0 && Math.abs(dzGambling) % 4 === 0) vox[ii] = this.WOOD_ID; // Wooden stools
-                 else if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.WOOD_ID; // Table base
-             } else if (wy === townY + 2) {
-                 if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.MOSS_ID; // Green felt center
-                 else if (Math.abs(dxGambling) % 4 === 2 && Math.abs(dzGambling) % 4 === 1) vox[ii] = this.MOSS_ID; // Green felt edge
-                 else if (Math.abs(dxGambling) % 4 === 1 && Math.abs(dzGambling) % 4 === 2) vox[ii] = this.MOSS_ID; // Green felt edge
-             } else if (wy > townY + 2 && wy < townY + 6) {
-                 if (Math.abs(dxGambling) === 10 && Math.abs(dzGambling) === 10) vox[ii] = this.WOOD_ID; // Corner tent poles
-             } else if (wy === townY + 6) {
-                 if (distToG <= 12) vox[ii] = this.DEEPSLATE_ID; // Dark ceiling above tables
-             }
-          }
-
-          // --- MARKET WING PROCEDURAL GENERATION ---
-          if (inMarket && wy > townY && wy <= townY + 5) {
-             const localStallX = Math.abs(dxMarket) % 6;
-             const localStallZ = Math.abs(dzMarket) % 6;
-
-             if (wy === townY + 1) {
-                 if (localStallX === 1 && localStallZ === 1) vox[ii] = this.CHEST_ID; // Crates/Goods
-                 else if (localStallX === 1 || localStallZ === 1) vox[ii] = this.WOOD_ID; // Wooden Counter
-             } else if (wy === townY + 2 || wy === townY + 3) {
-                 if ((localStallX === 0 && localStallZ === 0) || (localStallX === 4 && localStallZ === 4)) vox[ii] = this.WOOD_ID; // Canopy poles
-             } else if (wy === townY + 4) {
-                 if (localStallX <= 4 && localStallZ <= 4) vox[ii] = this.LEAVES_ID; // Awning
-             }
-          }
-
         }
       }
     }
@@ -2445,6 +2397,111 @@ export class MyRoom extends Room {
             }
         }
     }
+  }
+
+  // =========================
+  // In-Memory Massive Town Hall Builder
+  // =========================
+  private buildMassiveTownHall(): BlockStructure {
+    const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
+    const w = 51;
+    const d = 31;
+    const h = 12;
+
+    const add = (x: number, y: number, z: number, id: number) => {
+      blocks.push({ x, y, z, id });
+    };
+
+    const fill = (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, id: number) => {
+      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) {
+            add(x, y, z, id);
+          }
+        }
+      }
+    };
+
+    // 1. Fill entire volume with Air to hollow out the inside and overwrite anything else
+    fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
+
+    // 2. Floor
+    fill(0, 0, 0, w - 1, 0, d - 1, this.DEEPSLATE_ID);
+    
+    // 3. Outer Walls
+    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_ID); // Front
+    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_ID); // Back
+    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_ID); // Left
+    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_ID); // Right
+
+    // 4. Main Entrance (Front center)
+    fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
+
+    // 5. Roof
+    fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
+
+    // 6. Central Lobby Carpet (Tuff)
+    fill(22, 1, 1, 28, 1, d - 2, this.TUFF_ID);
+
+    // =====================================
+    // WEST WING: GAMBLING DEN
+    // =====================================
+    // Wall separator
+    fill(15, 1, 1, 15, h - 2, 6, this.STONE_ID);
+    fill(15, 1, d - 7, 15, h - 2, d - 2, this.STONE_ID);
+    // Archway
+    fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
+
+    const makeTable = (tx: number, tz: number) => {
+      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.WOOD_ID); // Table base
+      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); // Green felt
+      // Stools
+      add(tx - 1, 1, tz + 1, this.WOOD_ID);
+      add(tx + 3, 1, tz + 1, this.WOOD_ID);
+      add(tx + 1, 1, tz - 1, this.WOOD_ID);
+      add(tx + 1, 1, tz + 3, this.WOOD_ID);
+    };
+    
+    makeTable(3, 4);
+    makeTable(9, 4);
+    makeTable(3, 12);
+    makeTable(9, 12);
+    makeTable(3, 20);
+    makeTable(9, 20);
+
+    // =====================================
+    // EAST WING: MARKET & STORES
+    // =====================================
+    // Wall separator
+    fill(35, 1, 1, 35, h - 2, 6, this.STONE_ID);
+    fill(35, 1, d - 7, 35, h - 2, d - 2, this.STONE_ID);
+    // Archway
+    fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
+
+    const makeStall = (sx: number, sz: number) => {
+      fill(sx, 1, sz, sx + 4, 1, sz, this.WOOD_ID); // Front counter
+      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.WOOD_ID); // Side
+      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.WOOD_ID); // Side
+      
+      add(sx + 1, 2, sz, this.CHEST_ID); // Chest on counter
+      add(sx + 3, 2, sz, this.CHEST_ID); // Chest on counter
+      
+      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); // Awning
+      
+      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); // Pillars
+      add(sx + 4, 2, sz, this.WOOD_ID); add(sx + 4, 3, sz, this.WOOD_ID);
+    };
+
+    makeStall(38, 4);
+    makeStall(38, 12);
+    makeStall(38, 20);
+
+    return {
+      name: "massive_town_hall",
+      size: { w, h, d },
+      anchor: { x: Math.floor(w / 2), y: 0, z: Math.floor(d / 2) },
+      blocks
+    };
   }
 
   // =========================
