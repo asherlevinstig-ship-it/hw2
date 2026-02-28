@@ -6,7 +6,7 @@
 // - SVG Icon Inventory with Rarity Borders
 // - Server-Authoritative Combat & Mining
 // - Advanced Remote Entity Rendering (Mobs + Players)
-// - Minecraft-style Dynamic Viewmodel: Flawless scaling and positioning for Tools/Blocks
+// - Minecraft-style Dynamic Viewmodel: Shows Arm when unarmed, replaces with Item Mesh when equipped.
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
@@ -724,7 +724,7 @@ let vmDebug = false;
 let vmTuning = false;
 let vmMirrorX = true;
 
-let vmBaseXMul = 0.5; // Adjusted to center everything perfectly for huge weapons
+let vmBaseXMul = 0.5; 
 let vmBaseY = -0.5;
 
 let vmRotX = 0;
@@ -2223,7 +2223,6 @@ let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
-let vmItemPivot: BABYLON.TransformNode | null = null;
 let vmEngineHooked = false;
 
 let vmAxes: BABYLON.TransformNode | null = null;
@@ -2282,10 +2281,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
-
-  // Pivot node specifically for the weapon so it swings from the hilt
-  vmItemPivot = new BABYLON.TransformNode("vmItemPivot", vmScene);
-  vmItemPivot.parent = vmArmRoot;
 
   // Assign meshes to scene node variables
   vmUpperArmMesh = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
@@ -2399,7 +2394,7 @@ function hexToColor3(hex: string): BABYLON.Color3 {
 }
 
 function updateVmItem() {
-  if (!vmScene || !vmArmRoot || !vmItemPivot) return;
+  if (!vmScene || !vmArmRoot) return;
 
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
@@ -2424,12 +2419,12 @@ function updateVmItem() {
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
-  // Build the item and attach it to the pivot node
+  // Parent item directly to vmArmRoot (which holds the kinematics)
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
-  vmItemMesh.parent = vmItemPivot;
+  vmItemMesh.parent = vmArmRoot;
   
-  // Set scale to fit screen boundaries flawlessly
-  vmItemMesh.scaling.set(1.4, 1.4, 1.4);
+  // Proper Minecraft scale (fits ortho camera perfectly)
+  vmItemMesh.scaling.set(1.5, 1.5, 1.5);
 
   const mat = new BABYLON.StandardMaterial("vmItemMat", vmScene);
   mat.disableLighting = true;
@@ -2443,17 +2438,22 @@ function updateVmItem() {
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
 
-  // Apply rigid structural offsets so the base of the item aligns with the pivot
   if (def.tool?.kind === "sword") {
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.2, depth: 0.04 }, vmScene);
+     // Point straight up, angle inward towards crosshair, tilt slightly forward
+     vmItemMesh.rotation.x = 0; 
+     vmItemMesh.rotation.y = -Math.PI / 3.5; 
+     vmItemMesh.rotation.z = Math.PI / 16; 
+     vmItemMesh.position.set(0.6, -0.8, 0.5); 
+
+     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.03, height: 0.25, depth: 0.03 }, vmScene);
      handle.material = stickMat;
-     handle.position.y = 0.1;
+     handle.position.y = 0.125;
      
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.24, height: 0.04, depth: 0.08 }, vmScene);
+     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.2, height: 0.04, depth: 0.06 }, vmScene);
      guard.material = mat;
-     guard.position.y = 0.22;
+     guard.position.y = 0.27;
      
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.1, height: 0.7, depth: 0.03 }, vmScene);
+     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.08, height: 0.6, depth: 0.02 }, vmScene);
      blade.material = mat;
      blade.position.y = 0.59;
      
@@ -2462,6 +2462,11 @@ function updateVmItem() {
      blade.parent = vmItemMesh;
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
+     vmItemMesh.rotation.x = 0; 
+     vmItemMesh.rotation.y = -Math.PI / 3.5; 
+     vmItemMesh.rotation.z = Math.PI / 16; 
+     vmItemMesh.position.set(0.6, -0.8, 0.5); 
+
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.04, height: 0.8, depth: 0.04 }, vmScene);
      handle.material = stickMat;
      handle.position.y = 0.4;
@@ -2480,6 +2485,11 @@ function updateVmItem() {
 
   } else {
      // Blocks or Raw Items (Cubes)
+     vmItemMesh.rotation.x = Math.PI / 6; // Tilt down to see top face
+     vmItemMesh.rotation.y = -Math.PI / 4;
+     vmItemMesh.rotation.z = 0;
+     vmItemMesh.position.set(0.6, -0.6, 0.0);
+
      const box = BABYLON.MeshBuilder.CreateBox("box", { size: 0.4 }, vmScene);
      box.material = mat;
      box.parent = vmItemMesh;
@@ -2502,7 +2512,7 @@ let lastLocalPosVM: [number, number, number] | null = null;
 let lastYawVM: number | null = null;
 
 function updateViewmodel(dtSec: number) {
-  if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot || !vmItemPivot) return;
+  if (!vmReady || !vmScene || !vmCam || !vmRoot || !vmArmRoot) return;
   
   try {
     updateVmItem();
@@ -2561,27 +2571,24 @@ function updateViewmodel(dtSec: number) {
   const heldId = invState.slots[selectedHotbar]?.id || 0;
 
   if (heldId !== 0) {
-      // EQUIPPED POSE: Anchored bottom right, angled inward
-      vmBaseXMul = 0.6; 
-      vmBaseY = -0.8;   
+      // EQUIPPED POSE
+      vmRotX = 0;
+      vmRotY = 0;
+      vmRotZ = 0;
+      vmBaseXMul = 0; // ArmRoot centered, item is offset natively
+      vmBaseY = 0;   
       
       const baseX = r * vmBaseXMul;
       const baseY = vmBaseY;
 
-      // Rest Pose: Angle weapon forward and inward towards crosshair
-      vmItemPivot.rotation.x = Math.PI / 8;  // Pitch forward slightly
-      vmItemPivot.rotation.y = -Math.PI / 4; // Angle inward (left)
-      vmItemPivot.rotation.z = 0;
-
-      // Heavy Chop Animation applied to pivot
-      vmItemPivot.rotation.x += punch01 * 1.2; // Chop down heavily
-      vmItemPivot.rotation.y -= punch01 * 0.5; // Slice slightly across
+      // Heavy Chop Animation
+      vmArmRoot.rotation.x = punch01 * 1.5; 
+      vmArmRoot.rotation.y = turnSway * vmTurnSwayMulY - punch01 * 0.5;
+      vmArmRoot.rotation.z = swing - turnSway * vmTurnSwayMulZ;
       
-      const x = baseX + sway * 0.55 - punch01 * 0.1;
-      const y = baseY + bob * 0.65 - punch01 * 0.2; 
-      const z = 2.0 + punch01 * 0.1; // Fixed base Z so it never clips!
-      
-      vmArmRoot.position.set(0, 0, 0); // Keep armroot zeroed
+      const x = baseX + sway * 0.55 - punch01 * 0.2;
+      const y = baseY + bob * 0.65 - punch01 * 0.3; 
+      const z = 2.0; // Fixed base Z so it never clips!
       vmRoot.position.set(x, y, z);
       
   } else {
@@ -2595,9 +2602,7 @@ function updateViewmodel(dtSec: number) {
       const baseX = r * vmBaseXMul;
       const baseY = vmBaseY;
       
-      // Punch Animation applied to entire arm root
-      vmItemPivot.rotation.set(0, 0, 0); // Reset pivot
-      
+      // Punch Animation
       vmArmRoot.rotation.x = vmRotX - punch01 * 1.2; 
       vmArmRoot.rotation.y = vmRotY + turnSway * vmTurnSwayMulY;
       vmArmRoot.rotation.z = vmRotZ + swing - turnSway * vmTurnSwayMulZ;
