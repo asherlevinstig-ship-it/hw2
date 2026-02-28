@@ -2465,12 +2465,14 @@ function updateVmItem() {
   mat.emissiveColor = def.color ? hexToColor3(def.color) : new BABYLON.Color3(1,1,1);
   mat.disableDepthWrite = true;
   mat.depthFunction = BABYLON.Constants.ALWAYS;
+  mat.backFaceCulling = false; // IMPORTANT for mirrored hand
 
   const stickMat = new BABYLON.StandardMaterial("vmStickMat", vmScene);
   stickMat.disableLighting = true;
   stickMat.emissiveColor = hexToColor3("#8D6E63"); // Wood brown
   stickMat.disableDepthWrite = true;
   stickMat.depthFunction = BABYLON.Constants.ALWAYS;
+  stickMat.backFaceCulling = false; // IMPORTANT for mirrored hand
 
   if (def.tool?.kind === "sword") {
      vmItemMesh.rotation.x = Math.PI / 4; 
@@ -2494,7 +2496,7 @@ function updateVmItem() {
      blade.parent = vmItemMesh;
 
      // FIX C: Keep relative to the hand rather than floating center screen
-     vmItemMesh.position.set(0.02, -0.02, 0.02);
+     vmItemMesh.position.set(0.05, -0.03, 0.12);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
      vmItemMesh.rotation.x = Math.PI / 4;
@@ -2517,7 +2519,7 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.0, 0.0, 0.0);
+     vmItemMesh.position.set(0.05, -0.03, 0.12);
 
   } else {
      // Blocks or Raw Items (Cubes)
@@ -2529,7 +2531,7 @@ function updateVmItem() {
      box.material = mat;
      box.parent = vmItemMesh;
      
-     vmItemMesh.position.set(0.0, 0.1, 0.05);
+     vmItemMesh.position.set(0.05, 0.05, 0.12);
   }
 
   // Enforce overlay depth buffer
