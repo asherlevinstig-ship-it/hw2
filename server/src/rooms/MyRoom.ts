@@ -2552,14 +2552,20 @@ export class MyRoom extends Room {
     if (blockId === this.STONE_ID) return Items.STONE;
     if (blockId === this.WOOD_ID) return Items.WOOD_LOG;
     if (blockId === this.LEAVES_ID) return Items.LEAVES;
-    if (blockId === this.SAND_ID) return (Items as any).SAND ?? 0;
-    if (blockId === this.SNOW_ID) return (Items as any).SNOW ?? 0;
+    if (blockId === this.SAND_ID) return Items.SAND;
+    if (blockId === this.SNOW_ID) return Items.SNOW;
     if (blockId === this.COAL_ORE_ID) return Items.COAL;
     if (blockId === this.IRON_ORE_ID) return Items.RAW_IRON;
     if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
     if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
-    if (blockId === this.PLANKS_ID) return Items.WOOD_LOG;
-    if (blockId === this.STONE_BRICKS_ID) return Items.STONE;
+    
+    // UPDATED: Now interior blocks properly drop themselves!
+    if (blockId === this.PLANKS_ID) return Items.PLANKS;
+    if (blockId === this.STONE_BRICKS_ID) return Items.STONE_BRICKS;
+    if (blockId === this.CARPET_ID) return Items.CARPET;
+    if (blockId === this.GLASS_ID) return Items.GLASS;
+    if (blockId === this.LANTERN_ID) return Items.LANTERN;
+    
     return 0; // Everything else breaks to air/nothing by default
   }
 
