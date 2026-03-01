@@ -1,6 +1,6 @@
 // client/src/BlockRegistry.ts
 // FULL FILE - No Omits
-// Maps server-authoritative Block IDs to individual texture PNGs
+// Maps server-authoritative Block IDs to individual texture PNGs based on classic naming
 
 export interface BlockDefinition {
   id: number;
@@ -15,9 +15,6 @@ export interface BlockDefinition {
   };
 }
 
-// Using relative paths ("blocks/...") ensures Vite resolves them correctly 
-// relative to your index.html in production builds.
-
 export const BlockRegistry: Record<number, BlockDefinition> = {
   0: {
     id: 0,
@@ -30,9 +27,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Grass",
     isTransparent: false,
     textures: {
-      top: "blocks/grass_block_top.png",
+      top: "blocks/grass_top.png",
       bottom: "blocks/dirt.png",
-      side: "blocks/grass_block_side.png"
+      side: "blocks/grass_path_side.png"
     }
   },
   2: {
@@ -56,9 +53,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Wood",
     isTransparent: false,
     textures: {
-      top: "blocks/oak_log_top.png",
-      bottom: "blocks/oak_log_top.png",
-      side: "blocks/oak_log.png"
+      top: "blocks/log_oak_top.png",
+      bottom: "blocks/log_oak_top.png",
+      side: "blocks/log_oak.png"
     }
   },
   5: {
@@ -66,7 +63,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Leaves",
     isTransparent: true,
     textures: {
-      all: "blocks/oak_leaves.png"
+      all: "blocks/leaves_oak.png"
     }
   },
   6: {
@@ -93,7 +90,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Sand",
     isTransparent: false,
     textures: {
-      all: "blocks/sand.png"
+      all: "blocks/red_sand.png" // Fallback based on screenshots
     }
   },
   12: {
@@ -141,7 +138,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Planks",
     isTransparent: false,
     textures: {
-      all: "blocks/oak_planks.png"
+      all: "blocks/planks_oak.png"
     }
   },
   41: {
@@ -157,7 +154,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Carpet",
     isTransparent: true,
     textures: {
-      all: "blocks/red_carpet.png"
+      all: "blocks/redstone_block.png" // Fallback based on screenshots
     }
   },
   43: {
@@ -181,9 +178,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Deepslate",
     isTransparent: false,
     textures: {
-      top: "blocks/deepslate_top.png",
-      bottom: "blocks/deepslate_top.png",
-      side: "blocks/deepslate.png"
+      all: "blocks/obsidian.png" // Dark stone fallback
     }
   },
   91: {
@@ -199,7 +194,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Moss",
     isTransparent: false,
     textures: {
-      all: "blocks/moss_block.png"
+      all: "blocks/slime.png" // Green block fallback
     }
   },
   93: {
@@ -207,7 +202,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Mossy Stone",
     isTransparent: false,
     textures: {
-      all: "blocks/mossy_cobblestone.png"
+      all: "blocks/cobblestone_mossy.png"
     }
   },
   94: {
@@ -215,7 +210,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone",
     isTransparent: true,
     textures: {
-      all: "blocks/pointed_dripstone.png"
+      all: "blocks/stone_diorite.png" // Fallback
     }
   },
   95: {
@@ -223,7 +218,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone Block",
     isTransparent: false,
     textures: {
-      all: "blocks/dripstone_block.png"
+      all: "blocks/stone_granite.png" // Fallback
     }
   },
   96: {
@@ -231,7 +226,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Glow Shroom",
     isTransparent: false,
     textures: {
-      all: "blocks/shroomlight.png"
+      all: "blocks/glowstone.png" // Glowing fallback
     }
   },
   97: {
@@ -239,7 +234,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Crystal",
     isTransparent: true,
     textures: {
-      all: "blocks/amethyst_block.png"
+      all: "blocks/diamond_block.png" // Shiny fallback
     }
   }
 };
