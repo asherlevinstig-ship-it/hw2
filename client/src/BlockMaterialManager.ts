@@ -97,6 +97,7 @@ export class BlockMaterialManager {
     if (!texturePath || !this.textureCache.has(texturePath)) {
       // Fallback magenta texture for missing definitions
       mat.diffuseColor = new Color3(1, 0, 1);
+      mat.emissiveColor = new Color3(1, 0, 1); // Makes fallback visible in the dark
       if (isTransparent) {
         mat.alpha = 0.5;
       }
@@ -104,7 +105,10 @@ export class BlockMaterialManager {
     }
 
     const tex = this.textureCache.get(texturePath)!;
+    
+    // Applying to both diffuse and emissive channels
     mat.diffuseTexture = tex;
+    mat.emissiveTexture = tex; 
     
     if (isTransparent) {
       mat.diffuseTexture.hasAlpha = true;
