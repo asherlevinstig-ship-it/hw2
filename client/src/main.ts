@@ -1131,6 +1131,7 @@ window.addEventListener("mouseup", (e: MouseEvent) => {
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
 
+// INPUT HANDLING UPDATE
 noa.inputs.down.on("alt-fire", () => {
   if (classOverlay.style.display !== "none") return;
   if (!hasPointerLock()) return;
@@ -1141,11 +1142,13 @@ noa.inputs.down.on("alt-fire", () => {
 
   triggerPunch();
 
+  // CHECK FOR INTERACTION FIRST
   const targetedBlockId = noa.world.getBlockID(target.pos.x, target.pos.y, target.pos.z);
   
   if (targetedBlockId === Items.CHEST) {
+      // Send Interact
       if (room) room.send("interact", { x: target.pos.x, y: target.pos.y, z: target.pos.z });
-      return; 
+      return; // Stop processing placement
   }
 
   const { x, y, z } = target.adj;
@@ -1216,6 +1219,8 @@ function ensureMaterialManager(scene: BABYLON.Scene) {
   }
 }
 
+// Babylon requires materials to be instantiated in the exact scene they are used in.
+// We grab the loaded textures from the world scene (via matManager) and create fresh mats for our overlays.
 function createOverlayMat(targetScene: BABYLON.Scene, sourceMatInfo: BABYLON.Material | BABYLON.Material[] | null | undefined): BABYLON.StandardMaterial {
   const src = Array.isArray(sourceMatInfo) ? sourceMatInfo[0] : sourceMatInfo;
   const mat = new BABYLON.StandardMaterial("overlayMat", targetScene);
@@ -1441,6 +1446,7 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
       if (matManager) {
         const matInfo = matManager.getMaterialForBlock(d.itemId);
         if (Array.isArray(matInfo)) {
+            // It's a block with different faces, we can just assign the Side material for the rotating drop icon
             mesh.material = matInfo[0]; 
         } else if (matInfo) {
             mesh.material = matInfo;
@@ -2154,16 +2160,22 @@ function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number,
     let plate = (root as any).__nameplate as BABYLON.Mesh;
     let tex = (root as any).__nameplateTex as BABYLON.DynamicTexture;
 
+    // Scale up the nameplate if this is the Giant NPC
+    const isGiant = id.includes("npc_giant");
+    const nameplateWidth = isGiant ? 6.0 : 1.5;
+    const nameplateHeight = isGiant ? 1.6 : 0.4;
+    const nameplateYOffset = isGiant ? 6.5 : 2.2;
+
     if (!plate) {
         // Create Plane
-        plate = BABYLON.MeshBuilder.CreatePlane("np:" + id, { width: 1.5, height: 0.4 }, rpScene);
+        plate = BABYLON.MeshBuilder.CreatePlane("np:" + id, { width: nameplateWidth, height: nameplateHeight }, rpScene);
         plate.parent = root;
-        plate.position.y = 2.2; // Float above head
+        plate.position.y = nameplateYOffset; // Float above head
         plate.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
         plate.isPickable = false;
         
         // Create Texture
-        tex = new BABYLON.DynamicTexture("npTex:" + id, { width: 256, height: 64 }, rpScene, false);
+        tex = new BABYLON.DynamicTexture("npTex:" + id, { width: 512, height: 128 }, rpScene, false);
         tex.hasAlpha = true;
 
         const mat = new BABYLON.StandardMaterial("npMat:" + id, rpScene);
@@ -2184,29 +2196,30 @@ function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number,
         (root as any).__lastHp = hp;
         
         const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
-        ctx.clearRect(0, 0, 256, 64);
+        ctx.clearRect(0, 0, 512, 128);
 
         // Background Bar (Grey)
         ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-        ctx.fillRect(10, 35, 236, 12);
+        ctx.fillRect(20, 70, 472, 24);
 
         // Health Bar (Red)
         const pct = Math.max(0, hp / maxHp);
         ctx.fillStyle = pct > 0.5 ? "#00ff00" : (pct > 0.25 ? "#ffff00" : "#ff0000");
-        ctx.fillRect(10, 35, 236 * pct, 12);
+        ctx.fillRect(20, 70, 472 * pct, 24);
 
         // Name Text
-        ctx.font = "bold 24px monospace";
-        ctx.fillStyle = "white";
+        ctx.font = "bold 48px monospace";
+        ctx.fillStyle = isGiant ? "#FFD700" : "white"; // Gold name for Giant
         ctx.textAlign = "center";
         ctx.shadowColor = "black";
         ctx.shadowBlur = 4;
         
         let name = "Player";
-        if (id.includes("golem")) name = "Deepslate Golem";
+        if (isGiant) name = "The Ancient Warden";
+        else if (id.includes("golem")) name = "Deepslate Golem";
         else if (id.includes("dummy")) name = "Training Dummy";
         
-        ctx.fillText(name, 128, 25);
+        ctx.fillText(name, 256, 50);
         tex.update();
     }
 }
@@ -2217,9 +2230,12 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   const existing = remoteMeshes.get(id);
   if (existing) return existing;
 
-  const isMob = id.includes("dummy") || id.includes("mob") || id.includes("golem");
+  const isMob = id.includes("dummy") || id.includes("mob") || id.includes("golem") || id.includes("npc_");
+  const isGiant = id.includes("npc_giant");
   const root = new BABYLON.TransformNode(`remoteRoot:${id}`, rpScene);
+  
   (root as any).__isMob = isMob;
+  (root as any).__isGiant = isGiant;
 
   let parts: any = {};
 
@@ -2230,14 +2246,16 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
     (mobMat as any).fogEnabled = false;
 
     // Cross-scene material transfer: Grab the texture from matManager and assign to new material
-    const baseMatInfo = matManager?.getMaterialForBlock(Items.DEEPSLATE);
+    // Giant gets gold, standard mobs get deepslate
+    const targetBlock = isGiant ? Items.RAW_GOLD : Items.DEEPSLATE;
+    const baseMatInfo = matManager?.getMaterialForBlock(targetBlock);
     const baseMat = (Array.isArray(baseMatInfo) ? baseMatInfo[0] : baseMatInfo) as BABYLON.StandardMaterial | undefined;
 
     if (baseMat && baseMat.diffuseTexture) {
       mobMat.diffuseTexture = baseMat.diffuseTexture;
       mobMat.emissiveTexture = baseMat.diffuseTexture;
     } else {
-      mobMat.emissiveColor = new BABYLON.Color3(0.5, 0.5, 0.5); // Grey fallback
+      mobMat.emissiveColor = isGiant ? new BABYLON.Color3(1, 0.8, 0) : new BABYLON.Color3(0.5, 0.5, 0.5); 
     }
 
     remoteMats.set(id, mobMat);
@@ -2269,7 +2287,7 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
 
     const eyeMat = new BABYLON.StandardMaterial(`mobEyeMat:${id}`, rpScene);
     eyeMat.disableLighting = true;
-    eyeMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1); 
+    eyeMat.emissiveColor = isGiant ? new BABYLON.Color3(0, 1, 1) : new BABYLON.Color3(1, 0.1, 0.1); 
     (eyeMat as any).fogEnabled = false;
 
     const eyeL = BABYLON.MeshBuilder.CreateBox(`mobEyeL:${id}`, { size: 0.1 }, rpScene);
@@ -2283,13 +2301,19 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
     eyeR.material = eyeMat;
 
     const orbiters: BABYLON.Mesh[] = [];
-    for(let i=0; i<3; i++) {
-        const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, rpScene);
-        orb.material = eyeMat; 
-        orb.parent = root;
-        orb.isPickable = false;
-        (orb as any).isInFrustum = () => true;
-        orbiters.push(orb);
+    if (!isGiant) {
+        for(let i=0; i<3; i++) {
+            const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, rpScene);
+            orb.material = eyeMat; 
+            orb.parent = root;
+            orb.isPickable = false;
+            (orb as any).isInFrustum = () => true;
+            orbiters.push(orb);
+        }
+    }
+
+    if (isGiant) {
+        root.scaling.set(4, 4, 4); // Scale up the Giant 4x
     }
 
     parts = { body, head, armL, armR, legL, legR, eyeMat, orbiters, mobMat };
