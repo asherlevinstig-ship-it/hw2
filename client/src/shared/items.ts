@@ -5,6 +5,7 @@
 // Includes:
 // - All Terrain & Cave Blocks
 // - Loot Chest (ID 8)
+// - Wooden Sign (ID 9)
 // - Tools (Picks) & Weapons (Swords, Axes)
 // - Minerals & Crafting Materials
 // - Awakening Stones & Virtual Skills
@@ -20,6 +21,7 @@ export const Items = {
   SAND: 6,
   SNOW: 7,
   CHEST: 8, // Interactive Container
+  SIGN: 9,  // Text-based Signage
 
   // --- CAVE BIOME BLOCKS ---
   DEEPSLATE: 90,
@@ -104,6 +106,7 @@ const LEAVES_ID = 5;
 const SAND_ID = 11;
 const SNOW_ID = 12;
 const CHEST_ID = 8;
+const SIGN_ID = 9;
 
 const DEEPSLATE_ID = 90;
 const TUFF_ID = 91;
@@ -127,6 +130,7 @@ export const ITEM_DEFS: Record<number, ItemDef> = {
   6: { id: 6, name: "Sand", icon: `${ICON_BASE}/dust-cloud.svg`, fallback: "🏜️", color: "#FFF59D", maxStack: 64, placeBlockId: SAND_ID },
   7: { id: 7, name: "Snow", icon: `${ICON_BASE}/snowflake-2.svg`, fallback: "❄️", color: "#E0F7FA", maxStack: 64, placeBlockId: SNOW_ID },
   8: { id: 8, name: "Loot Chest", icon: `${ICON_BASE}/locked-chest.svg`, fallback: "🧳", color: "#FFB74D", maxStack: 64, placeBlockId: CHEST_ID },
+  9: { id: 9, name: "Wooden Sign", icon: `${ICON_BASE}/wooden-sign.svg`, fallback: "🪧", color: "#8D6E63", maxStack: 16, placeBlockId: SIGN_ID },
 
   // --- CAVE BLOCKS ---
   90: { id: 90, name: "Deepslate", icon: `${ICON_BASE}/rock.svg`, fallback: "⬛", color: "#37474F", maxStack: 64, placeBlockId: DEEPSLATE_ID },
@@ -189,6 +193,7 @@ export const RECIPES: Recipe[] = [
   // Basics
   { id: "planks_from_log", inputs: [{ id: Items.WOOD_LOG, count: 1 }], output: { id: Items.PLANK, count: 4 } },
   { id: "sticks_from_planks", inputs: [{ id: Items.PLANK, count: 2 }], output: { id: Items.STICK, count: 4 } },
+  { id: "wooden_sign", inputs: [{ id: Items.PLANK, count: 2 }, { id: Items.STICK, count: 1 }], output: { id: Items.SIGN, count: 1 } },
 
   // Picks
   { id: "wood_pick", inputs: [{ id: Items.PLANK, count: 3 }, { id: Items.STICK, count: 2 }], output: { id: Items.WOOD_PICK, count: 1 } },
