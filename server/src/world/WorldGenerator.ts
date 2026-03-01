@@ -606,7 +606,10 @@ export class WorldGenerator {
             const rand = () => this.hash3i(cx * CS + x, worldY, cz * CS + z + oreSalt++);
             const oreId = this.chooseOreForY(worldY, rand);
             if (oreId) {
-              this.carveVein(vox, x, y, z, oreId, Math.floor(def.veinSize[0] + (def.veinSize[1] - def.veinSize[0] + 1) * rand()), rand);
+              const def = this.ORES.find((o) => o.id === oreId);
+              if (def) {
+                this.carveVein(vox, x, y, z, oreId, Math.floor(def.veinSize[0] + (def.veinSize[1] - def.veinSize[0] + 1) * rand()), rand);
+              }
             }
           }
         }
