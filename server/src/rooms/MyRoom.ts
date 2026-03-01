@@ -1,6 +1,6 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - No Omits
-// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs
+// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs + Signage System
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -280,7 +280,7 @@ export class MyRoom extends Room {
 
   // Minerals + bedrock (MUST match client)
   private readonly BEDROCK_ID = 6;
-  private readonly CHEST_ID = 8; // Loot Chest
+  private readonly CHEST_ID = 8; // Interactive Container (Loot/Signs)
   private readonly COAL_ORE_ID = 30; 
   private readonly IRON_ORE_ID = 31; 
   private readonly GOLD_ORE_ID = 32; 
@@ -419,11 +419,14 @@ export class MyRoom extends Room {
   private mobs = new Map<string, MobInfo>();
   private chunks = new Map<string, Uint8Array>();
   private drops = new Map<string, Drop>();
-  private projectiles = new Map<string, Projectile>(); // NEW: Projectiles
+  private projectiles = new Map<string, Projectile>();
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
   private inventories = new Map<string, InvState>();
+  
+  // Content & Interaction Maps
   private chestLoot = new Map<string, SharedItemStack[]>(); // Key: "x,y,z"
+  private signTexts = new Map<string, string>(); // Key: "x,y,z"
   
   // =========================
   // Spatial Hashing (50+ Player Scaling)
@@ -761,6 +764,26 @@ export class MyRoom extends Room {
     try {
       this.townHall = this.buildMassiveTownHall();
       console.log(`[STRUCT] Massive TownHall generated in-memory. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
+      
+      // REGISTER SIGNS (Information Stones)
+      const townY = this.baseHeight + 2;
+      const baseY = townY + 1;
+      const anchorX = Math.floor(51 / 2); // 25
+      const anchorZ = Math.floor(31 / 2); // 15
+      const worldX = this.TOWN_CENTER_X - anchorX;
+      const worldY = baseY;
+      const worldZ = this.TOWN_CENTER_Z - anchorZ;
+
+      const registerSign = (lx: number, ly: number, lz: number, text: string) => {
+          this.signTexts.set(`${worldX + lx},${worldY + ly},${worldZ + lz}`, text);
+      };
+
+      registerSign(25, 1, 3, "Welcome to the Town of Beginnings! West: Casino. East: Market.");
+      registerSign(16, 1, 15, "[Gambling Den] Try your luck at the Moss Tables!");
+      registerSign(6, 1, 15, "House Rules: 1. No weapons drawn. 2. All bets are final.");
+      registerSign(34, 1, 15, "[Market District] Trade your hard-earned ores here!");
+      registerSign(44, 1, 15, "Market Stall Available! Contact the Warden to rent.");
+
     } catch (e) {
       console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
       this.townHall = null;
@@ -1203,19 +1226,23 @@ export class MyRoom extends Room {
       this.setBlockAuthoritative(x, y, z, blockId);
     });
 
-    // Handle Chest Interaction
+    // Handle Chest Interaction & Sign Reading
     this.onMessage("interact", (client: Client, payload: unknown) => {
         const p = payload as { x: number, y: number, z: number };
         if (!p || !isFiniteNumber(p.x)) return;
         
         const blockId = this.getBlockAt(p.x, p.y, p.z);
-        console.log(`[CHEST DEBUG] Player interacted at ${p.x}, ${p.y}, ${p.z}. Found blockId: ${blockId}`);
         
         if (blockId === this.CHEST_ID) {
             const key = `${p.x},${p.y},${p.z}`;
+            const signText = this.signTexts.get(key);
             const loot = this.chestLoot.get(key);
             
-            if (loot && loot.length > 0) {
+            if (signText) {
+                // If it's a registered sign, display the message and do not break it.
+                client.send("chatMessage", { msg: `📖 ${signText}` });
+            } else if (loot && loot.length > 0) {
+                // If it's a Loot Chest, unpack it.
                 const inv = this.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
                 
                 let found = "";
@@ -1228,10 +1255,10 @@ export class MyRoom extends Room {
                 this.sendInvStateToClient(client, inv);
                 client.send("chatMessage", { msg: `Looted Chest: ${found}` });
                 
-                // Empty the chest and break it visualy
+                // Empty the chest and break it visually
                 this.chestLoot.delete(key);
                 this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID); 
-                this.spawnDrop(Items.CHEST, 1, p.x + 0.5, p.y + 0.5, p.z + 0.5); // Drop the chest itself
+                this.spawnDrop(Items.CHEST, 1, p.x + 0.5, p.y + 0.5, p.z + 0.5); 
             } else {
                 client.send("chatMessage", { msg: "Chest is empty." });
                 this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID);
@@ -1664,6 +1691,135 @@ export class MyRoom extends Room {
     };
     
     return c;
+  }
+
+  // =========================
+  // In-Memory Massive Town Hall Builder
+  // =========================
+  private buildMassiveTownHall(): BlockStructure {
+    const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
+    const w = 51;
+    const d = 31;
+    const h = 12;
+
+    const add = (x: number, y: number, z: number, id: number) => {
+      blocks.push({ x, y, z, id });
+    };
+
+    const fill = (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, id: number) => {
+      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) {
+            add(x, y, z, id);
+          }
+        }
+      }
+    };
+
+    // 1. Fill entire volume with Air to hollow out the inside and overwrite anything else
+    fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
+
+    // 2. Floor
+    fill(0, 0, 0, w - 1, 0, d - 1, this.DEEPSLATE_ID);
+    
+    // 3. Outer Walls
+    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_ID); // Front
+    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_ID); // Back
+    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_ID); // Left
+    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_ID); // Right
+
+    // 4. Main Entrance (Front center)
+    fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
+
+    // 5. Roof
+    fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
+
+    // 6. Central Lobby Carpet (Tuff)
+    fill(22, 1, 1, 28, 1, d - 2, this.TUFF_ID);
+
+    // =====================================
+    // WEST WING: GAMBLING DEN
+    // =====================================
+    // Wall separator
+    fill(15, 1, 1, 15, h - 2, 6, this.STONE_ID);
+    fill(15, 1, d - 7, 15, h - 2, d - 2, this.STONE_ID);
+    // Archway
+    fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
+
+    const makeTable = (tx: number, tz: number) => {
+      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.WOOD_ID); // Table base
+      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); // Green felt
+      // Stools
+      add(tx - 1, 1, tz + 1, this.WOOD_ID);
+      add(tx + 3, 1, tz + 1, this.WOOD_ID);
+      add(tx + 1, 1, tz - 1, this.WOOD_ID);
+      add(tx + 1, 1, tz + 3, this.WOOD_ID);
+    };
+    
+    makeTable(3, 4);
+    makeTable(9, 4);
+    makeTable(3, 12);
+    makeTable(9, 12);
+    makeTable(3, 20);
+    makeTable(9, 20);
+
+    // =====================================
+    // EAST WING: MARKET & STORES
+    // =====================================
+    // Wall separator
+    fill(35, 1, 1, 35, h - 2, 6, this.STONE_ID);
+    fill(35, 1, d - 7, 35, h - 2, d - 2, this.STONE_ID);
+    // Archway
+    fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
+
+    const makeStall = (sx: number, sz: number) => {
+      fill(sx, 1, sz, sx + 4, 1, sz, this.WOOD_ID); // Front counter
+      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.WOOD_ID); // Side
+      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.WOOD_ID); // Side
+      
+      add(sx + 1, 2, sz, this.CHEST_ID); // Chest on counter
+      add(sx + 3, 2, sz, this.CHEST_ID); // Chest on counter
+      
+      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); // Awning
+      
+      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); // Pillars
+      add(sx + 4, 2, sz, this.WOOD_ID); add(sx + 4, 3, sz, this.WOOD_ID);
+    };
+
+    makeStall(38, 4);
+    makeStall(38, 12);
+    makeStall(38, 20);
+
+    // =====================================
+    // SIGNAGE SYSTEM (Visual & Interactive)
+    // =====================================
+    // Visual Signage: Glowing Block Art embedded above archways
+    // Casino Visual Sign (Glowing Purple Crystal Diamond)
+    add(16, 10, 15, this.CRYSTAL_ID);
+    add(16, 9, 14, this.CRYSTAL_ID); add(16, 9, 16, this.CRYSTAL_ID);
+    add(16, 8, 13, this.CRYSTAL_ID); add(16, 8, 17, this.CRYSTAL_ID);
+    add(16, 7, 14, this.CRYSTAL_ID); add(16, 7, 16, this.CRYSTAL_ID);
+    add(16, 6, 15, this.CRYSTAL_ID);
+
+    // Market Visual Sign (Glowing Green Coin/Circle)
+    add(34, 9, 14, this.GLOW_SHROOM_ID); add(34, 9, 15, this.GLOW_SHROOM_ID); add(34, 9, 16, this.GLOW_SHROOM_ID);
+    add(34, 8, 13, this.GLOW_SHROOM_ID); add(34, 8, 17, this.GLOW_SHROOM_ID);
+    add(34, 7, 13, this.GLOW_SHROOM_ID); add(34, 7, 17, this.GLOW_SHROOM_ID);
+    add(34, 6, 14, this.GLOW_SHROOM_ID); add(34, 6, 15, this.GLOW_SHROOM_ID); add(34, 6, 16, this.GLOW_SHROOM_ID);
+
+    // Interactive Guide Stones (Signposts - Uses CHEST_ID so players can click them)
+    add(25, 1, 3, this.CHEST_ID); // Entrance Guide Stone
+    add(16, 1, 15, this.CHEST_ID); // Casino Entry Guide Stone
+    add(6, 1, 15, this.CHEST_ID); // Casino Rules Table
+    add(34, 1, 15, this.CHEST_ID); // Market Entry Guide Stone
+    add(44, 1, 15, this.CHEST_ID); // Market Stall Notice
+
+    return {
+      name: "massive_town_hall",
+      size: { w, h, d },
+      anchor: { x: Math.floor(w / 2), y: 0, z: Math.floor(d / 2) },
+      blocks
+    };
   }
 
   // =========================
@@ -2367,141 +2523,6 @@ export class MyRoom extends Room {
       const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
       this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
     }
-
-    // STAMP LOOT CHEST
-    const chestX = this.TOWN_CENTER_X + 2;
-    const chestZ = this.TOWN_CENTER_Z + 2;
-    
-    // Check if this chest falls in current chunk
-    // Use previously declared bounds (chunkMinX, etc.)
-    
-    if (chestX >= chunkMinX && chestX <= chunkMaxX && chestZ >= chunkMinZ && chestZ <= chunkMaxZ) {
-        const townY = this.baseHeight + 2;
-        const chestY = townY + 2;
-        const cyMin = cy * CS; const cyMax = cyMin + CS - 1;
-        
-        if (chestY >= cyMin && chestY <= cyMax) {
-            const ii = this.idx(chestX - chunkMinX, chestY - cyMin, chestZ - chunkMinZ);
-            vox[ii] = this.CHEST_ID;
-            
-            console.log(`[CHEST DEBUG] 📦 Loot Chest physically stamped into chunk voxels at World XYZ: ${chestX}, ${chestY}, ${chestZ}`);
-            
-            // Register Loot (Idempotent: map.set overwrites)
-            const key = `${chestX},${chestY},${chestZ}`;
-            if (!this.chestLoot.has(key)) {
-                console.log(`[CHEST DEBUG] 💎 Loot registered for chest at ${key}`);
-                this.chestLoot.set(key, [
-                    { id: Items.STONE_SWORD, count: 1 },
-                    { id: Items.COAL, count: 5 }
-                ]);
-            }
-        }
-    }
-  }
-
-  // =========================
-  // In-Memory Massive Town Hall Builder
-  // =========================
-  private buildMassiveTownHall(): BlockStructure {
-    const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
-    const w = 51;
-    const d = 31;
-    const h = 12;
-
-    const add = (x: number, y: number, z: number, id: number) => {
-      blocks.push({ x, y, z, id });
-    };
-
-    const fill = (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, id: number) => {
-      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
-        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
-          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) {
-            add(x, y, z, id);
-          }
-        }
-      }
-    };
-
-    // 1. Fill entire volume with Air to hollow out the inside and overwrite anything else
-    fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
-
-    // 2. Floor
-    fill(0, 0, 0, w - 1, 0, d - 1, this.DEEPSLATE_ID);
-    
-    // 3. Outer Walls
-    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_ID); // Front
-    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_ID); // Back
-    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_ID); // Left
-    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_ID); // Right
-
-    // 4. Main Entrance (Front center)
-    fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
-
-    // 5. Roof
-    fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
-
-    // 6. Central Lobby Carpet (Tuff)
-    fill(22, 1, 1, 28, 1, d - 2, this.TUFF_ID);
-
-    // =====================================
-    // WEST WING: GAMBLING DEN
-    // =====================================
-    // Wall separator
-    fill(15, 1, 1, 15, h - 2, 6, this.STONE_ID);
-    fill(15, 1, d - 7, 15, h - 2, d - 2, this.STONE_ID);
-    // Archway
-    fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
-
-    const makeTable = (tx: number, tz: number) => {
-      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.WOOD_ID); // Table base
-      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); // Green felt
-      // Stools
-      add(tx - 1, 1, tz + 1, this.WOOD_ID);
-      add(tx + 3, 1, tz + 1, this.WOOD_ID);
-      add(tx + 1, 1, tz - 1, this.WOOD_ID);
-      add(tx + 1, 1, tz + 3, this.WOOD_ID);
-    };
-    
-    makeTable(3, 4);
-    makeTable(9, 4);
-    makeTable(3, 12);
-    makeTable(9, 12);
-    makeTable(3, 20);
-    makeTable(9, 20);
-
-    // =====================================
-    // EAST WING: MARKET & STORES
-    // =====================================
-    // Wall separator
-    fill(35, 1, 1, 35, h - 2, 6, this.STONE_ID);
-    fill(35, 1, d - 7, 35, h - 2, d - 2, this.STONE_ID);
-    // Archway
-    fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
-
-    const makeStall = (sx: number, sz: number) => {
-      fill(sx, 1, sz, sx + 4, 1, sz, this.WOOD_ID); // Front counter
-      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.WOOD_ID); // Side
-      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.WOOD_ID); // Side
-      
-      add(sx + 1, 2, sz, this.CHEST_ID); // Chest on counter
-      add(sx + 3, 2, sz, this.CHEST_ID); // Chest on counter
-      
-      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); // Awning
-      
-      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); // Pillars
-      add(sx + 4, 2, sz, this.WOOD_ID); add(sx + 4, 3, sz, this.WOOD_ID);
-    };
-
-    makeStall(38, 4);
-    makeStall(38, 12);
-    makeStall(38, 20);
-
-    return {
-      name: "massive_town_hall",
-      size: { w, h, d },
-      anchor: { x: Math.floor(w / 2), y: 0, z: Math.floor(d / 2) },
-      blocks
-    };
   }
 
   // =========================
