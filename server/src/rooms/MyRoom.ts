@@ -1,6 +1,6 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - No Omits
-// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs + Signage System
+// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs + Signage System + JSON Structure Loading + Extended Interior Textures
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
@@ -299,6 +299,13 @@ export class MyRoom extends Room {
   private readonly DRIPSTONE_BLOCK_ID = 95;
   private readonly GLOW_SHROOM_ID = 96;
   private readonly CRYSTAL_ID = 97;
+
+  // ===== INTERIOR BLOCKS =====
+  private readonly PLANKS_ID = 40;
+  private readonly STONE_BRICKS_ID = 41;
+  private readonly CARPET_ID = 42;
+  private readonly GLASS_ID = 43;
+  private readonly LANTERN_ID = 44;
 
   private readonly CaveBiomeRules: Record<
     CaveBiome,
@@ -760,16 +767,28 @@ export class MyRoom extends Room {
       }
     }, 5000);
 
-    // GENERATE MASSIVE PROCEDURAL TOWN HALL
+    // GENERATE OR LOAD MASSIVE PROCEDURAL TOWN HALL
     try {
-      this.townHall = this.buildMassiveTownHall();
-      console.log(`[STRUCT] Massive TownHall generated in-memory. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
+      const dataFolder = path.join(process.cwd(), "data");
+      const townHallPath = path.join(dataFolder, "town_hall_v1.json");
+      
+      if (!fs.existsSync(dataFolder)) {
+        fs.mkdirSync(dataFolder, { recursive: true });
+      }
+
+      if (fs.existsSync(townHallPath)) {
+        this.townHall = loadBlockStructure(townHallPath);
+        console.log(`[STRUCT] Massive TownHall loaded from JSON. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
+      } else {
+        this.townHall = this.buildMassiveTownHall();
+        console.log(`[STRUCT] Massive TownHall generated in-memory. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
+      }
       
       // REGISTER SIGNS (Information Stones)
       const townY = this.baseHeight + 2;
       const baseY = townY + 1;
-      const anchorX = Math.floor(51 / 2); // 25
-      const anchorZ = Math.floor(31 / 2); // 15
+      const anchorX = this.townHall?.anchor.x ?? Math.floor(51 / 2);
+      const anchorZ = this.townHall?.anchor.z ?? Math.floor(31 / 2);
       const worldX = this.TOWN_CENTER_X - anchorX;
       const worldY = baseY;
       const worldZ = this.TOWN_CENTER_Z - anchorZ;
@@ -1694,7 +1713,8 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // In-Memory Massive Town Hall Builder
+  // In-Memory Massive Town Hall Builder (Procedural Fallback)
+  // Upgraded with new interior textures
   // =========================
   private buildMassiveTownHall(): BlockStructure {
     const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
@@ -1719,41 +1739,42 @@ export class MyRoom extends Room {
     // 1. Fill entire volume with Air to hollow out the inside and overwrite anything else
     fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
 
-    // 2. Floor
-    fill(0, 0, 0, w - 1, 0, d - 1, this.DEEPSLATE_ID);
+    // 2. Floor (Planks)
+    fill(0, 0, 0, w - 1, 0, d - 1, this.PLANKS_ID);
     
-    // 3. Outer Walls
-    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_ID); // Front
-    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_ID); // Back
-    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_ID); // Left
-    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_ID); // Right
+    // 3. Outer Walls (Stone Bricks)
+    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_BRICKS_ID); // Front
+    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); // Back
+    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_BRICKS_ID); // Left
+    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); // Right
 
     // 4. Main Entrance (Front center)
     fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
 
-    // 5. Roof
+    // 5. Roof (Wood Structure + Leaves canopy)
     fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
+    fill(1, h, 1, w - 2, h + 1, d - 2, this.LEAVES_ID);
 
-    // 6. Central Lobby Carpet (Tuff)
-    fill(22, 1, 1, 28, 1, d - 2, this.TUFF_ID);
+    // 6. Central Lobby Carpet (Regal Carpet)
+    fill(22, 1, 1, 28, 1, d - 2, this.CARPET_ID);
 
     // =====================================
     // WEST WING: GAMBLING DEN
     // =====================================
     // Wall separator
-    fill(15, 1, 1, 15, h - 2, 6, this.STONE_ID);
-    fill(15, 1, d - 7, 15, h - 2, d - 2, this.STONE_ID);
+    fill(15, 1, 1, 15, h - 2, 6, this.PLANKS_ID);
+    fill(15, 1, d - 7, 15, h - 2, d - 2, this.PLANKS_ID);
     // Archway
     fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
 
     const makeTable = (tx: number, tz: number) => {
-      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.WOOD_ID); // Table base
+      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.PLANKS_ID); // Table base
       fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); // Green felt
       // Stools
-      add(tx - 1, 1, tz + 1, this.WOOD_ID);
-      add(tx + 3, 1, tz + 1, this.WOOD_ID);
-      add(tx + 1, 1, tz - 1, this.WOOD_ID);
-      add(tx + 1, 1, tz + 3, this.WOOD_ID);
+      add(tx - 1, 1, tz + 1, this.PLANKS_ID);
+      add(tx + 3, 1, tz + 1, this.PLANKS_ID);
+      add(tx + 1, 1, tz - 1, this.PLANKS_ID);
+      add(tx + 1, 1, tz + 3, this.PLANKS_ID);
     };
     
     makeTable(3, 4);
@@ -1767,15 +1788,15 @@ export class MyRoom extends Room {
     // EAST WING: MARKET & STORES
     // =====================================
     // Wall separator
-    fill(35, 1, 1, 35, h - 2, 6, this.STONE_ID);
-    fill(35, 1, d - 7, 35, h - 2, d - 2, this.STONE_ID);
+    fill(35, 1, 1, 35, h - 2, 6, this.PLANKS_ID);
+    fill(35, 1, d - 7, 35, h - 2, d - 2, this.PLANKS_ID);
     // Archway
     fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
 
     const makeStall = (sx: number, sz: number) => {
-      fill(sx, 1, sz, sx + 4, 1, sz, this.WOOD_ID); // Front counter
-      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.WOOD_ID); // Side
-      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.WOOD_ID); // Side
+      fill(sx, 1, sz, sx + 4, 1, sz, this.PLANKS_ID); // Front counter
+      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.PLANKS_ID); // Side
+      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.PLANKS_ID); // Side
       
       add(sx + 1, 2, sz, this.CHEST_ID); // Chest on counter
       add(sx + 3, 2, sz, this.CHEST_ID); // Chest on counter
@@ -1791,9 +1812,8 @@ export class MyRoom extends Room {
     makeStall(38, 20);
 
     // =====================================
-    // SIGNAGE SYSTEM (Visual & Interactive)
+    // SIGNAGE SYSTEM & LANTERNS
     // =====================================
-    // Visual Signage: Glowing Block Art embedded above archways
     // Casino Visual Sign (Glowing Purple Crystal Diamond)
     add(16, 10, 15, this.CRYSTAL_ID);
     add(16, 9, 14, this.CRYSTAL_ID); add(16, 9, 16, this.CRYSTAL_ID);
@@ -1806,6 +1826,14 @@ export class MyRoom extends Room {
     add(34, 8, 13, this.GLOW_SHROOM_ID); add(34, 8, 17, this.GLOW_SHROOM_ID);
     add(34, 7, 13, this.GLOW_SHROOM_ID); add(34, 7, 17, this.GLOW_SHROOM_ID);
     add(34, 6, 14, this.GLOW_SHROOM_ID); add(34, 6, 15, this.GLOW_SHROOM_ID); add(34, 6, 16, this.GLOW_SHROOM_ID);
+
+    // Lanterns down the main hall
+    add(22, 6, 6, this.LANTERN_ID);
+    add(28, 6, 6, this.LANTERN_ID);
+    add(22, 6, 14, this.LANTERN_ID);
+    add(28, 6, 14, this.LANTERN_ID);
+    add(22, 6, 22, this.LANTERN_ID);
+    add(28, 6, 22, this.LANTERN_ID);
 
     // Interactive Guide Stones (Signposts - Uses CHEST_ID so players can click them)
     add(25, 1, 3, this.CHEST_ID); // Entrance Guide Stone
@@ -2320,7 +2348,7 @@ export class MyRoom extends Room {
 
   private poiOps(type: PoiType, tier: PoiTier): StampOp[] {
     const ops: StampOp[] = [];
-    const wood = this.WOOD_ID; const stone = this.STONE_ID; const leaves = this.LEAVES_ID;
+    const wood = this.PLANKS_ID; const stone = this.STONE_BRICKS_ID; const leaves = this.LEAVES_ID;
 
     if (type === "HUT") {
       const dims = this.poiDims(type, tier);
@@ -2444,7 +2472,7 @@ export class MyRoom extends Room {
           // BUILD SOLID GROUND UNDER TOWN
           if (inTown && wy < townY) {
              // Foundation
-             vox[ii] = wy < townY - 2 ? this.DIRT_ID : this.DEEPSLATE_ID;
+             vox[ii] = wy < townY - 2 ? this.DIRT_ID : this.STONE_BRICKS_ID;
           }
 
           // --- PLAZA FLOOR ---
@@ -2454,7 +2482,7 @@ export class MyRoom extends Room {
             } else if (inPlaza) {
                // Grand mosaic center
                const checker = (Math.abs(wx) + Math.abs(wz)) % 2 === 0;
-               vox[ii] = checker ? this.STONE_ID : this.TUFF_ID;
+               vox[ii] = checker ? this.STONE_BRICKS_ID : this.TUFF_ID;
             } else {
                // General plaza floor (grass with occasional moss/stone)
                const r = this.hash2i(wx, wz, 999);
@@ -2464,7 +2492,7 @@ export class MyRoom extends Room {
 
           // --- OUTER RING WALL ---
           if (inRingWall && wy >= townY && wy <= townY + 3 && !inPath) { // Leave paths open
-             if (wy === townY || wy === townY + 1) vox[ii] = this.MOSSY_STONE_ID;
+             if (wy === townY || wy === townY + 1) vox[ii] = this.STONE_BRICKS_ID;
              if (wy === townY + 2 || wy === townY + 3) vox[ii] = this.LEAVES_ID;
           }
 
@@ -2474,7 +2502,7 @@ export class MyRoom extends Room {
                if (pillarLocal.ox === 0 && pillarLocal.oz === 0) vox[ii] = this.CRYSTAL_ID;
                else vox[ii] = this.AIR_ID;
              } else if (wy === townY) {
-               vox[ii] = this.STONE_ID;
+               vox[ii] = this.STONE_BRICKS_ID;
              } else {
                // Deepslate pillar trunk
                if (Math.abs(pillarLocal.ox) + Math.abs(pillarLocal.oz) <= 1) vox[ii] = this.DEEPSLATE_ID;
@@ -2490,7 +2518,7 @@ export class MyRoom extends Room {
             const distToCenter = Math.max(Math.abs(ox), Math.abs(oz));
 
             if (wy === townY) {
-              vox[ii] = this.DEEPSLATE_ID; // Shrine base
+              vox[ii] = this.STONE_BRICKS_ID; // Shrine base
             } else if (wy > townY && wy <= townY + 3) {
               if (isCorner) vox[ii] = this.WOOD_ID; // Corner pillars
               else if (isCenter && wy === townY + 1) vox[ii] = this.TUFF_ID; // Pedestal
@@ -2498,15 +2526,15 @@ export class MyRoom extends Room {
               else vox[ii] = this.AIR_ID; // Open air for the rest
             } else if (wy === townY + 4) {
               // Outer roof lip
-              if (distToCenter === 2) vox[ii] = this.STONE_ID;
+              if (distToCenter === 2) vox[ii] = this.PLANKS_ID;
               else vox[ii] = this.AIR_ID;
             } else if (wy === townY + 5) {
               // Inner roof
-              if (distToCenter === 1) vox[ii] = this.STONE_ID;
+              if (distToCenter === 1) vox[ii] = this.PLANKS_ID;
               else vox[ii] = this.AIR_ID;
             } else if (wy === townY + 6) {
               // Roof tip
-              if (isCenter) vox[ii] = this.STONE_ID;
+              if (isCenter) vox[ii] = this.PLANKS_ID;
               else vox[ii] = this.AIR_ID;
             }
           }
@@ -2543,6 +2571,7 @@ export class MyRoom extends Room {
       if (wx < chunkMinX || wx > chunkMaxX || wy < chunkMinY || wy > chunkMaxY || wz < chunkMinZ || wz > chunkMaxZ) continue;
       const ii = this.idx(wx - chunkMinX, wy - chunkMinY, wz - chunkMinZ);
       if (vox[ii] === this.BEDROCK_ID) continue;
+      // Overwrites existing terrain, including AIR (0) for hollowing out cuts
       vox[ii] = clamp(toInt(b.id), 0, 255);
     }
   }
@@ -2774,15 +2803,21 @@ export class MyRoom extends Room {
     if (blockId === this.IRON_ORE_ID) return Items.RAW_IRON;
     if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
     if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
-    return 0;
+    if (blockId === this.PLANKS_ID) return Items.WOOD_LOG;
+    if (blockId === this.STONE_BRICKS_ID) return Items.STONE;
+    return 0; // Everything else breaks to air/nothing by default
   }
 
   // =========================
   // Mining helpers (tiers + durability)
   // =========================
-  private isStoneLike(blockId: number): boolean { return (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID || blockId === this.MOSSY_STONE_ID || blockId === this.DRIPSTONE_BLOCK_ID); }
+  private isStoneLike(blockId: number): boolean { 
+    return (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID || blockId === this.MOSSY_STONE_ID || blockId === this.DRIPSTONE_BLOCK_ID || blockId === this.STONE_BRICKS_ID); 
+  }
+  
   private getToolDef(itemId: number) { return ITEM_DEFS[itemId]?.tool ?? null; }
   private isToolItem(itemId: number): boolean { return !!ITEM_DEFS[itemId]?.tool || this.maxStackFor(itemId) === 1; }
+  
   private cloneStack(s: ItemStack): ItemStack {
     const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999)); const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999)); const durRaw = Number((s as any)?.dur ?? 0); const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
     if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
@@ -2806,7 +2841,7 @@ export class MyRoom extends Room {
   }
 
   private requiredPickTierForDrops(blockId: number): number {
-    if (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID) return 1;
+    if (blockId === this.STONE_ID || blockId === this.STONE_BRICKS_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID) return 1;
     if (blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID) return 3;
     return 0;
   }
@@ -2822,11 +2857,25 @@ export class MyRoom extends Room {
 
   private computeBreakTimeMs(blockId: number, inv: InvState, heldSlot = -1): number {
     let base = 450;
-    if (blockId === this.LEAVES_ID) base = 180; else if (blockId === this.GRASS_ID || blockId === this.DIRT_ID) base = 420; else if (blockId === this.SAND_ID || blockId === this.SNOW_ID) base = 360; else if (blockId === this.WOOD_ID) base = 950; else if (blockId === this.STONE_ID) base = 1250; else if (blockId === this.TUFF_ID) base = 1350; else if (blockId === this.COAL_ORE_ID) base = 1400; else if (blockId === this.IRON_ORE_ID) base = 1650; else if (blockId === this.DEEPSLATE_ID) base = 1800; else if (blockId === this.GOLD_ORE_ID) base = 2200; else if (blockId === this.DIAMOND_ORE_ID) base = 2850; else if (blockId === this.BEDROCK_ID) return 999999999;
+    
+    if (blockId === this.LEAVES_ID) base = 180; 
+    else if (blockId === this.GLASS_ID || blockId === this.LANTERN_ID) base = 150;
+    else if (blockId === this.CARPET_ID) base = 250;
+    else if (blockId === this.GRASS_ID || blockId === this.DIRT_ID) base = 420; 
+    else if (blockId === this.SAND_ID || blockId === this.SNOW_ID) base = 360; 
+    else if (blockId === this.WOOD_ID || blockId === this.PLANKS_ID) base = 950; 
+    else if (blockId === this.STONE_ID || blockId === this.STONE_BRICKS_ID) base = 1250; 
+    else if (blockId === this.TUFF_ID) base = 1350; 
+    else if (blockId === this.COAL_ORE_ID) base = 1400; 
+    else if (blockId === this.IRON_ORE_ID) base = 1650; 
+    else if (blockId === this.DEEPSLATE_ID) base = 1800; 
+    else if (blockId === this.GOLD_ORE_ID) base = 2200; 
+    else if (blockId === this.DIAMOND_ORE_ID) base = 2850; 
+    else if (blockId === this.BEDROCK_ID) return 999999999;
     
     const picked = this.choosePickStack(inv, heldSlot);
     if (this.isStoneLike(blockId)) base = picked ? Math.floor(base * picked.tool.speedMul) : Math.floor(base * 2.8);
-    else if (blockId === this.WOOD_ID && picked) base = Math.floor(base * 0.92);
+    else if ((blockId === this.WOOD_ID || blockId === this.PLANKS_ID) && picked) base = Math.floor(base * 0.92);
 
     return clamp(base, 80, 12000);
   }

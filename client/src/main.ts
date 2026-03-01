@@ -10,6 +10,7 @@
 // - Viewmodel Kinematics (Sway, Punch, Z-Thrust)
 // - Zone Notifications & HUD
 // - Chest Interaction System (Interactive Gold Ore Blocks)
+// - Extended Interior Textures (Planks, Stone Bricks, Carpet, Glass, Lantern)
 
 import { Engine } from "noa-engine";
 import { Client, Room } from "@colyseus/sdk";
@@ -516,7 +517,7 @@ function hasPointerLock(): boolean {
 }
 
 /* ===============================
-   5. Register Blocks & Materials (16x16 VERTICAL STRIP ATLAS)
+   5. Register Blocks & Materials (VERTICAL STRIP ATLAS)
 ================================ */
 const GRASS_ID = 1;
 const DIRT_ID = 2;
@@ -543,6 +544,13 @@ const DRIPSTONE_ID = 94;
 const DRIPSTONE_BLOCK_ID = 95;
 const GLOW_SHROOM_ID = 96;
 const CRYSTAL_ID = 97;
+
+// New Interior Textures
+const PLANKS_ID = 40;
+const STONE_BRICKS_ID = 41;
+const CARPET_ID = 42;
+const GLASS_ID = 43;
+const LANTERN_ID = 44;
 
 const TERRAIN_ATLAS_URL = new URL(
   "./assets/terrain_atlas.png",
@@ -573,9 +581,15 @@ const ATLAS = {
   DRIPSTONE_BLOCK: 18,
   GLOW_SHROOM: 19,
   CRYSTAL: 20,
+
+  PLANKS: 21,
+  STONE_BRICKS: 22,
+  CARPET: 23,
+  GLASS: 24,
+  LANTERN: 25
 } as const;
 
-const ATLAS_TILE_COUNT = 21;
+const ATLAS_TILE_COUNT = 26;
 
 function registerAtlasMaterial(
   name: string,
@@ -609,6 +623,13 @@ registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasI
 registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
 registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
 
+// New Interior Textures
+registerAtlasMaterial("planks", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.PLANKS });
+registerAtlasMaterial("stone_bricks", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE_BRICKS });
+registerAtlasMaterial("carpet", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CARPET });
+registerAtlasMaterial("glass", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLASS, texHasAlpha: true });
+registerAtlasMaterial("lantern", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LANTERN, texHasAlpha: true });
+
 noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
 noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
 noa.registry.registerBlock(STONE_ID, { material: "stone" });
@@ -633,6 +654,13 @@ noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
 noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
 noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
 
+// New Interior Blocks
+noa.registry.registerBlock(PLANKS_ID, { material: "planks" });
+noa.registry.registerBlock(STONE_BRICKS_ID, { material: "stone_bricks" });
+noa.registry.registerBlock(CARPET_ID, { material: "carpet" });
+noa.registry.registerBlock(GLASS_ID, { material: "glass", opaque: false });
+noa.registry.registerBlock(LANTERN_ID, { material: "lantern", opaque: false });
+
 // Register Chest cleanly using the gold ore texture
 noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
 
@@ -644,6 +672,7 @@ const REGISTERED_BLOCK_IDS = new Set<number>([
   COAL_ORE_ID, IRON_ORE_ID, GOLD_ORE_ID, DIAMOND_ORE_ID,
   SAND_ID, SNOW_ID, DEEPSLATE_ID, TUFF_ID, MOSS_ID,
   MOSSY_STONE_ID, DRIPSTONE_ID, DRIPSTONE_BLOCK_ID, GLOW_SHROOM_ID, CRYSTAL_ID,
+  PLANKS_ID, STONE_BRICKS_ID, CARPET_ID, GLASS_ID, LANTERN_ID,
   CHEST_ID
 ]);
 
@@ -1917,6 +1946,14 @@ function itemIdToAtlasIndex(itemId: number): number {
   if ((Items as any).DRIPSTONE_BLOCK && itemId === (Items as any).DRIPSTONE_BLOCK) return ATLAS.DRIPSTONE_BLOCK;
   if ((Items as any).GLOW_SHROOM && itemId === (Items as any).GLOW_SHROOM) return ATLAS.GLOW_SHROOM;
   if ((Items as any).CRYSTAL && itemId === (Items as any).CRYSTAL) return ATLAS.CRYSTAL;
+  
+  // Mapping block IDs directly for extended compatibility
+  if (itemId === PLANKS_ID) return ATLAS.PLANKS;
+  if (itemId === STONE_BRICKS_ID) return ATLAS.STONE_BRICKS;
+  if (itemId === CARPET_ID) return ATLAS.CARPET;
+  if (itemId === GLASS_ID) return ATLAS.GLASS;
+  if (itemId === LANTERN_ID) return ATLAS.LANTERN;
+
   return ATLAS.STONE;
 }
 
@@ -1949,7 +1986,9 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
       d.itemId === (Items as any).MOSS ||
       d.itemId === (Items as any).DRIPSTONE ||
       d.itemId === (Items as any).GLOW_SHROOM ||
-      d.itemId === (Items as any).CRYSTAL;
+      d.itemId === (Items as any).CRYSTAL ||
+      d.itemId === GLASS_ID ||
+      d.itemId === LANTERN_ID;
 
     box.material = getDropAtlasMaterial(scene, tile, !!alpha);
     box.rotation.x = 0.25;
@@ -2546,7 +2585,9 @@ function updateVmItem() {
        heldId === (Items as any).MOSS ||
        heldId === (Items as any).DRIPSTONE ||
        heldId === (Items as any).GLOW_SHROOM ||
-       heldId === (Items as any).CRYSTAL;
+       heldId === (Items as any).CRYSTAL ||
+       heldId === GLASS_ID ||
+       heldId === LANTERN_ID;
 
      const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
 
