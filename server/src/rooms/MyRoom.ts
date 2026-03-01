@@ -24,7 +24,6 @@ import {
 import { 
   CombatSystem, 
   type CombatEvent, 
-  type CombatSnapshot, 
   type Combatant,
   type AttackRequest
 } from "../combat/CombatSystem.js";
@@ -35,6 +34,9 @@ import { StatusComponent } from "../combat/components/StatusComponent.js";
 import { CooldownComponent } from "../combat/components/CooldownComponent.js";
 import { StateComponent } from "../combat/components/StateComponent.js";
 import { EquipmentComponent } from "../combat/components/EquipmentComponent.js";
+
+// Inventory Manager Extraction
+import { InventoryManager, type InvState } from "../inventory/InventoryManager.js";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -108,22 +110,6 @@ type Projectile = {
   damage: number;
   radius: number;
   createdAt: number;
-};
-
-type ItemStack = SharedItemStack;
-
-type PlayerStats = {
-  hp: number;
-  maxHp: number;      // in hp units (2 per heart)
-  mana: number;
-  maxMana: number;
-  auraArchetype: string; // Added for Awakening System
-};
-
-type InvState = {
-  slots: ItemStack[]; // HOTBAR + BACKPACK
-  cursor: ItemStack;
-  stats: PlayerStats;
 };
 
 type Drop = {
@@ -266,10 +252,6 @@ export class MyRoom extends Room {
   private readonly chunkSize = 32; // MUST match client
   private readonly baseHeight = 12;
 
-  private readonly HOTBAR_SLOTS = 5;
-  private readonly BACKPACK_SLOTS = 20;
-  private readonly INV_SLOTS = this.HOTBAR_SLOTS + this.BACKPACK_SLOTS;
-
   // Block IDs (MUST match client)
   private readonly AIR_ID = 0;
   private readonly GRASS_ID = 1;
@@ -403,21 +385,17 @@ export class MyRoom extends Room {
   private readonly TOWN_CLEAR_HEIGHT = 24; 
 
   // =========================
-  // Stats & Mana Constants
-  // =========================
-  private readonly HP_PER_HEART = 2;
-  private readonly DEFAULT_HEARTS = 10;            
-  private readonly DEFAULT_MANA_CONTAINERS = 5;  
-  private readonly MANA_PER_CONTAINER = 10;        
-
-  // =========================
   // World meta / seed
   // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
   private readonly chunksDir = path.join(this.worldDir, "chunks");
-  private readonly invDir = path.join(this.worldDir, "inventories");
   private readonly metaPath = path.join(this.worldDir, "meta.json");
   private worldSeed = 0;
+
+  // =========================
+  // Inventory System
+  // =========================
+  private invManager!: InventoryManager;
 
   // =========================
   // State Maps
@@ -429,7 +407,6 @@ export class MyRoom extends Room {
   private projectiles = new Map<string, Projectile>();
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
-  private inventories = new Map<string, InvState>();
   
   // Content & Interaction Maps
   private chestLoot = new Map<string, SharedItemStack[]>(); // Key: "x,y,z"
@@ -502,7 +479,12 @@ export class MyRoom extends Room {
     this.autoDispose = false;
 
     this.ensureDirs();
-    console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: this.invDir });
+    
+    // Initialize specific component directors
+    const invDir = path.join(this.worldDir, "inventories");
+    this.invManager = new InventoryManager(invDir);
+    
+    console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: invDir });
     this.worldSeed = this.loadOrCreateWorldSeed(options);
 
     // Initialize Component-Based Combat Engine
@@ -959,9 +941,9 @@ export class MyRoom extends Room {
       const c = this.combatants.get(client.sessionId);
       if (!pl || !c) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
       
-      for (let i = 0; i < this.HOTBAR_SLOTS; i++) {
+      for (let i = 0; i < this.invManager.HOTBAR_SLOTS; i++) {
         inv.slots[i] = { id: 0, count: 0 } as any;
       }
 
@@ -1010,8 +992,8 @@ export class MyRoom extends Room {
       c.aura.setArchetype(archetype as any);
       c.health.setMax(c.health.maxHp, true);
 
-      this.saveInventory(pl.userId, inv);
-      this.sendInvStateToClient(client, inv);
+      this.invManager.saveInventory(pl.userId, inv);
+      this.invManager.sendInvStateToClient(client, inv);
       c.onSync?.(c.snapshot());
 
       client.send("chatMessage", { msg: `You have awakened as ${p.classId}.` });
@@ -1077,10 +1059,10 @@ export class MyRoom extends Room {
       const amt = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 1, 99) : 1;
 
       if (kind === "heart") {
-        const addHp = amt * this.HP_PER_HEART;
+        const addHp = amt * this.invManager.HP_PER_HEART;
         c.health.setMax(c.health.maxHp + addHp, true);
       } else {
-        const addMana = amt * this.MANA_PER_CONTAINER;
+        const addMana = amt * this.invManager.MANA_PER_CONTAINER;
         c.resources.maxMana = clamp(c.resources.maxMana + addMana, 0, 999999);
         c.resources.mana = c.resources.maxMana;
       }
@@ -1099,9 +1081,9 @@ export class MyRoom extends Room {
 
       const p = (typeof payload === "object" && payload) ? (payload as any) : {};
       const slot = isFiniteNumber(p.slot) ? toInt(p.slot) : -1;
-      if (slot < 0 || slot >= this.INV_SLOTS) return;
+      if (slot < 0 || slot >= this.invManager.INV_SLOTS) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
       const stack = inv.slots[slot] as any;
       if (!stack || stack.id <= 0 || stack.count <= 0) return;
 
@@ -1118,12 +1100,12 @@ export class MyRoom extends Room {
         inv.stats.auraArchetype = newArchetype;
         c.aura.setArchetype(newArchetype as any);
 
-        this.inventoryAdd(inv, { id: Items.SKILL_AURA_SLASH, count: 1 } as any);
-        this.inventoryAdd(inv, { id: Items.SKILL_AURA_HEAVY, count: 1 } as any);
-        this.inventoryAdd(inv, { id: Items.SKILL_AURA_THRUST, count: 1 } as any);
+        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_SLASH, count: 1 } as any);
+        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_HEAVY, count: 1 } as any);
+        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_THRUST, count: 1 } as any);
 
-        this.saveInventory(pl.userId, inv);
-        this.sendInvStateToClient(client, inv);
+        this.invManager.saveInventory(pl.userId, inv);
+        this.invManager.sendInvStateToClient(client, inv);
         c.onSync?.(c.snapshot());
 
         client.send("chatMessage", { msg: `AWAKENED! You are now bound to the ${newArchetype} Essence.` });
@@ -1155,7 +1137,7 @@ export class MyRoom extends Room {
       if (blockId === this.AIR_ID) return this.cancelMiningFor(client, "air");
       if (blockId === this.BEDROCK_ID) return this.cancelMiningFor(client, "bedrock");
 
-      const inv = this.getOrLoadInventory(pl.userId);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
       const cur = this.mining.get(client.sessionId);
       const now = Date.now();
 
@@ -1197,7 +1179,7 @@ export class MyRoom extends Room {
       if (oldId === this.AIR_ID || oldId === this.BEDROCK_ID) return;
 
       const pl = this.players.get(client.sessionId);
-      const inv = pl ? this.getOrLoadInventory(pl.userId) : null;
+      const inv = pl ? this.invManager.getOrLoadInventory(pl.userId) : null;
       const canDrop = this.canBlockDropWithTool(oldId, inv, -1);
 
       this.setBlockAuthoritative(x, y, z, this.AIR_ID);
@@ -1223,9 +1205,9 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
       const fromSlot = isFiniteNumber(maybe.fromSlot) ? toInt(maybe.fromSlot) : -1;
-      if (fromSlot < 0 || fromSlot >= this.HOTBAR_SLOTS) return;
+      if (fromSlot < 0 || fromSlot >= this.invManager.HOTBAR_SLOTS) return;
 
       const stack = inv.slots[fromSlot];
       if (!stack || (stack as any).id <= 0 || (stack as any).count <= 0) return;
@@ -1236,8 +1218,8 @@ export class MyRoom extends Room {
       (stack as any).count -= 1;
       if ((stack as any).count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
 
-      this.saveInventory(pl.userId, inv);
-      this.sendInvStateToClient(client, inv);
+      this.invManager.saveInventory(pl.userId, inv);
+      this.invManager.sendInvStateToClient(client, inv);
 
       const ms = this.mining.get(client.sessionId);
       if (ms && ms.x === x && ms.y === y && ms.z === z) this.cancelMiningFor(client, "placed_on_target");
@@ -1262,16 +1244,16 @@ export class MyRoom extends Room {
                 client.send("chatMessage", { msg: `📖 ${signText}` });
             } else if (loot && loot.length > 0) {
                 // If it's a Loot Chest, unpack it.
-                const inv = this.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
+                const inv = this.invManager.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
                 
                 let found = "";
                 for(const item of loot) {
-                    this.inventoryAdd(inv, item);
+                    this.invManager.inventoryAdd(inv, item);
                     found += `[${ITEM_DEFS[item.id].name} x${item.count}] `;
                 }
                 
-                this.saveInventory(this.players.get(client.sessionId)!.userId, inv);
-                this.sendInvStateToClient(client, inv);
+                this.invManager.saveInventory(this.players.get(client.sessionId)!.userId, inv);
+                this.invManager.sendInvStateToClient(client, inv);
                 client.send("chatMessage", { msg: `Looted Chest: ${found}` });
                 
                 // Empty the chest and break it visually
@@ -1305,14 +1287,14 @@ export class MyRoom extends Room {
       const dx = drop.x - pl.x; const dy = drop.y - pl.y; const dz = drop.z - pl.z;
       if (dx * dx + dy * dy + dz * dz > 2.6 * 2.6) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
-      const accepted = this.inventoryAdd(inv, { id: drop.itemId, count: drop.count });
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
+      const accepted = this.invManager.inventoryAdd(inv, { id: drop.itemId, count: drop.count });
       if (accepted <= 0) return;
 
       this.drops.delete(dropId);
       this.broadcast("dropDespawn", { dropId });
-      this.saveInventory(pl.userId, inv);
-      this.sendInvStateToClient(client, inv);
+      this.invManager.saveInventory(pl.userId, inv);
+      this.invManager.sendInvStateToClient(client, inv);
     });
 
     this.onMessage("invClick", (client: Client, payload: unknown) => {
@@ -1322,10 +1304,10 @@ export class MyRoom extends Room {
 
       const index = toInt(p.index);
       let slot = -1;
-      if (p.area === "hotbar" && index >= 0 && index < this.HOTBAR_SLOTS) slot = index;
-      else if (p.area === "inv" && index >= 0 && index < this.BACKPACK_SLOTS) slot = this.HOTBAR_SLOTS + index;
+      if (p.area === "hotbar" && index >= 0 && index < this.invManager.HOTBAR_SLOTS) slot = index;
+      else if (p.area === "inv" && index >= 0 && index < this.invManager.BACKPACK_SLOTS) slot = this.invManager.HOTBAR_SLOTS + index;
 
-      if (slot < 0 || slot >= this.INV_SLOTS) return;
+      if (slot < 0 || slot >= this.invManager.INV_SLOTS) return;
 
       const button = p.button === "R" ? "R" : "L";
       const shift = !!p.shift;
@@ -1333,10 +1315,10 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
-      this.applyInvClick(inv, slot, button, shift);
-      this.saveInventory(pl.userId, inv);
-      this.sendInvStateToClient(client, inv);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
+      this.invManager.applyInvClick(inv, slot, button, shift);
+      this.invManager.saveInventory(pl.userId, inv);
+      this.invManager.sendInvStateToClient(client, inv);
     });
 
     this.onMessage("craft", (client: Client, payload: unknown) => {
@@ -1348,7 +1330,7 @@ export class MyRoom extends Room {
       const pl = this.players.get(client.sessionId);
       if (!pl) return;
 
-      const inv = this.getOrLoadInventory(pl.userId);
+      const inv = this.invManager.getOrLoadInventory(pl.userId);
       const recipe = RECIPES.find((r) => r.id === recipeId);
       if (!recipe) return client.send("craftResult", { ok: false, recipeId, crafted: 0, reason: "unknown_recipe" });
 
@@ -1356,16 +1338,16 @@ export class MyRoom extends Room {
       const timesReq = isFiniteNumber(p.times) ? clamp(toInt(p.times), 1, 999) : 1;
 
       const craftableByInputs = () => {
-        for (const req of recipe.inputs) if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
+        for (const req of recipe.inputs) if (this.invManager.inventoryCountSlots(inv, req.id) < req.count) return false;
         return true;
       };
 
       const tryCraftOnce = (): boolean => {
-        for (const req of recipe.inputs) if (this.inventoryCountSlots(inv, req.id) < req.count) return false;
-        if (!this.inventoryCanFit(inv, recipe.output.id, recipe.output.count)) return false;
+        for (const req of recipe.inputs) if (this.invManager.inventoryCountSlots(inv, req.id) < req.count) return false;
+        if (!this.invManager.inventoryCanFit(inv, recipe.output.id, recipe.output.count)) return false;
 
-        for (const req of recipe.inputs) this.inventoryRemoveSlots(inv, req.id, req.count);
-        this.inventoryAdd(inv, { id: recipe.output.id, count: recipe.output.count });
+        for (const req of recipe.inputs) this.invManager.inventoryRemoveSlots(inv, req.id, req.count);
+        this.invManager.inventoryAdd(inv, { id: recipe.output.id, count: recipe.output.count });
         return true;
       };
 
@@ -1385,8 +1367,8 @@ export class MyRoom extends Room {
       if (crafted <= 0) {
         client.send("craftResult", { ok: false, recipeId, crafted: 0, reason: "missing_inputs_or_space" });
       } else {
-        this.saveInventory(pl.userId, inv);
-        this.sendInvStateToClient(client, inv);
+        this.invManager.saveInventory(pl.userId, inv);
+        this.invManager.sendInvStateToClient(client, inv);
         client.send("craftResult", { ok: true, recipeId, crafted, reason: "" });
       }
     });
@@ -1635,7 +1617,7 @@ export class MyRoom extends Room {
     const cooldowns = new CooldownComponent();
     const state = new StateComponent();
     const equipment = new EquipmentComponent((slot) => {
-      const currentInv = this.inventories.get(pl.userId);
+      const currentInv = this.invManager.getInventory(pl.userId);
       if (!currentInv) return 0;
       const s = currentInv.slots[slot ?? -1] || null;
       return s ? (s as any).id || 0 : 0;
@@ -1689,13 +1671,13 @@ export class MyRoom extends Room {
         }
 
         if (changed) {
-           const currentInv = this.getOrLoadInventory(pl.userId);
+           const currentInv = this.invManager.getOrLoadInventory(pl.userId);
            currentInv.stats.hp = pl.hp;
            currentInv.stats.maxHp = pl.maxHp;
            currentInv.stats.mana = pl.mana;
            currentInv.stats.maxMana = pl.maxMana;
            
-           this.saveInventory(pl.userId, currentInv);
+           this.invManager.saveInventory(pl.userId, currentInv);
 
            const cl = this.clients.find(cli => cli.sessionId === pl.id);
            if (cl) {
@@ -1714,7 +1696,6 @@ export class MyRoom extends Room {
 
   // =========================
   // In-Memory Massive Town Hall Builder (Procedural Fallback)
-  // Upgraded with new interior textures
   // =========================
   private buildMassiveTownHall(): BlockStructure {
     const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
@@ -1851,121 +1832,6 @@ export class MyRoom extends Room {
   }
 
   // =========================
-  // Join/Leave
-  // =========================
-  onJoin(client: Client, options: any) {
-    const userId = safeUserId(options?.userId);
-    console.log("onJoin", { sessionId: client.sessionId, userId });
-
-    const spacing = 5;
-    let spawnX = this.TOWN_CENTER_X;
-    let spawnZ = this.TOWN_CENTER_Z;
-
-    let slot = 0;
-    while (true) {
-      const sx = this.TOWN_CENTER_X + (slot % 6) * spacing - 12;
-      const sz = this.TOWN_CENTER_Z + Math.floor(slot / 6) * spacing - 12;
-
-      const dx = sx - this.TOWN_CENTER_X;
-      const dz = sz - this.TOWN_CENTER_Z;
-      const d2 = dx * dx + dz * dz;
-      const innerR = Math.max(6, this.SAFE_RADIUS - 8);
-      if (d2 > innerR * innerR) {
-        slot++;
-        if (slot > 4096) break;
-        continue;
-      }
-
-      let occupied = false;
-      for (const p of this.players.values()) {
-        if (Math.abs(p.x - sx) < 1 && Math.abs(p.z - sz) < 1) {
-          occupied = true; break;
-        }
-      }
-      if (!occupied) {
-        spawnX = sx; spawnZ = sz; break;
-      }
-      slot++;
-      if (slot > 4096) break;
-    }
-
-    const surfaceY = this.heightAt(spawnX, spawnZ);
-    const spawnY = surfaceY + 8;
-
-    const inv = this.getOrLoadInventory(userId);
-
-    const spawn: PlayerInfo = {
-      id: client.sessionId,
-      userId,
-      x: spawnX, y: spawnY, z: spawnZ,
-      yaw: 0,
-      lastMoveAt: 0,
-      joinedAt: Date.now(),
-      hp: inv.stats.hp,
-      maxHp: inv.stats.maxHp,
-      mana: inv.stats.mana,
-      maxMana: inv.stats.maxMana,
-      invulnUntil: Date.now() + 1500, // spawn protection
-    };
-
-    this.players.set(client.sessionId, spawn);
-    this.updatePlayerSpatial(client.sessionId, spawn.x, spawn.z);
-    
-    const combatant = this.buildCombatant(client, spawn, inv);
-    this.combatants.set(client.sessionId, combatant);
-
-    this.sendInvStateToClient(client, inv);
-    
-    // Load world meta (seed + time)
-    const meta = this.readWorldMeta();
-    if (meta && typeof meta.worldTime === "number") {
-        this.worldTime = meta.worldTime;
-    }
-    client.send("worldMeta", { worldSeed: this.worldSeed, worldTime: this.worldTime });
-
-    client.send("safeZone", { cx: this.TOWN_CENTER_X, cz: this.TOWN_CENTER_Z, radius: this.SAFE_RADIUS, name: "Town of Beginnings" });
-
-    for (const d of this.drops.values()) {
-      if (Date.now() - d.createdAt > this.DROP_TTL_MS) continue;
-      client.send("dropSpawn", d);
-    }
-
-    const existingPlayers = Array.from(this.players.values())
-      .filter((pl) => pl.id !== client.sessionId)
-      .map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, z: pl.z, yaw: pl.yaw }));
-      
-    const existingMobs = Array.from(this.mobs.values())
-      .map((m) => ({ id: m.id, x: m.x, y: m.y, z: m.z, yaw: m.yaw }));
-
-    client.send("existingPlayers", [...existingPlayers, ...existingMobs]);
-    this.broadcast("playerJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw }, { except: client });
-    client.send("youJoined", { id: client.sessionId, x: spawn.x, y: spawn.y, z: spawn.z, yaw: spawn.yaw });
-
-    const allNowPlayers = Array.from(this.players.values()).map((p) => ({ id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw }));
-    const allNowMobs = Array.from(this.mobs.values()).map((m) => ({ id: m.id, x: m.x, y: m.y, z: m.z, yaw: m.yaw }));
-    client.send("playersSnapshot", [...allNowPlayers, ...allNowMobs]);
-  }
-
-  onLeave(client: Client, code?: number) {
-    console.log("onLeave", client.sessionId, "code:", code);
-    this.cancelMiningFor(client, "leave");
-    this.combatants.delete(client.sessionId);
-    this.removePlayerSpatial(client.sessionId);
-    const existed = this.players.delete(client.sessionId);
-    if (existed) this.broadcast("playerLeft", { id: client.sessionId });
-  }
-
-  onDispose() {
-    console.log("MyRoom disposed");
-    this.players.clear();
-    this.mobs.clear();
-    this.mining.clear();
-    this.combatants.clear();
-    this.spatialGrid.clear();
-    this.playerChunks.clear();
-  }
-
-  // =========================
   // Chunk coord normalization
   // =========================
   private normalizeChunkRequestToIndex(
@@ -1987,7 +1853,6 @@ export class MyRoom extends Room {
   private ensureDirs(): void {
     if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
     if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
-    if (!fs.existsSync(this.invDir)) fs.mkdirSync(this.invDir, { recursive: true });
   }
 
   // =========================
@@ -2082,116 +1947,6 @@ export class MyRoom extends Room {
     const tmp = fp + ".tmp";
     fs.writeFileSync(tmp, Buffer.from(chunk));
     fs.renameSync(tmp, fp);
-  }
-
-  // =========================
-  // Persistence: inventories & stats
-  // =========================
-  private invFilePath(userId: string): string { return path.join(this.invDir, `inv_${userId}.json`); }
-
-  private readInvFromDisk(userId: string): InvState | null {
-    const fp = this.invFilePath(userId);
-    try {
-      if (!fs.existsSync(fp)) return null;
-      const raw = fs.readFileSync(fp, "utf8");
-      const j = JSON.parse(raw);
-
-      const slotsIn = Array.isArray(j?.slots) ? j.slots : null;
-      const cursorIn = typeof j?.cursor === "object" && j?.cursor ? j.cursor : null;
-      const statsIn = typeof j?.stats === "object" && j?.stats ? j.stats : null;
-
-      const slots: ItemStack[] = Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 })) as any;
-      if (slotsIn) {
-        for (let i = 0; i < Math.min(this.INV_SLOTS, slotsIn.length); i++) {
-          const s = slotsIn[i];
-          const id = toInt(clamp(Number(s?.id ?? 0), 0, 999999));
-          const count = toInt(clamp(Number(s?.count ?? 0), 0, 999999));
-          const durRaw = Number(s?.dur ?? 0);
-          const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
-          slots[i] = id > 0 && count > 0 ? dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any) : ({ id: 0, count: 0 } as any);
-        }
-      }
-
-      const cId = toInt(clamp(Number((cursorIn as any)?.id ?? 0), 0, 999999));
-      const cCount = toInt(clamp(Number((cursorIn as any)?.count ?? 0), 0, 999999));
-      const cDurRaw = Number((cursorIn as any)?.dur ?? 0);
-      const cDur = Number.isFinite(cDurRaw) ? toInt(clamp(cDurRaw, 0, 999999)) : 0;
-      const cursor: ItemStack = cId > 0 && cCount > 0 ? cDur > 0 ? ({ id: cId, count: cCount, dur: cDur } as any) : ({ id: cId, count: cCount } as any) : ({ id: 0, count: 0 } as any);
-
-      const defaultMaxHp = this.DEFAULT_HEARTS * this.HP_PER_HEART;
-      const defaultMaxMana = this.DEFAULT_MANA_CONTAINERS * this.MANA_PER_CONTAINER;
-      
-      const maxHp = toInt(clamp(Number((statsIn as any)?.maxHp ?? defaultMaxHp), 2, 9999));
-      const hp = toInt(clamp(Number((statsIn as any)?.hp ?? maxHp), 0, maxHp));
-      const maxMana = toInt(clamp(Number((statsIn as any)?.maxMana ?? defaultMaxMana), 0, 999999));
-      const mana = toInt(clamp(Number((statsIn as any)?.mana ?? maxMana), 0, maxMana));
-
-      const auraArchetype = String((statsIn as any)?.auraArchetype ?? "BASIC");
-
-      return { slots, cursor, stats: { hp, maxHp, mana, maxMana, auraArchetype } };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  private writeInvToDisk(userId: string, inv: InvState): void {
-    const fp = this.invFilePath(userId);
-    const tmp = fp + ".tmp";
-    const safe = {
-      slots: inv.slots.map((s) => ({ id: toInt((s as any).id || 0), count: toInt((s as any).count || 0), dur: toInt((s as any).dur || 0) })),
-      cursor: { id: toInt((inv.cursor as any).id || 0), count: toInt((inv.cursor as any).count || 0), dur: toInt((inv.cursor as any).dur || 0) },
-      stats: { 
-        hp: toInt(inv.stats.hp), 
-        maxHp: toInt(inv.stats.maxHp), 
-        mana: toInt(inv.stats.mana), 
-        maxMana: toInt(inv.stats.maxMana),
-        auraArchetype: String(inv.stats.auraArchetype),
-      }
-    };
-    fs.writeFileSync(tmp, JSON.stringify(safe));
-    fs.renameSync(tmp, fp);
-  }
-
-  private getOrLoadInventory(userId: string): InvState {
-    const cached = this.inventories.get(userId);
-    if (cached) return cached;
-
-    const fromDisk = this.readInvFromDisk(userId);
-    if (fromDisk) {
-      this.inventories.set(userId, fromDisk);
-      return fromDisk;
-    }
-
-    const defaultMaxHp = this.DEFAULT_HEARTS * this.HP_PER_HEART;
-    const defaultMaxMana = this.DEFAULT_MANA_CONTAINERS * this.MANA_PER_CONTAINER;
-    const inv: InvState = {
-      slots: Array.from({ length: this.INV_SLOTS }, () => ({ id: 0, count: 0 })) as any,
-      cursor: { id: 0, count: 0 } as any,
-      stats: { 
-        hp: defaultMaxHp, 
-        maxHp: defaultMaxHp, 
-        mana: defaultMaxMana, 
-        maxMana: defaultMaxMana,
-        auraArchetype: "BASIC"
-      }
-    };
-
-    inv.slots[0] = { id: Items.WOOD_LOG, count: 4 } as any;
-    inv.slots[1] = { id: Items.STONE_SHADOW, count: 1 } as any; 
-    inv.slots[2] = { id: Items.STONE_IRON, count: 1 } as any; 
-
-    this.inventories.set(userId, inv);
-    this.saveInventory(userId, inv);
-    return inv;
-  }
-
-  private saveInventory(userId: string, inv: InvState): void {
-    this.inventories.set(userId, inv);
-    try { this.writeInvToDisk(userId, inv); } catch (e) {}
-  }
-
-  private sendInvStateToClient(client: Client, inv: InvState): void {
-    client.send("invState", { slots: inv.slots, cursor: inv.cursor, stats: inv.stats });
   }
 
   // =========================
@@ -2815,31 +2570,6 @@ export class MyRoom extends Room {
     return (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID || blockId === this.MOSSY_STONE_ID || blockId === this.DRIPSTONE_BLOCK_ID || blockId === this.STONE_BRICKS_ID); 
   }
   
-  private getToolDef(itemId: number) { return ITEM_DEFS[itemId]?.tool ?? null; }
-  private isToolItem(itemId: number): boolean { return !!ITEM_DEFS[itemId]?.tool || this.maxStackFor(itemId) === 1; }
-  
-  private cloneStack(s: ItemStack): ItemStack {
-    const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999)); const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999)); const durRaw = Number((s as any)?.dur ?? 0); const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
-    if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
-    return { id: 0, count: 0 } as any;
-  }
-
-  private choosePickStack(inv: InvState, heldSlot: number): { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> } | null {
-    if (heldSlot >= 0 && heldSlot < this.HOTBAR_SLOTS) {
-      const s = inv.slots[heldSlot];
-      if (s && (s as any).id > 0 && (s as any).count > 0 && this.getToolDef((s as any).id)?.kind === "pick") return { slotIndex: heldSlot, stack: s, tool: this.getToolDef((s as any).id)! };
-    }
-    let best: { slotIndex: number; stack: ItemStack; tool: NonNullable<ReturnType<MyRoom["getToolDef"]>> } | null = null;
-    for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i];
-      if (!s || (s as any).id <= 0 || (s as any).count <= 0) continue;
-      const tool = this.getToolDef((s as any).id);
-      if (!tool || tool.kind !== "pick") continue;
-      if (!best || tool.tier > best.tool.tier) best = { slotIndex: i, stack: s, tool };
-    }
-    return best;
-  }
-
   private requiredPickTierForDrops(blockId: number): number {
     if (blockId === this.STONE_ID || blockId === this.STONE_BRICKS_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID) return 1;
     if (blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID) return 3;
@@ -2851,7 +2581,7 @@ export class MyRoom extends Room {
     const reqTier = this.requiredPickTierForDrops(blockId);
     if (reqTier <= 0) return true;
     if (!inv) return false;
-    const picked = this.choosePickStack(inv, heldSlot);
+    const picked = this.invManager.choosePickStack(inv, heldSlot);
     return picked ? picked.tool.tier >= reqTier : false;
   }
 
@@ -2873,20 +2603,11 @@ export class MyRoom extends Room {
     else if (blockId === this.DIAMOND_ORE_ID) base = 2850; 
     else if (blockId === this.BEDROCK_ID) return 999999999;
     
-    const picked = this.choosePickStack(inv, heldSlot);
+    const picked = this.invManager.choosePickStack(inv, heldSlot);
     if (this.isStoneLike(blockId)) base = picked ? Math.floor(base * picked.tool.speedMul) : Math.floor(base * 2.8);
     else if ((blockId === this.WOOD_ID || blockId === this.PLANKS_ID) && picked) base = Math.floor(base * 0.92);
 
     return clamp(base, 80, 12000);
-  }
-
-  private damageTool(inv: InvState, slotIndex: number): void {
-    const s = inv.slots[slotIndex];
-    if (!s || (s as any).id <= 0 || (s as any).count <= 0) return;
-    const tool = this.getToolDef((s as any).id);
-    if (!tool) return;
-    const next = toInt(clamp(Number((s as any).dur ?? tool.maxDurability), 0, 999999)) - 1;
-    if (next <= 0) inv.slots[slotIndex] = { id: 0, count: 0 } as any; else (s as any).dur = next;
   }
 
   private cancelMiningFor(client: Client, reason: string): void {
@@ -2911,7 +2632,7 @@ export class MyRoom extends Room {
       const currentId = this.getBlockAt(st.x, st.y, st.z);
       if (currentId === this.AIR_ID || currentId === this.BEDROCK_ID || currentId !== st.lastBlockId) { this.cancelMiningFor(client, "block_changed"); continue; }
 
-      const inv = this.getOrLoadInventory(st.userId);
+      const inv = this.invManager.getOrLoadInventory(st.userId);
       const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
       if (newBreak !== st.breakTimeMs) {
         const p = st.breakTimeMs > 0 ? Math.max(0, now - st.startedAt) / st.breakTimeMs : 0;
@@ -2926,7 +2647,7 @@ export class MyRoom extends Room {
         const msg: MineProgressMsg = { x: st.x, y: st.y, z: st.z, progress: progress01, stage };
 
         if (progress01 >= 1) {
-          const picked = this.choosePickStack(inv, st.heldSlot);
+          const picked = this.invManager.choosePickStack(inv, st.heldSlot);
           const canDrop = this.canBlockDropWithTool(currentId, inv, st.heldSlot);
 
           this.setBlockAuthoritative(st.x, st.y, st.z, this.AIR_ID);
@@ -2936,9 +2657,9 @@ export class MyRoom extends Room {
           }
 
           if (picked && this.isStoneLike(currentId)) {
-            this.damageTool(inv, picked.slotIndex);
-            this.saveInventory(st.userId, inv);
-            this.sendInvStateToClient(client, inv);
+            this.invManager.damageTool(inv, picked.slotIndex);
+            this.invManager.saveInventory(st.userId, inv);
+            this.invManager.sendInvStateToClient(client, inv);
           }
 
           msg.done = true; client.send("mineProgress", msg); this.mining.delete(sid);
@@ -2947,168 +2668,5 @@ export class MyRoom extends Room {
         }
       }
     }
-  }
-
-  // =========================
-  // Inventory helpers
-  // =========================
-  private normalizeStack(s: ItemStack): ItemStack {
-    const id = toInt(clamp(Number((s as any)?.id ?? 0), 0, 999999)); const count = toInt(clamp(Number((s as any)?.count ?? 0), 0, 999999)); const durRaw = Number((s as any)?.dur ?? 0); const dur = Number.isFinite(durRaw) ? toInt(clamp(durRaw, 0, 999999)) : 0;
-    if (id > 0 && count > 0) return dur > 0 ? ({ id, count, dur } as any) : ({ id, count } as any);
-    return { id: 0, count: 0 } as any;
-  }
-
-  private maxStackFor(itemId: number): number { return clamp(toInt(ITEM_DEFS[itemId]?.maxStack ?? 64), 1, 999999); }
-  private inventoryCountSlots(inv: InvState, itemId: number): number {
-    let n = 0;
-    for (const s of inv.slots) if ((s as any).id === itemId && (s as any).count > 0) n += (s as any).count;
-    return n;
-  }
-
-  private inventoryCanFit(inv: InvState, itemId: number, count: number): boolean {
-    const maxS = this.maxStackFor(itemId); let remaining = clamp(toInt(count), 1, 999999);
-    for (const s of inv.slots as any[]) if (s.id === itemId && s.count > 0 && maxS - s.count > 0) if ((remaining -= Math.min(maxS - s.count, remaining)) <= 0) return true;
-    for (const s of inv.slots as any[]) if (s.id === 0 || s.count <= 0) if ((remaining -= Math.min(maxS, remaining)) <= 0) return true;
-    return remaining <= 0;
-  }
-
-  private inventoryAdd(inv: InvState, stack: ItemStack): number {
-    const s = this.normalizeStack(stack);
-    if ((s as any).id <= 0 || (s as any).count <= 0) return 0;
-    const id = (s as any).id | 0; const maxS = this.maxStackFor(id);
-    let remaining = (s as any).count | 0; let accepted = 0;
-
-    for (let i = 0; i < inv.slots.length; i++) {
-      const slot = inv.slots[i] as any;
-      if (slot.id === id && slot.count > 0 && maxS - slot.count > 0) {
-        const take = Math.min(maxS - slot.count, remaining);
-        slot.count += take; remaining -= take; accepted += take;
-        if (remaining <= 0) return accepted;
-      }
-    }
-
-    for (let i = 0; i < inv.slots.length; i++) {
-      const slot = inv.slots[i] as any;
-      if (slot.id === 0 || slot.count <= 0) {
-        const def = ITEM_DEFS[id];
-        if (!!def?.tool) { inv.slots[i] = { id, count: 1, dur: def!.tool!.maxDurability } as any; remaining -= 1; accepted += 1; } 
-        else { const take = Math.min(maxS, remaining); inv.slots[i] = { id, count: take } as any; remaining -= take; accepted += take; }
-        if (remaining <= 0) return accepted;
-      }
-    }
-    return accepted;
-  }
-
-  private inventoryRemoveSlots(inv: InvState, itemId: number, count: number): number {
-    let remaining = clamp(toInt(count), 1, 999999); let removed = 0;
-    for (let i = 0; i < inv.slots.length; i++) {
-      const s = inv.slots[i] as any;
-      if (s.id === itemId && s.count > 0) {
-        const take = Math.min(s.count, remaining);
-        s.count -= take; remaining -= take; removed += take;
-        if (s.count <= 0) inv.slots[i] = { id: 0, count: 0 } as any;
-        if (remaining <= 0) break;
-      }
-    }
-    return removed;
-  }
-
-  // =========================
-  // Inventory click logic
-  // =========================
-  private applyInvClick(inv: InvState, slotIndex: number, button: "L" | "R", shift: boolean): void {
-    inv.cursor = this.normalizeStack(inv.cursor); inv.slots[slotIndex] = this.normalizeStack(inv.slots[slotIndex]);
-    const cursor = inv.cursor as any; const slot = inv.slots[slotIndex] as any;
-    const cursorIsTool = cursor.id > 0 && cursor.count > 0 && this.isToolItem(cursor.id);
-    const slotIsTool = slot.id > 0 && slot.count > 0 && this.isToolItem(slot.id);
-
-    if (shift && button === "L") {
-      if (slot.id <= 0 || slot.count <= 0) return;
-      const isHotbar = slotIndex < this.HOTBAR_SLOTS;
-      if (this.moveStackBetweenRanges(inv, slotIndex, isHotbar ? this.HOTBAR_SLOTS : 0, isHotbar ? this.INV_SLOTS : this.HOTBAR_SLOTS)) return;
-      return;
-    }
-
-    if (button === "L") {
-      if (cursor.id <= 0 || cursor.count <= 0) { inv.cursor = this.cloneStack(slot) as any; inv.slots[slotIndex] = { id: 0, count: 0 } as any; return; }
-      if (slot.id <= 0 || slot.count <= 0) { inv.slots[slotIndex] = this.cloneStack(cursor) as any; inv.cursor = { id: 0, count: 0 } as any; return; }
-      if (slot.id === cursor.id) {
-        const space = this.maxStackFor(slot.id) - slot.count;
-        if (space > 0) {
-          const take = Math.min(space, cursor.count);
-          slot.count += take; cursor.count -= take;
-          inv.slots[slotIndex] = slot as any; inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
-        }
-        return;
-      }
-      inv.slots[slotIndex] = this.cloneStack(cursor) as any; inv.cursor = this.cloneStack(slot) as any;
-      return;
-    }
-
-    if (cursor.id <= 0 || cursor.count <= 0) {
-      if (slot.id <= 0 || slot.count <= 0) return;
-      if (slotIsTool) { inv.cursor = this.cloneStack(slot) as any; inv.slots[slotIndex] = { id: 0, count: 0 } as any; return; }
-      const take = Math.ceil(slot.count / 2); inv.cursor = { id: slot.id, count: take } as any; slot.count -= take;
-      inv.slots[slotIndex] = slot.count > 0 ? (slot as any) : ({ id: 0, count: 0 } as any);
-      return;
-    }
-
-    if (cursorIsTool) {
-      if (slot.id <= 0 || slot.count <= 0) { inv.slots[slotIndex] = this.cloneStack(cursor) as any; inv.cursor = { id: 0, count: 0 } as any; return; }
-      inv.slots[slotIndex] = this.cloneStack(cursor) as any; inv.cursor = this.cloneStack(slot) as any;
-      return;
-    }
-
-    if (slot.id <= 0 || slot.count <= 0) {
-      inv.slots[slotIndex] = { id: cursor.id, count: 1 } as any; cursor.count -= 1;
-      inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
-      return;
-    }
-
-    if (slot.id === cursor.id) {
-      if (slot.count < this.maxStackFor(slot.id)) {
-        slot.count += 1; cursor.count -= 1;
-        inv.slots[slotIndex] = slot as any; inv.cursor = cursor.count > 0 ? (cursor as any) : ({ id: 0, count: 0 } as any);
-      }
-      return;
-    }
-  }
-
-  private moveStackBetweenRanges(inv: InvState, fromIndex: number, toStart: number, toEnd: number): boolean {
-    inv.slots[fromIndex] = this.normalizeStack(inv.slots[fromIndex]);
-    const from = inv.slots[fromIndex] as any;
-    if (from.id <= 0 || from.count <= 0) return false;
-
-    const maxS = this.maxStackFor(from.id);
-    if (this.isToolItem(from.id) || maxS === 1) {
-      for (let i = toStart; i < toEnd; i++) {
-        const s = this.normalizeStack(inv.slots[i]) as any;
-        if (s.id <= 0 || s.count <= 0) { inv.slots[i] = this.cloneStack(from) as any; inv.slots[fromIndex] = { id: 0, count: 0 } as any; return true; }
-      }
-      return false;
-    }
-
-    let remaining = from.count;
-    for (let i = toStart; i < toEnd; i++) {
-      const s = this.normalizeStack(inv.slots[i]) as any;
-      if (s.id === from.id && s.count > 0 && maxS - s.count > 0) {
-        const take = Math.min(maxS - s.count, remaining);
-        s.count += take; remaining -= take; inv.slots[i] = s as any;
-        if (remaining <= 0) break;
-      }
-    }
-
-    for (let i = toStart; i < toEnd && remaining > 0; i++) {
-      const s = this.normalizeStack(inv.slots[i]) as any;
-      if (s.id <= 0 || s.count <= 0) {
-        const take = Math.min(maxS, remaining);
-        inv.slots[i] = { id: from.id, count: take } as any; remaining -= take;
-      }
-    }
-
-    const moved = from.count - remaining;
-    if (moved <= 0) return false;
-    inv.slots[fromIndex] = remaining > 0 ? ({ id: from.id, count: remaining } as any) : ({ id: 0, count: 0 } as any);
-    return true;
   }
 }
