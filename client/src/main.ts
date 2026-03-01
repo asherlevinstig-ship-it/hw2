@@ -120,7 +120,38 @@ for (const stringId in BlockRegistry) {
 }
 
 /* ===============================
-   5.1 Debug Tools: ID Registry Validation
+   5.1 Item Registry (2D Flat Sprites)
+================================ */
+function getItemTextureUrl(id: number): string | null {
+  const map: Record<number, string> = {
+    [Items.STICK]: "stick.png",
+    [Items.WOOD_PICK]: "wood_pickaxe.png",
+    [Items.STONE_PICK]: "stone_pickaxe.png",
+    [Items.IRON_PICK]: "iron_pickaxe.png",
+    [Items.DIAMOND_PICK]: "diamond_pickaxe.png",
+    [Items.WOOD_SWORD]: "wood_sword.png",
+    [Items.STONE_SWORD]: "stone_sword.png",
+    [Items.IRON_SWORD]: "iron_sword.png",
+    [Items.DIAMOND_SWORD]: "diamond_sword.png",
+    [Items.WOOD_AXE]: "wood_axe.png",
+    [Items.STONE_AXE]: "stone_axe.png",
+    [Items.IRON_AXE]: "iron_axe.png",
+    [Items.DIAMOND_AXE]: "diamond_axe.png",
+    [Items.COAL]: "coal.png",
+    [Items.RAW_IRON]: "raw_iron.png",
+    [Items.RAW_GOLD]: "raw_gold.png",
+    [Items.DIAMOND]: "diamond.png",
+    // Fallback awakening stones to visible items in your pack
+    [Items.STONE_IRON]: "iron_ingot.png", 
+    [Items.STONE_SHADOW]: "coal.png",
+    [Items.STONE_BLOOD]: "redstone_dust.png",
+    [Items.STONE_ASTRAL]: "amethyst_shard.png"
+  };
+  return map[id] ? `/items/${map[id]}` : null;
+}
+
+/* ===============================
+   5.2 Debug Tools: ID Registry Validation
 ================================ */
 function isRegisteredBlockId(id: number) {
   return id === 0 || !!BlockRegistry[id]; 
@@ -305,6 +336,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   if (stack && stack.id > 0 && stack.count > 0) {
     const def = (ITEM_DEFS as any)[stack.id] as ItemDef | undefined;
     
+    // 1. Icon Rendering 
     if (def && def.icon) {
       const img = document.createElement("img");
       img.src = def.icon;
@@ -324,6 +356,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       
       el.appendChild(img);
 
+      // 2. Rarity / Type Border Color
       if (def.color) {
         if (isSelected) {
            el.style.borderColor = def.color;
@@ -343,6 +376,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       el.appendChild(name);
     }
 
+    // 3. Count Overlay
     if (!def || (def.id < 1000)) {
       if (stack.count > 1 || (def && def.maxStack > 1)) {
         const count = document.createElement("div");
@@ -358,6 +392,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       }
     }
 
+    // 4. Durability Overlay
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
@@ -1096,7 +1131,6 @@ window.addEventListener("mouseup", (e: MouseEvent) => {
   miningStickyUntil = performance.now() + MINING_STICKY_MS;
 });
 
-// INPUT HANDLING UPDATE
 noa.inputs.down.on("alt-fire", () => {
   if (classOverlay.style.display !== "none") return;
   if (!hasPointerLock()) return;
@@ -1107,13 +1141,11 @@ noa.inputs.down.on("alt-fire", () => {
 
   triggerPunch();
 
-  // CHECK FOR INTERACTION FIRST
   const targetedBlockId = noa.world.getBlockID(target.pos.x, target.pos.y, target.pos.z);
   
   if (targetedBlockId === Items.CHEST) {
-      // Send Interact
       if (room) room.send("interact", { x: target.pos.x, y: target.pos.y, z: target.pos.z });
-      return; // Stop processing placement
+      return; 
   }
 
   const { x, y, z } = target.adj;
@@ -1184,8 +1216,6 @@ function ensureMaterialManager(scene: BABYLON.Scene) {
   }
 }
 
-// Babylon requires materials to be instantiated in the exact scene they are used in.
-// We grab the loaded textures from the world scene (via matManager) and create fresh mats for our overlays.
 function createOverlayMat(targetScene: BABYLON.Scene, sourceMatInfo: BABYLON.Material | BABYLON.Material[] | null | undefined): BABYLON.StandardMaterial {
   const src = Array.isArray(sourceMatInfo) ? sourceMatInfo[0] : sourceMatInfo;
   const mat = new BABYLON.StandardMaterial("overlayMat", targetScene);
@@ -1349,11 +1379,39 @@ function updateCrackVisual(scene: BABYLON.Scene) {
 /* ===============================
    9.2 Drop visuals
 ================================ */
+const dropItemMats = new Map<number, BABYLON.StandardMaterial>();
+
+function getDropItemMaterial(scene: BABYLON.Scene, id: number): BABYLON.StandardMaterial {
+  if (dropItemMats.has(id)) return dropItemMats.get(id)!;
+  
+  const mat = new BABYLON.StandardMaterial(`dropItemMat_${id}`, scene);
+  const texUrl = getItemTextureUrl(id);
+  
+  if (texUrl) {
+    mat.diffuseTexture = new BABYLON.Texture(texUrl, scene, true, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    mat.diffuseTexture.hasAlpha = true;
+    mat.useAlphaFromDiffuseTexture = true;
+  } else {
+    mat.emissiveColor = new BABYLON.Color3(1, 0, 1);
+  }
+  
+  mat.backFaceCulling = false;
+  mat.disableLighting = true;
+  mat.emissiveColor = BABYLON.Color3.White();
+  
+  dropItemMats.set(id, mat);
+  return mat;
+}
+
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
     try { m.dispose(); } catch {}
   }
   dropMeshes.clear();
+  dropItemMats.forEach(m => {
+    try { m.dispose(); } catch {}
+  });
+  dropItemMats.clear();
 }
 
 function ensureDropVisuals(scene: BABYLON.Scene) {
@@ -1368,24 +1426,35 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
   for (const d of drops.values()) {
     if (dropMeshes.has(d.dropId)) continue;
 
-    const box = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.32 }, scene);
-    box.isPickable = false;
-    (box as any).isInFrustum = () => true;
+    const itemUrl = getItemTextureUrl(d.itemId);
+    let mesh: BABYLON.Mesh;
 
-    if (matManager) {
-      const matInfo = matManager.getMaterialForBlock(d.itemId);
-      if (Array.isArray(matInfo)) {
-          // It's a block with different faces, we can just assign the Side material for the rotating drop icon
-          box.material = matInfo[0]; 
-      } else if (matInfo) {
-          box.material = matInfo;
+    if (itemUrl) {
+      // 2D Plane for items
+      mesh = BABYLON.MeshBuilder.CreatePlane(`drop:${d.dropId}`, { size: 0.4 }, scene);
+      mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+      mesh.material = getDropItemMaterial(scene, d.itemId);
+      (mesh as any).__isItem = true;
+    } else {
+      // 3D Box for placeable blocks
+      mesh = BABYLON.MeshBuilder.CreateBox(`drop:${d.dropId}`, { size: 0.32 }, scene);
+      if (matManager) {
+        const matInfo = matManager.getMaterialForBlock(d.itemId);
+        if (Array.isArray(matInfo)) {
+            mesh.material = matInfo[0]; 
+        } else if (matInfo) {
+            mesh.material = matInfo;
+        }
       }
+      mesh.rotation.x = 0.25;
+      mesh.rotation.y = Math.random() * Math.PI * 2;
+      (mesh as any).__isItem = false;
     }
 
-    box.rotation.x = 0.25;
-    box.rotation.y = Math.random() * Math.PI * 2;
-    box.position.set(d.x, d.y, d.z);
-    dropMeshes.set(d.dropId, box);
+    mesh.isPickable = false;
+    (mesh as any).isInFrustum = () => true;
+    mesh.position.set(d.x, d.y, d.z);
+    dropMeshes.set(d.dropId, mesh);
   }
 
   for (const id of Array.from(dropMeshes.keys())) {
@@ -1406,7 +1475,11 @@ function updateDropVisuals(dtSec: number) {
     m.position.x = d.x;
     m.position.y = d.y + 0.15 + bob;
     m.position.z = d.z;
-    m.rotation.y += dtSec * 1.1;
+    
+    // Only spin the 3D block boxes, planes use billboard to always face camera
+    if (!(m as any).__isItem) {
+        m.rotation.y += dtSec * 1.1;
+    }
   }
 }
 
@@ -1701,7 +1774,6 @@ let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
-let vmGrip: BABYLON.TransformNode | null = null; 
 let vmEngineHooked = false;
 
 let vmAxes: BABYLON.TransformNode | null = null;
@@ -1750,11 +1822,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmUpperArmMesh.position.set(0.0, 0.22, 0.0);
   vmForeArmMesh.position.set(0.0, -0.14, 0.02);
   vmHandMesh.position.set(0.0, -0.4, 0.04);
-
-  vmGrip = new BABYLON.TransformNode("vmGrip", vmScene);
-  vmGrip.parent = vmHandMesh;
-  vmGrip.position.set(0.0, -0.06, 0.10); 
-  vmGrip.rotation.set(0, 0, 0);
 
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
   armMat.disableLighting = true;
@@ -1863,95 +1930,60 @@ function updateVmItem() {
 
   if (isUnarmed) return;
 
-  const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
-  if (!def) return;
-
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   vmItemMesh.parent = vmArmRoot;
 
-  if (def.tool) {
-     const headId = 
-        def.tool.kind === "sword" ? Items.RAW_IRON :
-        def.tool.kind === "pick" ? Items.STONE :
-        def.tool.kind === "axe" ? Items.WOOD_LOG :
-        Items.STONE;
+  const itemUrl = getItemTextureUrl(heldId);
 
-     const headMatInfo = matManager?.getMaterialForBlock(headId);
-     const handleMatInfo = matManager?.getMaterialForBlock(Items.WOOD_LOG);
+  if (itemUrl) {
+    // 2D Plane Sprite for tools and non-placeable items
+    vmItemMesh.position.set(0.45, -0.45, 0.85);
+    
+    // Rotate to look like a sword held forward
+    vmItemMesh.rotation.x = 0;
+    vmItemMesh.rotation.y = Math.PI + (Math.PI / 8); 
+    vmItemMesh.rotation.z = -Math.PI / 6;
+    
+    vmItemMesh.scaling.set(2.0, 2.0, 2.0);
 
-     if (def.tool.kind === "sword") {
-         vmItemMesh.rotation.x = Math.PI / 4; 
-         vmItemMesh.rotation.y = 0;
-         vmItemMesh.rotation.z = 0;
-         vmItemMesh.scaling.set(4, 4, 4);
+    const plane = BABYLON.MeshBuilder.CreatePlane(`vmPlane_${heldId}`, { size: 0.6 }, vmScene);
+    const mat = new BABYLON.StandardMaterial(`vmItemMat_${heldId}`, vmScene);
+    mat.diffuseTexture = new BABYLON.Texture(itemUrl, vmScene, true, true, BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    mat.diffuseTexture.hasAlpha = true;
+    mat.useAlphaFromDiffuseTexture = true;
+    mat.backFaceCulling = false;
+    mat.emissiveColor = BABYLON.Color3.White();
+    mat.disableLighting = true;
+    mat.disableDepthWrite = true;
+    mat.depthFunction = BABYLON.Constants.ALWAYS;
+    
+    plane.material = mat;
+    plane.parent = vmItemMesh;
 
-         const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
-         handle.material = createOverlayMat(vmScene, handleMatInfo);
-         handle.position.y = 0.02;
-         
-         const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
-         guard.material = createOverlayMat(vmScene, headMatInfo);
-         guard.position.y = 0.16;
-         
-         const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
-         blade.material = createOverlayMat(vmScene, headMatInfo);
-         blade.position.y = 0.56;
-         
-         handle.parent = vmItemMesh;
-         guard.parent = vmItemMesh;
-         blade.parent = vmItemMesh;
-
-         vmItemMesh.position.set(0.3, -0.4, 0.5);
-
-     } else if (def.tool.kind === "pick" || def.tool.kind === "axe") {
-         vmItemMesh.rotation.x = Math.PI / 4;
-         vmItemMesh.rotation.y = -Math.PI / 10;
-         vmItemMesh.rotation.z = 0;
-         vmItemMesh.scaling.set(3.5, 3.5, 3.5);
-
-         const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
-         handle.material = createOverlayMat(vmScene, handleMatInfo);
-         handle.position.y = 0.2;
-         
-         const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
-         head.material = createOverlayMat(vmScene, headMatInfo);
-         head.position.y = 0.45;
-
-         if (def.tool.kind === "axe") {
-           head.position.x = 0.08;
-           head.scaling.set(0.6, 2.5, 1);
-         }
-         
-         handle.parent = vmItemMesh;
-         head.parent = vmItemMesh;
-
-         vmItemMesh.position.set(0.3, -0.4, 0.5);
-     }
   } else {
-     // Blocks or Raw Items
-     vmItemMesh.rotation.x = Math.PI / 8;
-     vmItemMesh.rotation.y = Math.PI / 4;
-     vmItemMesh.rotation.z = 0;
-     vmItemMesh.scaling.set(2, 2, 2);
+    // 3D Block for standard placeable blocks
+    vmItemMesh.rotation.x = Math.PI / 8;
+    vmItemMesh.rotation.y = Math.PI / 4;
+    vmItemMesh.rotation.z = 0;
+    vmItemMesh.scaling.set(2.5, 2.5, 2.5);
 
-     const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
-     
-     if (matManager) {
-        const m = matManager.getMaterialForBlock(heldId);
-        if (Array.isArray(m)) {
-            const multi = new BABYLON.MultiMaterial(`vmMulti_${heldId}`, vmScene);
-            m.forEach(mat => multi.subMaterials.push(createOverlayMat(vmScene!, mat)));
-            box.material = multi;
-        } else if (m) {
-            box.material = createOverlayMat(vmScene, m);
-        }
-     }
-     
-     box.parent = vmItemMesh;
-     vmItemMesh.position.set(0.3, -0.2, 0.6);
+    const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
+    
+    if (matManager) {
+       const m = matManager.getMaterialForBlock(heldId);
+       if (Array.isArray(m)) {
+           const multi = new BABYLON.MultiMaterial(`vmMulti_${heldId}`, vmScene);
+           m.forEach(mat => multi.subMaterials.push(createOverlayMat(vmScene!, mat)));
+           box.material = multi;
+       } else if (m) {
+           box.material = createOverlayMat(vmScene, m);
+       }
+    }
+    
+    box.parent = vmItemMesh;
+    vmItemMesh.position.set(0.3, -0.2, 0.6);
   }
 
-  // Enforce overlay depth buffer
   vmItemMesh.getChildMeshes().forEach(m => {
      m.renderingGroupId = 3;
      m.isPickable = false;
