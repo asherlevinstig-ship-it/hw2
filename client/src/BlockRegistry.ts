@@ -15,8 +15,8 @@ export interface BlockDefinition {
   };
 }
 
-// Notice the leading slashes! This tells the browser to look at the root domain.
-// Ensure your image folder is located at client/public/blocks/
+// Using relative paths ("blocks/...") ensures Vite resolves them correctly 
+// relative to your index.html in production builds.
 
 export const BlockRegistry: Record<number, BlockDefinition> = {
   0: {
@@ -30,9 +30,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Grass",
     isTransparent: false,
     textures: {
-      top: "/blocks/grass_block_top.png",
-      bottom: "/blocks/dirt.png",
-      side: "/blocks/grass_block_side.png"
+      top: "blocks/grass_block_top.png",
+      bottom: "blocks/dirt.png",
+      side: "blocks/grass_block_side.png"
     }
   },
   2: {
@@ -40,7 +40,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dirt",
     isTransparent: false,
     textures: {
-      all: "/blocks/dirt.png"
+      all: "blocks/dirt.png"
     }
   },
   3: {
@@ -48,7 +48,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Stone",
     isTransparent: false,
     textures: {
-      all: "/blocks/stone.png"
+      all: "blocks/stone.png"
     }
   },
   4: {
@@ -56,9 +56,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Wood",
     isTransparent: false,
     textures: {
-      top: "/blocks/oak_log_top.png",
-      bottom: "/blocks/oak_log_top.png",
-      side: "/blocks/oak_log.png"
+      top: "blocks/oak_log_top.png",
+      bottom: "blocks/oak_log_top.png",
+      side: "blocks/oak_log.png"
     }
   },
   5: {
@@ -66,7 +66,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Leaves",
     isTransparent: true,
     textures: {
-      all: "/blocks/oak_leaves.png"
+      all: "blocks/oak_leaves.png"
     }
   },
   6: {
@@ -74,7 +74,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Bedrock",
     isTransparent: false,
     textures: {
-      all: "/blocks/bedrock.png"
+      all: "blocks/bedrock.png"
     }
   },
   8: {
@@ -82,10 +82,10 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Chest",
     isTransparent: false,
     textures: {
-      top: "/blocks/barrel_top.png",
-      bottom: "/blocks/barrel_bottom.png",
-      side: "/blocks/barrel_side.png",
-      front: "/blocks/barrel_side.png"
+      top: "blocks/barrel_top.png",
+      bottom: "blocks/barrel_bottom.png",
+      side: "blocks/barrel_side.png",
+      front: "blocks/barrel_side.png"
     }
   },
   11: {
@@ -93,7 +93,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Sand",
     isTransparent: false,
     textures: {
-      all: "/blocks/sand.png"
+      all: "blocks/sand.png"
     }
   },
   12: {
@@ -101,7 +101,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Snow",
     isTransparent: false,
     textures: {
-      all: "/blocks/snow.png"
+      all: "blocks/snow.png"
     }
   },
   30: {
@@ -109,7 +109,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Coal Ore",
     isTransparent: false,
     textures: {
-      all: "/blocks/coal_ore.png"
+      all: "blocks/coal_ore.png"
     }
   },
   31: {
@@ -117,7 +117,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Iron Ore",
     isTransparent: false,
     textures: {
-      all: "/blocks/iron_ore.png"
+      all: "blocks/iron_ore.png"
     }
   },
   32: {
@@ -125,7 +125,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Gold Ore",
     isTransparent: false,
     textures: {
-      all: "/blocks/gold_ore.png"
+      all: "blocks/gold_ore.png"
     }
   },
   33: {
@@ -133,7 +133,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Diamond Ore",
     isTransparent: false,
     textures: {
-      all: "/blocks/diamond_ore.png"
+      all: "blocks/diamond_ore.png"
     }
   },
   40: {
@@ -141,7 +141,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Planks",
     isTransparent: false,
     textures: {
-      all: "/blocks/oak_planks.png"
+      all: "blocks/oak_planks.png"
     }
   },
   41: {
@@ -149,7 +149,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Stone Bricks",
     isTransparent: false,
     textures: {
-      all: "/blocks/stonebrick.png" 
+      all: "blocks/stonebrick.png" 
     }
   },
   42: {
@@ -157,7 +157,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Carpet",
     isTransparent: true,
     textures: {
-      all: "/blocks/red_carpet.png"
+      all: "blocks/red_carpet.png"
     }
   },
   43: {
@@ -165,7 +165,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Glass",
     isTransparent: true,
     textures: {
-      all: "/blocks/glass.png"
+      all: "blocks/glass.png"
     }
   },
   44: {
@@ -173,7 +173,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Lantern",
     isTransparent: true,
     textures: {
-      all: "/blocks/lantern.png"
+      all: "blocks/lantern.png"
     }
   },
   90: {
@@ -181,9 +181,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Deepslate",
     isTransparent: false,
     textures: {
-      top: "/blocks/deepslate_top.png",
-      bottom: "/blocks/deepslate_top.png",
-      side: "/blocks/deepslate.png"
+      top: "blocks/deepslate_top.png",
+      bottom: "blocks/deepslate_top.png",
+      side: "blocks/deepslate.png"
     }
   },
   91: {
@@ -191,7 +191,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Tuff",
     isTransparent: false,
     textures: {
-      all: "/blocks/tuff.png"
+      all: "blocks/tuff.png"
     }
   },
   92: {
@@ -199,7 +199,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Moss",
     isTransparent: false,
     textures: {
-      all: "/blocks/moss_block.png"
+      all: "blocks/moss_block.png"
     }
   },
   93: {
@@ -207,7 +207,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Mossy Stone",
     isTransparent: false,
     textures: {
-      all: "/blocks/mossy_cobblestone.png"
+      all: "blocks/mossy_cobblestone.png"
     }
   },
   94: {
@@ -215,7 +215,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone",
     isTransparent: true,
     textures: {
-      all: "/blocks/pointed_dripstone.png"
+      all: "blocks/pointed_dripstone.png"
     }
   },
   95: {
@@ -223,7 +223,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone Block",
     isTransparent: false,
     textures: {
-      all: "/blocks/dripstone_block.png"
+      all: "blocks/dripstone_block.png"
     }
   },
   96: {
@@ -231,7 +231,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Glow Shroom",
     isTransparent: false,
     textures: {
-      all: "/blocks/shroomlight.png"
+      all: "blocks/shroomlight.png"
     }
   },
   97: {
@@ -239,7 +239,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Crystal",
     isTransparent: true,
     textures: {
-      all: "/blocks/amethyst_block.png"
+      all: "blocks/amethyst_block.png"
     }
   }
 };
