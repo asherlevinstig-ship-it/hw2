@@ -21,7 +21,7 @@ export class RemoteEntityRenderer {
   private engineHooked = false;
 
   private meshes = new Map<string, BABYLON.TransformNode>();
-  private mats = new Map<string, BABYLON.StandardMaterial[]>(); // Track all mats per ID for cleanup
+  private mats = new Map<string, BABYLON.StandardMaterial[]>();
 
   private renderOffset = new BABYLON.Vector3(0, 0, 0);
   private readonly Y_VISUAL_OFFSET = -1.65;
@@ -60,7 +60,7 @@ export class RemoteEntityRenderer {
 
     if (!this.glowLayer) {
       this.glowLayer = new BABYLON.GlowLayer("rpGlow", this.scene);
-      this.glowLayer.intensity = 0.7; // Crisp bloom for eyes and magic only
+      this.glowLayer.intensity = 0.7;
     }
 
     if (!this.engineHooked) {
@@ -138,7 +138,6 @@ export class RemoteEntityRenderer {
     }
   }
 
-  // Smart Material Generator: Kills fullbright textures, uses subtle color lifts, allows optional glow
   private getMat(matManager: BlockMaterialManager | null, blockId: number, fallbackColor: BABYLON.Color3, isGlowing: boolean = false, idKey: string): BABYLON.StandardMaterial {
     const mat = new BABYLON.StandardMaterial(`mat_${blockId}_${idKey}`, this.scene!);
     mat.disableLighting = true; 
@@ -154,29 +153,29 @@ export class RemoteEntityRenderer {
         mat.emissiveTexture = baseMat.diffuseTexture;
         mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
       } else {
-        // Subtle ambient lift so it's readable without a light source, but doesn't bloom or look flat
         mat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2); 
       }
     } else {
       mat.emissiveColor = fallbackColor;
     }
 
-    // Register material for cleanup
+    // Cache the base color for hit flashing restoration
+    (mat as any).__baseEmissive = mat.emissiveColor.clone();
+
     if (!this.mats.has(idKey)) this.mats.set(idKey, []);
     this.mats.get(idKey)!.push(mat);
 
     return mat;
   }
 
-  // Deterministic Hash for randomizing mob accessories
   private hashId(id: string): number {
     let hash = 0;
     for (let i = 0; i < id.length; i++) {
         const char = id.charCodeAt(i);
         hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
+        hash |= 0; 
     }
-    return Math.abs(hash) / 2147483647; // 0.0 to 1.0
+    return (hash >>> 0) / 4294967295;
   }
 
   private updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number, maxHp: number) {
@@ -213,18 +212,16 @@ export class RemoteEntityRenderer {
           (root as any).__nameplate = plate;
           (root as any).__nameplateTex = tex;
 
-          // Track nameplate material for cleanup
           if (!this.mats.has(id)) this.mats.set(id, []);
           this.mats.get(id)!.push(mat);
       }
 
-      // Distance Fade Logic
       const dist = BABYLON.Vector3.Distance(this.cam.position, plate.getAbsolutePosition());
-      const maxDist = isGiant ? 60 : 15; // Nameplates fade out far away
+      const maxDist = isGiant ? 60 : 15; 
       const fadeAlpha = BABYLON.Scalar.Clamp(1.0 - (dist - (maxDist - 5)) / 5, 0, 1);
       plate.visibility = fadeAlpha;
 
-      if (fadeAlpha <= 0) return; // Skip canvas redraw if invisible
+      if (fadeAlpha <= 0) return; 
 
       const lastHp = (root as any).__lastHp;
       if (lastHp !== hp) {
@@ -233,7 +230,6 @@ export class RemoteEntityRenderer {
           const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
           ctx.clearRect(0, 0, 512, 128);
 
-          // Much darker, cleaner background
           ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
           ctx.fillRect(20, 70, 472, 24);
 
@@ -274,20 +270,19 @@ export class RemoteEntityRenderer {
 
     let parts: any = {};
     const seed = this.hashId(id);
+    const flashMats: BABYLON.StandardMaterial[] = [];
 
-    // Initialize Material Array for cleanup tracking
     this.mats.set(id, []);
 
-    // Common materials via helper
-    const stoneMat = this.getMat(matManager, 90, new BABYLON.Color3(0.2, 0.2, 0.2), false, id); // 90 = Deepslate
-    const trimMat = this.getMat(matManager, 91, new BABYLON.Color3(0.3, 0.3, 0.3), false, id); // 91 = Tuff
-    const darkMat = this.getMat(matManager, 30, new BABYLON.Color3(0.05, 0.05, 0.05), false, id); // 30 = Coal Ore
-    const goldMat = this.getMat(matManager, 32, new BABYLON.Color3(0.8, 0.7, 0.1), false, id); // 32 = Gold Ore
-    const woodMat = this.getMat(matManager, 4, new BABYLON.Color3(0.4, 0.3, 0.1), false, id); // 4 = Wood
+    const stoneMat = this.getMat(matManager, 90, new BABYLON.Color3(0.2, 0.2, 0.2), false, id); 
+    const trimMat = this.getMat(matManager, 91, new BABYLON.Color3(0.3, 0.3, 0.3), false, id); 
+    const darkMat = this.getMat(matManager, 30, new BABYLON.Color3(0.05, 0.05, 0.05), false, id); 
+    const goldMat = this.getMat(matManager, 32, new BABYLON.Color3(0.8, 0.7, 0.1), false, id); 
+    const woodMat = this.getMat(matManager, 4, new BABYLON.Color3(0.4, 0.3, 0.1), false, id); 
 
     if (isGiant) {
       // ==========================================
-      // THE ANCIENT WARDEN (Giant Boss Rig)
+      // THE ANCIENT WARDEN 
       // ==========================================
       const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
       magicMat.disableLighting = true;
@@ -295,9 +290,13 @@ export class RemoteEntityRenderer {
       (magicMat as any).fogEnabled = false;
       this.mats.get(id)!.push(magicMat);
 
+      const hips = new BABYLON.TransformNode(`gHips:${id}`, this.scene);
+      hips.parent = root;
+      hips.position.y = 1.0;
+
       const torso = new BABYLON.TransformNode(`gTorso:${id}`, this.scene);
-      torso.parent = root;
-      torso.position.y = 1.0;
+      torso.parent = hips;
+      torso.position.y = 0;
 
       const body = BABYLON.MeshBuilder.CreateBox(`gBody:${id}`, { width: 1.4, height: 1.8, depth: 0.8 }, this.scene);
       body.material = stoneMat;
@@ -353,13 +352,13 @@ export class RemoteEntityRenderer {
 
       const legL = BABYLON.MeshBuilder.CreateBox(`gLegL:${id}`, { width: 0.5, height: 1.0, depth: 0.5 }, this.scene);
       legL.material = stoneMat;
-      legL.parent = root;
-      legL.position.set(-0.4, 0.5, 0);
+      legL.parent = hips;
+      legL.position.set(-0.4, -0.5, 0);
 
       const legR = BABYLON.MeshBuilder.CreateBox(`gLegR:${id}`, { width: 0.5, height: 1.0, depth: 0.5 }, this.scene);
       legR.material = stoneMat;
-      legR.parent = root;
-      legR.position.set(0.4, 0.5, 0);
+      legR.parent = hips;
+      legR.position.set(0.4, -0.5, 0);
 
       const staff = BABYLON.MeshBuilder.CreateCylinder(`gStaff:${id}`, { height: 4.0, diameter: 0.15 }, this.scene);
       staff.material = goldMat;
@@ -378,11 +377,12 @@ export class RemoteEntityRenderer {
       });
 
       root.scaling.set(3, 3, 3); 
-      parts = { torso, headJoint, armJointL, armJointR, legL, legR, halo, crystal, magicMat, bodyMat: stoneMat };
+      flashMats.push(stoneMat, goldMat);
+      parts = { hips, torso, headJoint, armJointL, armJointR, legL, legR, halo, crystal, magicMat, flashMats };
 
     } else if (isMob) {
       // ==========================================
-      // STANDARD GOLEM RIG (Hierarchical & Proportional)
+      // STANDARD GOLEM RIG
       // ==========================================
       const eyeMat = new BABYLON.StandardMaterial(`mobEyeMat:${id}`, this.scene);
       eyeMat.disableLighting = true;
@@ -390,21 +390,22 @@ export class RemoteEntityRenderer {
       (eyeMat as any).fogEnabled = false;
       this.mats.get(id)!.push(eyeMat);
 
-      // Main Skeleton
-      const torso = new BABYLON.TransformNode(`mTorso:${id}`, this.scene);
-      torso.parent = root;
-      torso.position.y = 0.5; // Hips
+      const hips = new BABYLON.TransformNode(`mHips:${id}`, this.scene);
+      hips.parent = root;
+      hips.position.y = 0.5;
 
-      // Fixed Proportions: Wider, slightly flatter body
+      const torso = new BABYLON.TransformNode(`mTorso:${id}`, this.scene);
+      torso.parent = hips;
+      torso.position.y = 0; 
+
       const body = BABYLON.MeshBuilder.CreateBox(`mBody:${id}`, { width: 0.95, height: 1.05, depth: 0.7 }, this.scene);
       body.parent = torso;
       body.position.y = 0.525;
       body.material = stoneMat;
 
-      // Custom Voxel Face
       const headJoint = new BABYLON.TransformNode(`mHeadJoint:${id}`, this.scene);
       headJoint.parent = torso;
-      headJoint.position.set(0, 1.05, 0.05); // Less snouty Z
+      headJoint.position.set(0, 1.05, 0.05); 
 
       const head = BABYLON.MeshBuilder.CreateBox(`mHead:${id}`, { size: 0.6 }, this.scene);
       head.parent = headJoint;
@@ -413,13 +414,13 @@ export class RemoteEntityRenderer {
 
       const face = BABYLON.MeshBuilder.CreateBox(`mFace:${id}`, { width: 0.45, height: 0.35, depth: 0.05 }, this.scene);
       face.parent = head;
-      face.position.set(0, -0.05, 0.31); // Embedded dark mask
+      face.position.set(0, -0.05, 0.31); 
       face.material = darkMat;
 
       const brow = BABYLON.MeshBuilder.CreateBox(`mBrow:${id}`, { width: 0.5, height: 0.1, depth: 0.1 }, this.scene);
       brow.parent = head;
       brow.position.set(0, 0.15, 0.31);
-      brow.material = trimMat; // Trim colored brow
+      brow.material = trimMat; 
 
       const eyeL = BABYLON.MeshBuilder.CreateBox(`mEyeL:${id}`, { size: 0.08 }, this.scene);
       eyeL.parent = face;
@@ -431,7 +432,6 @@ export class RemoteEntityRenderer {
       eyeR.position.set(0.12, 0.0, 0.02);
       eyeR.material = eyeMat;
 
-      // Arms & Shoulders
       const armJointL = new BABYLON.TransformNode(`mArmJL:${id}`, this.scene);
       armJointL.parent = torso;
       armJointL.position.set(-0.65, 0.9, 0);
@@ -439,7 +439,7 @@ export class RemoteEntityRenderer {
       const pauldronL = BABYLON.MeshBuilder.CreateBox(`mPauldronL:${id}`, { width: 0.4, height: 0.25, depth: 0.45 }, this.scene);
       pauldronL.parent = armJointL;
       pauldronL.position.set(-0.05, 0.1, 0);
-      pauldronL.material = trimMat; // 2-tone pop
+      pauldronL.material = trimMat;
 
       const armL = BABYLON.MeshBuilder.CreateBox(`mArmL:${id}`, { width: 0.3, height: 1.1, depth: 0.3 }, this.scene);
       armL.parent = armJointL;
@@ -460,10 +460,9 @@ export class RemoteEntityRenderer {
       armR.position.y = -0.4;
       armR.material = stoneMat;
 
-      // Legs & Feet (Wider stance)
       const legL = BABYLON.MeshBuilder.CreateBox(`mLegL:${id}`, { width: 0.28, height: 0.5, depth: 0.28 }, this.scene);
-      legL.parent = root;
-      legL.position.set(-0.3, 0.25, 0);
+      legL.parent = hips;
+      legL.position.set(-0.3, -0.25, 0);
       legL.material = stoneMat;
 
       const footL = BABYLON.MeshBuilder.CreateBox(`mFootL:${id}`, { width: 0.32, height: 0.18, depth: 0.45 }, this.scene);
@@ -472,8 +471,8 @@ export class RemoteEntityRenderer {
       footL.material = trimMat;
 
       const legR = BABYLON.MeshBuilder.CreateBox(`mLegR:${id}`, { width: 0.28, height: 0.5, depth: 0.28 }, this.scene);
-      legR.parent = root;
-      legR.position.set(0.3, 0.25, 0);
+      legR.parent = hips;
+      legR.position.set(0.3, -0.25, 0);
       legR.material = stoneMat;
 
       const footR = BABYLON.MeshBuilder.CreateBox(`mFootR:${id}`, { width: 0.32, height: 0.18, depth: 0.45 }, this.scene);
@@ -481,27 +480,25 @@ export class RemoteEntityRenderer {
       footR.position.set(0, -0.16, 0.05);
       footR.material = trimMat;
 
-      // --- Deterministic Accessories based on Hash ---
       const orbiters: BABYLON.Mesh[] = [];
       if (seed < 0.3) {
-        // Option 1: Horns
         const hornL = BABYLON.MeshBuilder.CreateBox(`mHornL:${id}`, { width: 0.1, height: 0.3, depth: 0.1 }, this.scene);
         hornL.parent = head; hornL.position.set(-0.25, 0.4, 0.1); hornL.rotation.z = Math.PI/6; hornL.material = trimMat;
         const hornR = BABYLON.MeshBuilder.CreateBox(`mHornR:${id}`, { width: 0.1, height: 0.3, depth: 0.1 }, this.scene);
         hornR.parent = head; hornR.position.set(0.25, 0.4, 0.1); hornR.rotation.z = -Math.PI/6; hornR.material = trimMat;
       } else if (seed > 0.7) {
-        // Option 2: Crystal Back Spikes
         const spikeMat = new BABYLON.StandardMaterial(`mSpikeMat:${id}`, this.scene);
         spikeMat.disableLighting = true; spikeMat.emissiveColor = new BABYLON.Color3(0, 0.8, 1);
+        (spikeMat as any).__baseEmissive = spikeMat.emissiveColor.clone();
         this.mats.get(id)!.push(spikeMat);
+        flashMats.push(spikeMat);
 
         const spike1 = BABYLON.MeshBuilder.CreateCylinder(`mSpike1:${id}`, { diameterTop: 0, diameterBottom: 0.3, height: 0.7, tessellation: 4 }, this.scene);
         spike1.parent = torso; spike1.position.set(0, 0.7, -0.35); spike1.rotation.x = -Math.PI/4; spike1.material = spikeMat;
       } else {
-        // Option 3: Orbiters
         for(let i=0; i<3; i++) {
             const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, this.scene);
-            orb.material = eyeMat; orb.parent = root; orbiters.push(orb);
+            orb.material = eyeMat; orb.parent = hips; orbiters.push(orb);
         }
       }
 
@@ -510,20 +507,25 @@ export class RemoteEntityRenderer {
           (m as any).isInFrustum = () => true;
       });
 
-      parts = { torso, headJoint, armJointL, armJointR, legL, legR, orbiters, eyeMat, bodyMat: stoneMat };
+      flashMats.push(stoneMat, darkMat, trimMat);
+      parts = { hips, torso, headJoint, armJointL, armJointR, legL, legR, orbiters, eyeMat, flashMats };
 
     } else {
       // ==========================================
-      // STANDARD PLAYER RIG (Hierarchical)
+      // STANDARD PLAYER RIG
       // ==========================================
+      const hips = new BABYLON.TransformNode(`pHips:${id}`, this.scene);
+      hips.parent = root;
+      hips.position.y = 0.9;
+
       const torso = new BABYLON.TransformNode(`pTorso:${id}`, this.scene);
-      torso.parent = root;
-      torso.position.y = 0.9;
+      torso.parent = hips;
+      torso.position.y = 0;
 
       const body = BABYLON.MeshBuilder.CreateBox(`pBody:${id}`, { width: 0.65, height: 0.95, depth: 0.32 }, this.scene);
       body.parent = torso;
       body.position.y = 0.475;
-      body.material = woodMat; // Using wood as a fallback player skin texture
+      body.material = woodMat; 
 
       const headJoint = new BABYLON.TransformNode(`pHeadJoint:${id}`, this.scene);
       headJoint.parent = torso;
@@ -533,6 +535,27 @@ export class RemoteEntityRenderer {
       head.parent = headJoint;
       head.position.y = 0.275;
       head.material = woodMat;
+
+      const face = BABYLON.MeshBuilder.CreateBox(`pFace:${id}`, { width: 0.45, height: 0.35, depth: 0.05 }, this.scene);
+      face.parent = head;
+      face.position.set(0, -0.05, 0.28); 
+      face.material = darkMat;
+
+      const eyeMat = new BABYLON.StandardMaterial(`pEyeMat:${id}`, this.scene);
+      eyeMat.disableLighting = true;
+      eyeMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 0.9); 
+      (eyeMat as any).fogEnabled = false;
+      this.mats.get(id)!.push(eyeMat);
+
+      const eyeL = BABYLON.MeshBuilder.CreateBox(`pEyeL:${id}`, { size: 0.08 }, this.scene);
+      eyeL.parent = face;
+      eyeL.position.set(-0.12, 0.0, 0.02);
+      eyeL.material = eyeMat;
+
+      const eyeR = BABYLON.MeshBuilder.CreateBox(`pEyeR:${id}`, { size: 0.08 }, this.scene);
+      eyeR.parent = face;
+      eyeR.position.set(0.12, 0.0, 0.02);
+      eyeR.material = eyeMat;
 
       const armJointL = new BABYLON.TransformNode(`pArmJL:${id}`, this.scene);
       armJointL.parent = torso;
@@ -553,27 +576,27 @@ export class RemoteEntityRenderer {
       armR.material = woodMat;
 
       const legL = BABYLON.MeshBuilder.CreateBox(`pLegL:${id}`, { width: 0.22, height: 0.9, depth: 0.22 }, this.scene);
-      legL.parent = root;
-      legL.position.set(-0.16, 0.45, 0);
+      legL.parent = hips;
+      legL.position.set(-0.16, -0.45, 0);
       legL.material = woodMat;
 
       const legR = BABYLON.MeshBuilder.CreateBox(`pLegR:${id}`, { width: 0.22, height: 0.9, depth: 0.22 }, this.scene);
-      legR.parent = root;
-      legR.position.set(0.16, 0.45, 0);
+      legR.parent = hips;
+      legR.position.set(0.16, -0.45, 0);
       legR.material = woodMat;
 
-      [body, head, armL, armR, legL, legR].forEach(m => {
+      [body, head, face, armL, armR, legL, legR].forEach(m => {
           m.isPickable = false;
           (m as any).isInFrustum = () => true;
       });
 
-      // Simple player backpack based on hash
       if (seed > 0.5) {
         const pack = BABYLON.MeshBuilder.CreateBox(`pPack:${id}`, { width: 0.5, height: 0.6, depth: 0.2 }, this.scene);
         pack.parent = torso; pack.position.set(0, 0.5, -0.26); pack.material = trimMat;
       }
 
-      parts = { torso, headJoint, armJointL, armJointR, legL, legR, bodyMat: woodMat };
+      flashMats.push(woodMat, darkMat, trimMat);
+      parts = { hips, torso, headJoint, armJointL, armJointR, legL, legR, flashMats };
     }
 
     (root as any).__parts = parts;
@@ -590,16 +613,18 @@ export class RemoteEntityRenderer {
   public removeRemoteMesh(id: string) {
     const root = this.meshes.get(id);
     if (root) {
-      // Disposing the root node disposes child meshes, but not their materials
-      try { root.dispose(false, true); } catch {}
+      const tex = (root as any).__nameplateTex as BABYLON.DynamicTexture | undefined;
+      if (tex) {
+          try { tex.dispose(); } catch {}
+      }
+      try { root.dispose(false, false); } catch {}
       this.meshes.delete(id);
     }
     
-    // Safely dispose of all materials created uniquely for this entity
     const matList = this.mats.get(id);
     if (matList) {
       for (const m of matList) {
-        try { m.dispose(); } catch {}
+        try { m.dispose(false, false); } catch {}
       }
       this.mats.delete(id);
     }
@@ -662,29 +687,26 @@ export class RemoteEntityRenderer {
       const maxHp = t.maxHp ?? 100;
       this.updateMobNameplate(root, id, hp, maxHp);
 
-      // Hit Flashing Logic
       const flashTime = remoteFlashes.get(id);
       const isHit = flashTime && now - flashTime < 200;
 
-      if (parts.bodyMat) {
-        if (isHit) {
-          parts.bodyMat.emissiveColor.set(1, 0.2, 0.2);
-        } else {
-          // Restore the subtle lift we assigned in getMat
-          parts.bodyMat.emissiveColor.set(0.2, 0.2, 0.2);
-        }
+      if (parts.flashMats) {
+          for (const m of parts.flashMats) {
+              if (isHit) {
+                  m.emissiveColor.set(1, 0.2, 0.2);
+              } else {
+                  const baseE = (m as any).__baseEmissive;
+                  if (baseE) m.emissiveColor.copyFrom(baseE);
+              }
+          }
       }
 
       if (isGiant) {
-        // =====================================
-        // GIANT ANIMATION (Idle Floating)
-        // =====================================
         const floatY = Math.sin(now * 0.001) * 0.15;
         
-        parts.torso.position.y = 1.0 + floatY;
+        parts.hips.position.y = 1.0 + floatY;
         parts.headJoint.position.y = 1.9 + floatY * 0.5; 
         
-        // Spinning Magic parts
         parts.halo.rotation.y += dtSec * 1.5;
         parts.crystal.rotation.y += dtSec * 2.0;
         parts.crystal.rotation.x += dtSec * 1.0;
@@ -695,13 +717,9 @@ export class RemoteEntityRenderer {
         }
 
       } else {
-        // =====================================
-        // STANDARD MOB & PLAYER ANIMATION (Kinematic walking)
-        // =====================================
         const healthPct = hp / Math.max(1, maxHp);
         const isRaging = isMob && healthPct < 0.5;
 
-        // Size scaling for enraged mobs
         const targetScale = isRaging ? 1.25 : 1.0;
         root.scaling.x += (targetScale - root.scaling.x) * 0.1;
         root.scaling.y += (targetScale - root.scaling.y) * 0.1;
@@ -709,7 +727,7 @@ export class RemoteEntityRenderer {
 
         if (parts.eyeMat) {
           if (isRaging) parts.eyeMat.emissiveColor.set(1, 0.4, 0); 
-          else parts.eyeMat.emissiveColor.set(1, 0.05, 0.05); 
+          else parts.eyeMat.emissiveColor.set(1, 0.1, 0.1); 
         }
 
         if (parts.orbiters && parts.orbiters.length > 0) {
@@ -729,12 +747,11 @@ export class RemoteEntityRenderer {
           });
         }
 
-        // Locomotion Kinematics
         const moving = speed > 0.15;
         const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * (isRaging ? 0.25 : 0.18);
         let phase = (root as any).__walkPhase as number;
         if (!Number.isFinite(phase)) phase = 0;
-        phase += moving ? phaseSpeed : 0.02; // Slow breathe when still
+        phase += moving ? phaseSpeed : 0.02; 
         (root as any).__walkPhase = phase;
 
         const baseHipY = isMob ? 0.5 : 0.9;
@@ -744,19 +761,18 @@ export class RemoteEntityRenderer {
 
         let armPitch = 0;
         let bodyPitch = moving ? 0.1 : 0;
-        let bodyYaw = moving ? Math.sin(phase) * 0.2 : 0; // Torso twists slightly with walk
+        let bodyYaw = moving ? Math.sin(phase) * 0.2 : 0; 
 
-        // Swing Animation Override
         const swingTime = remoteSwings.get(id);
         if (swingTime && now - swingTime < 450) {
           const elapsed = now - swingTime;
-          if (elapsed < 150) { // Windup
+          if (elapsed < 150) { 
             const t = elapsed / 150;
             const ease = t * t * (3 - 2 * t);
             armPitch = -0.6 * ease;
             bodyPitch += -0.15 * ease;
             bodyYaw += 0.3 * ease; 
-          } else { // Strike
+          } else { 
             const t = (elapsed - 150) / 300;
             const strikeT = Math.sin(Math.pow(t, 0.5) * Math.PI);
             
@@ -766,20 +782,18 @@ export class RemoteEntityRenderer {
           }
         }
 
-        // Apply Hierarchical Transformations
-        parts.torso.position.y = baseHipY + breath + bounce;
+        parts.hips.position.y = baseHipY + breath + bounce;
         parts.torso.rotation.x = bodyPitch;
         parts.torso.rotation.y = bodyYaw;
         
-        // Head lag/counter-yaw: The torso turns, but the head keeps looking forward
-        parts.headJoint.rotation.x = bodyPitch * 0.3; // Look up slightly when leaning down
+        parts.headJoint.rotation.x = bodyPitch * 0.3; 
         parts.headJoint.rotation.y = -bodyYaw * 0.8; 
 
         parts.legL.rotation.x = swing;
         parts.legR.rotation.x = -swing;
         
         parts.armJointL.rotation.x = -swing * 0.5; 
-        parts.armJointR.rotation.x = swing * 0.5 - armPitch; // Right arm handles attacks
+        parts.armJointR.rotation.x = swing * 0.5 - armPitch; 
       }
     }
   }
