@@ -61,9 +61,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
   5: {
     id: 5,
     name: "Leaves",
-    isTransparent: true,
+    isTransparent: false, // Changed to false since we are using the opaque texture
     textures: {
-      all: "blocks/leaves_oak.png"
+      all: "blocks/leaves_oak_opaque.png" // Fixed! Pointing to the actual file in your folder
     }
   },
   6: {
@@ -90,7 +90,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Sand",
     isTransparent: false,
     textures: {
-      all: "blocks/red_sand.png" // Fallback based on screenshots
+      all: "blocks/red_sand.png" 
     }
   },
   12: {
@@ -152,9 +152,9 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
   42: {
     id: 42,
     name: "Carpet",
-    isTransparent: true,
+    isTransparent: true, // Leaving true so it can be slightly see-through if desired
     textures: {
-      all: "blocks/redstone_block.png" // Fallback based on screenshots
+      all: "blocks/redstone_block.png" 
     }
   },
   43: {
@@ -178,7 +178,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Deepslate",
     isTransparent: false,
     textures: {
-      all: "blocks/obsidian.png" // Dark stone fallback
+      all: "blocks/obsidian.png" 
     }
   },
   91: {
@@ -194,7 +194,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Moss",
     isTransparent: false,
     textures: {
-      all: "blocks/slime.png" // Green block fallback
+      all: "blocks/slime.png" 
     }
   },
   93: {
@@ -210,7 +210,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone",
     isTransparent: true,
     textures: {
-      all: "blocks/stone_diorite.png" // Fallback
+      all: "blocks/stone_diorite.png" 
     }
   },
   95: {
@@ -218,7 +218,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Dripstone Block",
     isTransparent: false,
     textures: {
-      all: "blocks/stone_granite.png" // Fallback
+      all: "blocks/stone_granite.png" 
     }
   },
   96: {
@@ -226,7 +226,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Glow Shroom",
     isTransparent: false,
     textures: {
-      all: "blocks/glowstone.png" // Glowing fallback
+      all: "blocks/glowstone.png" 
     }
   },
   97: {
@@ -234,7 +234,7 @@ export const BlockRegistry: Record<number, BlockDefinition> = {
     name: "Crystal",
     isTransparent: true,
     textures: {
-      all: "blocks/diamond_block.png" // Shiny fallback
+      all: "blocks/diamond_block.png" 
     }
   }
 };

@@ -222,7 +222,7 @@ let vmMirrorX = true;
 
 let vmBaseXMul = 0.65;
 let vmBaseY = -0.75;
-let vmBaseZ = 1.15; // New perspective baseline depth
+let vmBaseZ = 1.15; 
 
 let vmRotX = 0.22;
 let vmRotY = 0.1;
@@ -305,7 +305,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   if (stack && stack.id > 0 && stack.count > 0) {
     const def = (ITEM_DEFS as any)[stack.id] as ItemDef | undefined;
     
-    // 1. Icon Rendering 
     if (def && def.icon) {
       const img = document.createElement("img");
       img.src = def.icon;
@@ -325,7 +324,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       
       el.appendChild(img);
 
-      // 2. Rarity / Type Border Color
       if (def.color) {
         if (isSelected) {
            el.style.borderColor = def.color;
@@ -345,7 +343,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       el.appendChild(name);
     }
 
-    // 3. Count Overlay
     if (!def || (def.id < 1000)) {
       if (stack.count > 1 || (def && def.maxStack > 1)) {
         const count = document.createElement("div");
@@ -361,7 +358,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
       }
     }
 
-    // 4. Durability Overlay
     const dur = Number((stack as any).dur ?? 0);
     if (Number.isFinite(dur) && dur > 0) {
       const dEl = document.createElement("div");
@@ -1177,7 +1173,7 @@ function getStableScene(): BABYLON.Scene | null {
 }
 
 /* ===============================
-   9.01 Material Manager Integration
+   9.01 Material Manager Integration & Cross-Scene Cloner
 ================================ */
 let matManager: BlockMaterialManager | null = null;
 
@@ -1186,6 +1182,30 @@ function ensureMaterialManager(scene: BABYLON.Scene) {
     matManager = new BlockMaterialManager(scene);
     matManager.loadAllTextures().catch(console.error);
   }
+}
+
+// Babylon requires materials to be instantiated in the exact scene they are used in.
+// We grab the loaded textures from the world scene (via matManager) and create fresh mats for our overlays.
+function createOverlayMat(targetScene: BABYLON.Scene, sourceMatInfo: BABYLON.Material | BABYLON.Material[] | null | undefined): BABYLON.StandardMaterial {
+  const src = Array.isArray(sourceMatInfo) ? sourceMatInfo[0] : sourceMatInfo;
+  const mat = new BABYLON.StandardMaterial("overlayMat", targetScene);
+  mat.disableLighting = true;
+  mat.backFaceCulling = false;
+  mat.disableDepthWrite = true;
+  mat.depthFunction = BABYLON.Constants.ALWAYS;
+  (mat as any).fogEnabled = false;
+
+  if (src && src instanceof BABYLON.StandardMaterial && src.diffuseTexture) {
+    mat.diffuseTexture = src.diffuseTexture;
+    mat.emissiveTexture = src.diffuseTexture;
+    if (src.useAlphaFromDiffuseTexture) {
+      mat.useAlphaFromDiffuseTexture = true;
+      mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATESTANDBLEND;
+    }
+  } else {
+    mat.emissiveColor = new BABYLON.Color3(1, 0, 1);
+  }
+  return mat;
 }
 
 /* ===============================
@@ -1828,7 +1848,6 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
-  // Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
   const isUnarmed = heldId === 0;
   if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(isUnarmed);
   if (vmForeArmMesh) vmForeArmMesh.setEnabled(isUnarmed);
@@ -1857,13 +1876,8 @@ function updateVmItem() {
         def.tool.kind === "axe" ? Items.WOOD_LOG :
         Items.STONE;
 
-     let headMatInfo = matManager?.getMaterialForBlock(headId);
-     if (Array.isArray(headMatInfo)) headMatInfo = headMatInfo[0];
-     const headMat = headMatInfo as BABYLON.Material | undefined;
-
-     let handleMatInfo = matManager?.getMaterialForBlock(Items.WOOD_LOG);
-     if (Array.isArray(handleMatInfo)) handleMatInfo = handleMatInfo[0];
-     const handleMat = handleMatInfo as BABYLON.Material | undefined;
+     const headMatInfo = matManager?.getMaterialForBlock(headId);
+     const handleMatInfo = matManager?.getMaterialForBlock(Items.WOOD_LOG);
 
      if (def.tool.kind === "sword") {
          vmItemMesh.rotation.x = Math.PI / 4; 
@@ -1872,15 +1886,15 @@ function updateVmItem() {
          vmItemMesh.scaling.set(4, 4, 4);
 
          const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
-         if (handleMat) handle.material = handleMat;
+         handle.material = createOverlayMat(vmScene, handleMatInfo);
          handle.position.y = 0.02;
          
          const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
-         if (headMat) guard.material = headMat;
+         guard.material = createOverlayMat(vmScene, headMatInfo);
          guard.position.y = 0.16;
          
          const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
-         if (headMat) blade.material = headMat;
+         blade.material = createOverlayMat(vmScene, headMatInfo);
          blade.position.y = 0.56;
          
          handle.parent = vmItemMesh;
@@ -1896,11 +1910,11 @@ function updateVmItem() {
          vmItemMesh.scaling.set(3.5, 3.5, 3.5);
 
          const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
-         if (handleMat) handle.material = handleMat;
+         handle.material = createOverlayMat(vmScene, handleMatInfo);
          handle.position.y = 0.2;
          
          const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
-         if (headMat) head.material = headMat;
+         head.material = createOverlayMat(vmScene, headMatInfo);
          head.position.y = 0.45;
 
          if (def.tool.kind === "axe") {
@@ -1926,10 +1940,10 @@ function updateVmItem() {
         const m = matManager.getMaterialForBlock(heldId);
         if (Array.isArray(m)) {
             const multi = new BABYLON.MultiMaterial(`vmMulti_${heldId}`, vmScene);
-            m.forEach(mat => multi.subMaterials.push(mat));
+            m.forEach(mat => multi.subMaterials.push(createOverlayMat(vmScene!, mat)));
             box.material = multi;
         } else if (m) {
-            box.material = m;
+            box.material = createOverlayMat(vmScene, m);
         }
      }
      
@@ -2137,7 +2151,6 @@ function updateMobNameplate(root: BABYLON.TransformNode, id: string, hp: number,
     if (lastHp !== hp) {
         (root as any).__lastHp = hp;
         
-        // Type assertion to fix 'textAlign' error
         const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
         ctx.clearRect(0, 0, 256, 64);
 
@@ -2179,11 +2192,22 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   let parts: any = {};
 
   if (isMob) {
-    let baseMatInfo = matManager?.getMaterialForBlock(Items.DEEPSLATE);
-    if (Array.isArray(baseMatInfo)) baseMatInfo = baseMatInfo[0];
-    const baseMat = baseMatInfo as BABYLON.StandardMaterial | undefined;
+    const mobMat = new BABYLON.StandardMaterial(`rpMat:${id}`, rpScene);
+    mobMat.disableLighting = true;
+    mobMat.backFaceCulling = false;
+    (mobMat as any).fogEnabled = false;
 
-    const mobMat = baseMat ? baseMat.clone(`rpMat:${id}`) : makeRemoteMaterial(id, rpScene);
+    // Cross-scene material transfer: Grab the texture from matManager and assign to new material
+    const baseMatInfo = matManager?.getMaterialForBlock(Items.DEEPSLATE);
+    const baseMat = (Array.isArray(baseMatInfo) ? baseMatInfo[0] : baseMatInfo) as BABYLON.StandardMaterial | undefined;
+
+    if (baseMat && baseMat.diffuseTexture) {
+      mobMat.diffuseTexture = baseMat.diffuseTexture;
+      mobMat.emissiveTexture = baseMat.diffuseTexture;
+    } else {
+      mobMat.emissiveColor = new BABYLON.Color3(0.5, 0.5, 0.5); // Grey fallback
+    }
+
     remoteMats.set(id, mobMat);
     
     const body = BABYLON.MeshBuilder.CreateBox(`mobBody:${id}`, { width: 0.9, height: 0.9, depth: 0.6 }, rpScene);
@@ -2409,14 +2433,12 @@ function updateRemoteMeshes(dtSec: number) {
     target.set(t.x + rpRenderOffset.x, t.y + rpRenderOffset.y + REMOTE_Y_VISUAL_OFFSET, t.z + rpRenderOffset.z);
     remoteTargetPos.set(id, target);
 
-    // Smooth position interpolation
     const lerp = 1 - Math.pow(0.001, dtSec);
     root.position.x += (target.x - root.position.x) * lerp;
     root.position.y += (target.y - root.position.y) * lerp;
     root.position.z += (target.z - root.position.z) * lerp;
 
     if (typeof t.yaw === "number") {
-      // Smooth rotation interpolation
       let dyaw = t.yaw - root.rotation.y;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
       while (dyaw < -Math.PI) dyaw += Math.PI * 2;
@@ -2439,7 +2461,6 @@ function updateRemoteMeshes(dtSec: number) {
     const parts = (root as any).__parts;
     const mat = remoteMats.get(id);
 
-    // Update Health Bar / Nameplate
     const hp = t.hp ?? 100;
     const maxHp = t.maxHp ?? 100;
     updateMobNameplate(root, id, hp, maxHp);
@@ -2509,12 +2530,10 @@ function updateRemoteMeshes(dtSec: number) {
       if (swingTime && now - swingTime < 600) {
         const elapsed = now - swingTime;
         if (elapsed < 200) {
-          // 200ms Windup: Rear back
           const t = elapsed / 200;
           armPitch = -0.8 * t;
           bodyPitch = -0.2 * t;
         } else {
-          // 400ms Smash: Overhead swing and forward lean
           const t = (elapsed - 200) / 400;
           armPitch = Math.sin(t * Math.PI) * 2.5 - 0.8 * (1 - t);
           bodyPitch = Math.sin(t * Math.PI) * 0.4;
