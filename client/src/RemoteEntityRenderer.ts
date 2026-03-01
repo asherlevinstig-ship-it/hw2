@@ -61,7 +61,7 @@ export class RemoteEntityRenderer {
 
     if (!this.glowLayer) {
       this.glowLayer = new BABYLON.GlowLayer("rpGlow", this.scene);
-      this.glowLayer.intensity = 0.4;
+      this.glowLayer.intensity = 0.6; // Bumped up glow intensity slightly for the magic
     }
 
     if (!this.engineHooked) {
@@ -133,6 +133,25 @@ export class RemoteEntityRenderer {
         mat.depthFunction = BABYLON.Constants.LESS;
       }
     }
+  }
+
+  // Helper to cleanly grab textures across scenes
+  private getMat(matManager: BlockMaterialManager | null, blockId: number, fallback: BABYLON.Color3): BABYLON.StandardMaterial {
+    const mat = new BABYLON.StandardMaterial(`mat_${blockId}`, this.scene!);
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    (mat as any).fogEnabled = false;
+
+    const baseInfo = matManager?.getMaterialForBlock(blockId);
+    const baseMat = (Array.isArray(baseInfo) ? baseInfo[0] : baseInfo) as BABYLON.StandardMaterial | undefined;
+
+    if (baseMat && baseMat.diffuseTexture) {
+      mat.diffuseTexture = baseMat.diffuseTexture;
+      mat.emissiveTexture = baseMat.diffuseTexture;
+    } else {
+      mat.emissiveColor = fallback;
+    }
+    return mat;
   }
 
   private makeRemoteMaterial(id: string): BABYLON.StandardMaterial {
@@ -224,21 +243,104 @@ export class RemoteEntityRenderer {
 
     let parts: any = {};
 
-    if (isMob) {
+    if (isGiant) {
+      // THE ANCIENT WARDEN RIG
+      const stoneMat = this.getMat(matManager, Items.DEEPSLATE, new BABYLON.Color3(0.2, 0.2, 0.2));
+      const goldMat = this.getMat(matManager, Items.RAW_GOLD, new BABYLON.Color3(1, 0.8, 0));
+      
+      const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
+      magicMat.disableLighting = true;
+      magicMat.emissiveColor = new BABYLON.Color3(0, 1, 1);
+      (magicMat as any).fogEnabled = false;
+
+      // Imposing V-shaped Torso
+      const body = BABYLON.MeshBuilder.CreateBox(`gBody:${id}`, { width: 1.4, height: 1.8, depth: 0.8 }, this.scene);
+      body.material = stoneMat;
+      body.position.y = 1.8;
+
+      // Glowing Magic Core sticking out of the chest
+      const chestCore = BABYLON.MeshBuilder.CreateBox(`gCore:${id}`, { width: 0.5, height: 0.5, depth: 0.9 }, this.scene);
+      chestCore.material = magicMat;
+      chestCore.parent = body;
+
+      // Slightly floating Head
+      const head = BABYLON.MeshBuilder.CreateBox(`gHead:${id}`, { width: 0.6, height: 0.6, depth: 0.6 }, this.scene);
+      head.material = stoneMat;
+      head.position.y = 3.0;
+
+      // Majestic Glowing Halo
+      const halo = BABYLON.MeshBuilder.CreateTorus(`gHalo:${id}`, { diameter: 1.2, thickness: 0.1, tessellation: 16 }, this.scene);
+      halo.material = magicMat;
+      halo.parent = head;
+      halo.position.y = 0.5;
+
+      // Massive Golden Pauldrons
+      const pL = BABYLON.MeshBuilder.CreateBox(`gPL:${id}`, { width: 0.6, height: 0.5, depth: 0.9 }, this.scene);
+      pL.material = goldMat;
+      pL.position.set(-1.0, 2.5, 0);
+
+      const pR = BABYLON.MeshBuilder.CreateBox(`gPR:${id}`, { width: 0.6, height: 0.5, depth: 0.9 }, this.scene);
+      pR.material = goldMat;
+      pR.position.set(1.0, 2.5, 0);
+
+      // Long imposing arms
+      const armL = BABYLON.MeshBuilder.CreateBox(`gArmL:${id}`, { width: 0.4, height: 2.0, depth: 0.4 }, this.scene);
+      armL.material = stoneMat;
+      armL.position.set(-1.0, 1.2, 0);
+
+      const armR = BABYLON.MeshBuilder.CreateBox(`gArmR:${id}`, { width: 0.4, height: 2.0, depth: 0.4 }, this.scene);
+      armR.material = stoneMat;
+      armR.position.set(1.0, 1.2, 0);
+
+      // Pillar Legs
+      const legL = BABYLON.MeshBuilder.CreateBox(`gLegL:${id}`, { width: 0.5, height: 1.0, depth: 0.5 }, this.scene);
+      legL.material = stoneMat;
+      legL.position.set(-0.4, 0.5, 0);
+
+      const legR = BABYLON.MeshBuilder.CreateBox(`gLegR:${id}`, { width: 0.5, height: 1.0, depth: 0.5 }, this.scene);
+      legR.material = stoneMat;
+      legR.position.set(0.4, 0.5, 0);
+
+      // Giant Golden Staff in right arm
+      const staff = BABYLON.MeshBuilder.CreateCylinder(`gStaff:${id}`, { height: 4.0, diameter: 0.15 }, this.scene);
+      staff.material = goldMat;
+      staff.parent = armR;
+      staff.position.set(0, -0.5, 0.4);
+      staff.rotation.x = Math.PI / 8;
+
+      // Spinning Magic Crystal at the top of the staff
+      const crystal = BABYLON.MeshBuilder.CreateSphere(`gCrys:${id}`, { diameter: 0.6, segments: 4 }, this.scene);
+      crystal.material = magicMat;
+      crystal.parent = staff;
+      crystal.position.y = 2.0;
+
+      // Attach everything to root safely
+      [body, head, pL, pR, armL, armR, legL, legR, halo, chestCore, staff, crystal].forEach(m => {
+          m.isPickable = false;
+          if (!m.parent) m.parent = root;
+          (m as any).isInFrustum = () => true;
+      });
+
+      // Overall Scale
+      root.scaling.set(3, 3, 3); 
+
+      parts = { body, head, pL, pR, armL, armR, legL, legR, halo, crystal, magicMat };
+
+    } else if (isMob) {
+      // STANDARD GOLEM RIG
       const mobMat = new BABYLON.StandardMaterial(`rpMat:${id}`, this.scene);
       mobMat.disableLighting = true;
       mobMat.backFaceCulling = false;
       (mobMat as any).fogEnabled = false;
 
-      const targetBlock = isGiant ? Items.RAW_GOLD : Items.DEEPSLATE;
-      const baseMatInfo = matManager?.getMaterialForBlock(targetBlock);
+      const baseMatInfo = matManager?.getMaterialForBlock(Items.DEEPSLATE);
       const baseMat = (Array.isArray(baseMatInfo) ? baseMatInfo[0] : baseMatInfo) as BABYLON.StandardMaterial | undefined;
 
       if (baseMat && baseMat.diffuseTexture) {
         mobMat.diffuseTexture = baseMat.diffuseTexture;
         mobMat.emissiveTexture = baseMat.diffuseTexture;
       } else {
-        mobMat.emissiveColor = isGiant ? new BABYLON.Color3(1, 0.8, 0) : new BABYLON.Color3(0.5, 0.5, 0.5); 
+        mobMat.emissiveColor = new BABYLON.Color3(0.5, 0.5, 0.5); 
       }
 
       this.mats.set(id, mobMat);
@@ -270,7 +372,7 @@ export class RemoteEntityRenderer {
 
       const eyeMat = new BABYLON.StandardMaterial(`mobEyeMat:${id}`, this.scene);
       eyeMat.disableLighting = true;
-      eyeMat.emissiveColor = isGiant ? new BABYLON.Color3(0, 1, 1) : new BABYLON.Color3(1, 0.1, 0.1); 
+      eyeMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1); 
       (eyeMat as any).fogEnabled = false;
 
       const eyeL = BABYLON.MeshBuilder.CreateBox(`mobEyeL:${id}`, { size: 0.1 }, this.scene);
@@ -284,24 +386,19 @@ export class RemoteEntityRenderer {
       eyeR.material = eyeMat;
 
       const orbiters: BABYLON.Mesh[] = [];
-      if (!isGiant) {
-          for(let i=0; i<3; i++) {
-              const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, this.scene);
-              orb.material = eyeMat; 
-              orb.parent = root;
-              orb.isPickable = false;
-              (orb as any).isInFrustum = () => true;
-              orbiters.push(orb);
-          }
-      }
-
-      if (isGiant) {
-          root.scaling.set(4, 4, 4); 
+      for(let i=0; i<3; i++) {
+          const orb = BABYLON.MeshBuilder.CreateBox(`mobOrb${i}:${id}`, {size: 0.15}, this.scene);
+          orb.material = eyeMat; 
+          orb.parent = root;
+          orb.isPickable = false;
+          (orb as any).isInFrustum = () => true;
+          orbiters.push(orb);
       }
 
       parts = { body, head, armL, armR, legL, legR, eyeMat, orbiters, mobMat };
 
     } else {
+      // STANDARD PLAYER RIG
       const BODY_W = 0.65;
       const BODY_H = 0.95;
       const BODY_D = 0.32;
@@ -406,8 +503,11 @@ export class RemoteEntityRenderer {
       const root = this.ensureRemoteMesh(id, matManager);
       if (!root) continue;
 
+      const isGiant = (root as any).__isGiant;
+      const targetYOffset = isGiant ? -0.5 : this.Y_VISUAL_OFFSET;
+
       const target = this.targetPos.get(id) ?? new BABYLON.Vector3();
-      target.set(t.x + this.renderOffset.x, t.y + this.renderOffset.y + this.Y_VISUAL_OFFSET, t.z + this.renderOffset.z);
+      target.set(t.x + this.renderOffset.x, t.y + this.renderOffset.y + targetYOffset, t.z + this.renderOffset.z);
       this.targetPos.set(id, target);
 
       const lerp = 1 - Math.pow(0.001, dtSec);
@@ -442,7 +542,28 @@ export class RemoteEntityRenderer {
       const maxHp = t.maxHp ?? 100;
       this.updateMobNameplate(root, id, hp, maxHp);
 
-      if (isMob) {
+      if (isGiant) {
+        // MAJESTIC GIANT IDLE ANIMATION
+        const floatY = Math.sin(now * 0.001) * 0.15;
+        
+        parts.body.position.y = 1.8 + floatY;
+        parts.head.position.y = 3.0 + floatY * 1.2; 
+        
+        // Spinning Magic parts
+        parts.halo.rotation.y += dtSec * 1.5;
+        parts.crystal.rotation.y += dtSec * 2.0;
+        parts.crystal.rotation.x += dtSec * 1.0;
+
+        // Flash behavior if hit (even though he has infinite HP)
+        const flashTime = remoteFlashes.get(id);
+        const isHit = flashTime && now - flashTime < 200;
+        if (parts.magicMat) {
+            if (isHit) parts.magicMat.emissiveColor.set(1, 1, 1);
+            else parts.magicMat.emissiveColor.set(0, 1, 1);
+        }
+
+      } else if (isMob) {
+        // STANDARD MOB ANIMATION
         const healthPct = hp / Math.max(1, maxHp);
         const isRaging = healthPct < 0.5;
 
@@ -530,6 +651,7 @@ export class RemoteEntityRenderer {
             parts.armR.rotation.x = swing * 0.5 - armPitch;
         }
       } else {
+        // STANDARD PLAYER ANIMATION
         if (parts?.legL && parts?.legR && parts?.armL && parts?.armR && parts?.body && parts?.head) {
           const moving = speed > 0.15;
           const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
