@@ -13,6 +13,9 @@ import {
   type ItemDef,
 } from "./shared/items";
 
+import { BlockRegistry } from "./BlockRegistry";
+import { BlockMaterialManager } from "./BlockMaterialManager";
+
 import {
   appEl, classOverlay, selectedClassId, confirmBtn, overlay, coordsHUD,
   healthHUD, manaHUD, hudHotbarRoot, showZoneNotification, createStatIcon,
@@ -72,167 +75,55 @@ confirmBtn.onclick = () => {
 };
 
 /* ===============================
-   5. Register Blocks & Materials (VERTICAL STRIP ATLAS)
+   5. Register Blocks & Materials (Dynamic from Registry)
 ================================ */
-const GRASS_ID = 1;
-const DIRT_ID = 2;
-const STONE_ID = 3;
-const WOOD_ID = 4;
-const LEAVES_ID = 5;
+const registeredNoaMats = new Set<string>();
 
-const BEDROCK_ID = 6;
-const COAL_ORE_ID = 30;
-const IRON_ORE_ID = 31;
-const GOLD_ORE_ID = 32;
-const DIAMOND_ORE_ID = 33;
-
-const CHEST_ID = 8; // Interactive container
-
-const SAND_ID = 11;
-const SNOW_ID = 12;
-
-const DEEPSLATE_ID = 90;
-const TUFF_ID = 91;
-const MOSS_ID = 92;
-const MOSSY_STONE_ID = 93;
-const DRIPSTONE_ID = 94;
-const DRIPSTONE_BLOCK_ID = 95;
-const GLOW_SHROOM_ID = 96;
-const CRYSTAL_ID = 97;
-
-// New Interior Textures
-const PLANKS_ID = 40;
-const STONE_BRICKS_ID = 41;
-const CARPET_ID = 42;
-const GLASS_ID = 43;
-const LANTERN_ID = 44;
-
-const TERRAIN_ATLAS_URL = new URL(
-  "./assets/terrain_atlas.png",
-  import.meta.url
-).href;
-
-const ATLAS = {
-  GRASS_TOP: 0,
-  GRASS_SIDE: 1,
-  DIRT: 2,
-  STONE: 3,
-  WOOD: 4,
-  LEAVES: 5,
-  BEDROCK: 6,
-  COAL_ORE: 7,
-  IRON_ORE: 8,
-  GOLD_ORE: 9,
-  DIAMOND_ORE: 10,
-
-  SAND: 11,
-  SNOW: 12,
-
-  DEEPSLATE: 13,
-  TUFF: 14,
-  MOSS: 15,
-  MOSSY_STONE: 16,
-  DRIPSTONE: 17,
-  DRIPSTONE_BLOCK: 18,
-  GLOW_SHROOM: 19,
-  CRYSTAL: 20,
-
-  PLANKS: 21,
-  STONE_BRICKS: 22,
-  CARPET: 23,
-  GLASS: 24,
-  LANTERN: 25
-} as const;
-
-const ATLAS_TILE_COUNT = 26;
-
-function registerAtlasMaterial(
-  name: string,
-  opts: { textureURL: string; atlasIndex: number; texHasAlpha?: boolean }
-) {
-  noa.registry.registerMaterial(name, opts as any);
+function registerNoaMat(name: string, url: string, hasAlpha: boolean) {
+  if (registeredNoaMats.has(name)) return;
+  noa.registry.registerMaterial(name, { textureURL: url, texHasAlpha: hasAlpha });
+  registeredNoaMats.add(name);
 }
 
-registerAtlasMaterial("grass_top", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_TOP });
-registerAtlasMaterial("grass_side", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GRASS_SIDE });
-registerAtlasMaterial("dirt", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIRT });
-registerAtlasMaterial("stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE });
-registerAtlasMaterial("wood", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.WOOD });
-registerAtlasMaterial("leaves", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LEAVES, texHasAlpha: true });
+for (const stringId in BlockRegistry) {
+  const id = Number(stringId);
+  if (id === 0) continue; // Air
 
-registerAtlasMaterial("bedrock", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.BEDROCK });
-registerAtlasMaterial("coal_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.COAL_ORE });
-registerAtlasMaterial("iron_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.IRON_ORE });
-registerAtlasMaterial("gold_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GOLD_ORE });
-registerAtlasMaterial("diamond_ore", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DIAMOND_ORE });
+  const def = BlockRegistry[id];
+  const tex = def.textures;
 
-registerAtlasMaterial("sand", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.SAND });
-registerAtlasMaterial("snow", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.SNOW });
+  if (tex.all) {
+    const matName = `mat_${id}_all`;
+    registerNoaMat(matName, tex.all, def.isTransparent);
+    noa.registry.registerBlock(id, { material: matName, opaque: !def.isTransparent });
+  } else {
+    const matTop = `mat_${id}_top`;
+    const matBot = `mat_${id}_bottom`;
+    const matSide = `mat_${id}_side`;
+    const matFront = `mat_${id}_front`;
 
-registerAtlasMaterial("deepslate", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DEEPSLATE });
-registerAtlasMaterial("tuff", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.TUFF });
-registerAtlasMaterial("moss", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.MOSS, texHasAlpha: true });
-registerAtlasMaterial("mossy_stone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.MOSSY_STONE });
-registerAtlasMaterial("dripstone", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DRIPSTONE, texHasAlpha: true });
-registerAtlasMaterial("dripstone_block", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.DRIPSTONE_BLOCK });
-registerAtlasMaterial("glow_shroom", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLOW_SHROOM, texHasAlpha: true });
-registerAtlasMaterial("crystal", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CRYSTAL, texHasAlpha: true });
+    if (tex.top) registerNoaMat(matTop, tex.top, def.isTransparent);
+    if (tex.bottom) registerNoaMat(matBot, tex.bottom, def.isTransparent);
+    if (tex.side) registerNoaMat(matSide, tex.side, def.isTransparent);
+    if (tex.front) registerNoaMat(matFront, tex.front, def.isTransparent);
 
-// New Interior Textures
-registerAtlasMaterial("planks", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.PLANKS });
-registerAtlasMaterial("stone_bricks", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.STONE_BRICKS });
-registerAtlasMaterial("carpet", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.CARPET });
-registerAtlasMaterial("glass", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.GLASS, texHasAlpha: true });
-registerAtlasMaterial("lantern", { textureURL: TERRAIN_ATLAS_URL, atlasIndex: ATLAS.LANTERN, texHasAlpha: true });
+    // left, right, top, bottom, front, back
+    const topTex = tex.top ? matTop : matSide;
+    const botTex = tex.bottom ? matBot : matSide;
+    const frontTex = tex.front ? matFront : matSide;
 
-noa.registry.registerBlock(GRASS_ID, { material: ["grass_top", "dirt", "grass_side"] });
-noa.registry.registerBlock(DIRT_ID, { material: "dirt" });
-noa.registry.registerBlock(STONE_ID, { material: "stone" });
-noa.registry.registerBlock(WOOD_ID, { material: "wood" });
-noa.registry.registerBlock(LEAVES_ID, { material: "leaves", opaque: false });
-
-noa.registry.registerBlock(BEDROCK_ID, { material: "bedrock" });
-noa.registry.registerBlock(COAL_ORE_ID, { material: "coal_ore" });
-noa.registry.registerBlock(IRON_ORE_ID, { material: "iron_ore" });
-noa.registry.registerBlock(GOLD_ORE_ID, { material: "gold_ore" });
-noa.registry.registerBlock(DIAMOND_ORE_ID, { material: "diamond_ore" });
-
-noa.registry.registerBlock(SAND_ID, { material: "sand" });
-noa.registry.registerBlock(SNOW_ID, { material: "snow" });
-
-noa.registry.registerBlock(DEEPSLATE_ID, { material: "deepslate" });
-noa.registry.registerBlock(TUFF_ID, { material: "tuff" });
-noa.registry.registerBlock(MOSS_ID, { material: "moss", opaque: false });
-noa.registry.registerBlock(MOSSY_STONE_ID, { material: "mossy_stone" });
-noa.registry.registerBlock(DRIPSTONE_ID, { material: "dripstone", opaque: false });
-noa.registry.registerBlock(DRIPSTONE_BLOCK_ID, { material: "dripstone_block" });
-noa.registry.registerBlock(GLOW_SHROOM_ID, { material: "glow_shroom", opaque: false });
-noa.registry.registerBlock(CRYSTAL_ID, { material: "crystal", opaque: false });
-
-// New Interior Blocks
-noa.registry.registerBlock(PLANKS_ID, { material: "planks" });
-noa.registry.registerBlock(STONE_BRICKS_ID, { material: "stone_bricks" });
-noa.registry.registerBlock(CARPET_ID, { material: "carpet" });
-noa.registry.registerBlock(GLASS_ID, { material: "glass", opaque: false });
-noa.registry.registerBlock(LANTERN_ID, { material: "lantern", opaque: false });
-
-// Register Chest cleanly using the gold ore texture
-noa.registry.registerBlock(CHEST_ID, { material: "gold_ore" });
+    noa.registry.registerBlock(id, {
+      material: [matSide, matSide, topTex, botTex, frontTex, matSide],
+      opaque: !def.isTransparent
+    });
+  }
+}
 
 /* ===============================
-   5.1 Debug Tools: ID Registry & Structure Validation
+   5.1 Debug Tools: ID Registry Validation
 ================================ */
-const REGISTERED_BLOCK_IDS = new Set<number>([
-  GRASS_ID, DIRT_ID, STONE_ID, WOOD_ID, LEAVES_ID, BEDROCK_ID,
-  COAL_ORE_ID, IRON_ORE_ID, GOLD_ORE_ID, DIAMOND_ORE_ID,
-  SAND_ID, SNOW_ID, DEEPSLATE_ID, TUFF_ID, MOSS_ID,
-  MOSSY_STONE_ID, DRIPSTONE_ID, DRIPSTONE_BLOCK_ID, GLOW_SHROOM_ID, CRYSTAL_ID,
-  PLANKS_ID, STONE_BRICKS_ID, CARPET_ID, GLASS_ID, LANTERN_ID,
-  CHEST_ID
-]);
-
 function isRegisteredBlockId(id: number) {
-  return id === 0 || REGISTERED_BLOCK_IDS.has(id); 
+  return id === 0 || !!BlockRegistry[id]; 
 }
 
 (globalThis as any).__debugStructureIds = (structure: any) => {
@@ -259,10 +150,6 @@ function isRegisteredBlockId(id: number) {
   console.log("[STRUCT] block id counts:", sorted.slice(0, 30).map(([id, c]) => ({ id, count: c })));
   console.log("[STRUCT] unknown ids (NOT registered client-side):", unknown.map(([id, c]) => ({ id, count: c })));
   console.log("[STRUCT] blocks missing/invalid id fields:", missingId);
-};
-
-(globalThis as any).__listRegisteredBlocks = () => {
-  console.log("[STRUCT] REGISTERED_BLOCK_IDS:", Array.from(REGISTERED_BLOCK_IDS.values()).sort((a, b) => a - b));
 };
 
 /* ===============================
@@ -1227,7 +1114,7 @@ noa.inputs.down.on("alt-fire", () => {
   // CHECK FOR INTERACTION FIRST
   const targetedBlockId = noa.world.getBlockID(target.pos.x, target.pos.y, target.pos.z);
   
-  if (targetedBlockId === CHEST_ID) {
+  if (targetedBlockId === Items.CHEST) {
       // Send Interact
       if (room) room.send("interact", { x: target.pos.x, y: target.pos.y, z: target.pos.z });
       return; // Stop processing placement
@@ -1287,6 +1174,18 @@ function getStableScene(): BABYLON.Scene | null {
     cachedSceneUid = uid ?? null;
   }
   return cachedScene;
+}
+
+/* ===============================
+   9.01 Material Manager Integration
+================================ */
+let matManager: BlockMaterialManager | null = null;
+
+function ensureMaterialManager(scene: BABYLON.Scene) {
+  if (!matManager) {
+    matManager = new BlockMaterialManager(scene);
+    matManager.loadAllTextures().catch(console.error);
+  }
 }
 
 /* ===============================
@@ -1430,84 +1329,6 @@ function updateCrackVisual(scene: BABYLON.Scene) {
 /* ===============================
    9.2 Drop visuals
 ================================ */
-const dropAtlasMats = new Map<number, BABYLON.StandardMaterial>();
-let dropAtlasMatsSceneUid: string | number | null = null;
-
-function resetDropAtlasMatsIfSceneChanged(scene: BABYLON.Scene) {
-  const uid = (scene as any).uid as string | number | undefined;
-  const suid = uid ?? null;
-  if (dropAtlasMatsSceneUid !== suid) {
-    for (const m of dropAtlasMats.values()) {
-      try { m.dispose(); } catch {}
-    }
-    dropAtlasMats.clear();
-    dropAtlasMatsSceneUid = suid;
-  }
-}
-
-function getDropAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
-  resetDropAtlasMatsIfSceneChanged(scene);
-
-  const key = (atlasIndex | 0) + (alpha ? 10000 : 0);
-  const existing = dropAtlasMats.get(key);
-  if (existing) return existing;
-
-  const mat = new BABYLON.StandardMaterial(`dropAtlasMat:${key}`, scene);
-  mat.disableLighting = true;
-  mat.specularColor = new BABYLON.Color3(0, 0, 0);
-  mat.backFaceCulling = true;
-  (mat as any).fogEnabled = false;
-
-  const tex = new BABYLON.Texture(TERRAIN_ATLAS_URL, scene, false, false);
-  tex.hasAlpha = !!alpha;
-  tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-  tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-  tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-
-  const idx = Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0));
-  tex.uScale = 1;
-  tex.vScale = 1 / ATLAS_TILE_COUNT;
-  tex.uOffset = 0;
-  tex.vOffset = 1 - (idx + 1) / ATLAS_TILE_COUNT;
-
-  mat.diffuseTexture = tex;
-  mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
-
-  dropAtlasMats.set(key, mat);
-  return mat;
-}
-
-function itemIdToAtlasIndex(itemId: number): number {
-  if (itemId === Items.GRASS) return ATLAS.GRASS_SIDE;
-  if (itemId === Items.DIRT) return ATLAS.DIRT;
-  if (itemId === Items.STONE) return ATLAS.STONE;
-  if (itemId === Items.WOOD_LOG) return ATLAS.WOOD;
-  if (itemId === Items.LEAVES) return ATLAS.LEAVES;
-  if (itemId === Items.COAL) return ATLAS.COAL_ORE;
-  if (itemId === Items.RAW_IRON) return ATLAS.IRON_ORE;
-  if (itemId === Items.RAW_GOLD) return ATLAS.GOLD_ORE;
-  if (itemId === Items.DIAMOND) return ATLAS.DIAMOND_ORE;
-  if ((Items as any).SAND && itemId === (Items as any).SAND) return ATLAS.SAND;
-  if ((Items as any).SNOW && itemId === (Items as any).SNOW) return ATLAS.SNOW;
-  if ((Items as any).DEEPSLATE && itemId === (Items as any).DEEPSLATE) return ATLAS.DEEPSLATE;
-  if ((Items as any).TUFF && itemId === (Items as any).TUFF) return ATLAS.TUFF;
-  if ((Items as any).MOSS && itemId === (Items as any).MOSS) return ATLAS.MOSS;
-  if ((Items as any).MOSSY_STONE && itemId === (Items as any).MOSSY_STONE) return ATLAS.MOSSY_STONE;
-  if ((Items as any).DRIPSTONE && itemId === (Items as any).DRIPSTONE) return ATLAS.DRIPSTONE;
-  if ((Items as any).DRIPSTONE_BLOCK && itemId === (Items as any).DRIPSTONE_BLOCK) return ATLAS.DRIPSTONE_BLOCK;
-  if ((Items as any).GLOW_SHROOM && itemId === (Items as any).GLOW_SHROOM) return ATLAS.GLOW_SHROOM;
-  if ((Items as any).CRYSTAL && itemId === (Items as any).CRYSTAL) return ATLAS.CRYSTAL;
-  
-  if (itemId === PLANKS_ID) return ATLAS.PLANKS;
-  if (itemId === STONE_BRICKS_ID) return ATLAS.STONE_BRICKS;
-  if (itemId === CARPET_ID) return ATLAS.CARPET;
-  if (itemId === GLASS_ID) return ATLAS.GLASS;
-  if (itemId === LANTERN_ID) return ATLAS.LANTERN;
-
-  return ATLAS.STONE;
-}
-
 function disposeAllDropMeshes() {
   for (const m of dropMeshes.values()) {
     try { m.dispose(); } catch {}
@@ -1531,17 +1352,16 @@ function ensureDropVisuals(scene: BABYLON.Scene) {
     box.isPickable = false;
     (box as any).isInFrustum = () => true;
 
-    const tile = itemIdToAtlasIndex(d.itemId);
-    const alpha =
-      d.itemId === Items.LEAVES ||
-      d.itemId === (Items as any).MOSS ||
-      d.itemId === (Items as any).DRIPSTONE ||
-      d.itemId === (Items as any).GLOW_SHROOM ||
-      d.itemId === (Items as any).CRYSTAL ||
-      d.itemId === GLASS_ID ||
-      d.itemId === LANTERN_ID;
+    if (matManager) {
+      const matInfo = matManager.getMaterialForBlock(d.itemId);
+      if (Array.isArray(matInfo)) {
+          // It's a block with different faces, we can just assign the Side material for the rotating drop icon
+          box.material = matInfo[0]; 
+      } else if (matInfo) {
+          box.material = matInfo;
+      }
+    }
 
-    box.material = getDropAtlasMaterial(scene, tile, !!alpha);
     box.rotation.x = 0.25;
     box.rotation.y = Math.random() * Math.PI * 2;
     box.position.set(d.x, d.y, d.z);
@@ -2002,32 +1822,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
 let currentVmItemId = -1;
 let vmItemMesh: BABYLON.TransformNode | null = null;
 
-function getVmAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
-  const mat = new BABYLON.StandardMaterial(`vmAtlasMat:${atlasIndex}:${alpha ? 1 : 0}`, scene);
-  mat.disableLighting = true;            
-  mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  mat.specularColor = new BABYLON.Color3(0, 0, 0);
-  mat.backFaceCulling = false;
-  mat.disableDepthWrite = true;
-  mat.depthFunction = BABYLON.Constants.ALWAYS;
-
-  const tex = new BABYLON.Texture(TERRAIN_ATLAS_URL, scene, false, false);
-  tex.hasAlpha = !!alpha;
-  tex.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-  tex.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-  tex.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-
-  const idx = Math.max(0, Math.min(ATLAS_TILE_COUNT - 1, atlasIndex | 0));
-  tex.uScale = 1;
-  tex.vScale = 1 / ATLAS_TILE_COUNT;
-  tex.uOffset = 0;
-  tex.vOffset = 1 - (idx + 1) / ATLAS_TILE_COUNT;
-
-  mat.diffuseTexture = tex;
-  mat.opacityTexture = alpha ? tex : null;   
-  return mat;
-}
-
 function updateVmItem() {
   if (!vmScene || !vmArmRoot) return;
 
@@ -2048,105 +1842,98 @@ function updateVmItem() {
     vmItemMesh = null;
   }
 
-  // If unarmed, we simply return since the arm is already shown above
   if (isUnarmed) return;
 
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
-  
-  // Attach to the arm root so it gets the sway/punch kinematics but ignores the hand's local offsets
   vmItemMesh.parent = vmArmRoot;
 
-  const headTile =
-    def.tool?.kind === "sword" ? ATLAS.IRON_ORE :
-    def.tool?.kind === "pick" ? ATLAS.STONE :
-    def.tool?.kind === "axe" ? ATLAS.WOOD :
-    ATLAS.STONE;
+  if (def.tool) {
+     const headId = 
+        def.tool.kind === "sword" ? Items.RAW_IRON :
+        def.tool.kind === "pick" ? Items.STONE :
+        def.tool.kind === "axe" ? Items.WOOD_LOG :
+        Items.STONE;
 
-  const headMat = getVmAtlasMaterial(vmScene, headTile, false);
-  const handleMat = getVmAtlasMaterial(vmScene, ATLAS.WOOD, false);
+     let headMatInfo = matManager?.getMaterialForBlock(headId);
+     if (Array.isArray(headMatInfo)) headMatInfo = headMatInfo[0];
+     const headMat = headMatInfo as BABYLON.Material | undefined;
 
-  if (def.tool?.kind === "sword") {
-     vmItemMesh.rotation.x = Math.PI / 4; 
-     vmItemMesh.rotation.y = 0;
-     vmItemMesh.rotation.z = 0;
+     let handleMatInfo = matManager?.getMaterialForBlock(Items.WOOD_LOG);
+     if (Array.isArray(handleMatInfo)) handleMatInfo = handleMatInfo[0];
+     const handleMat = handleMatInfo as BABYLON.Material | undefined;
 
-     // Minecraft-style HUGE scaling
-     vmItemMesh.scaling.set(4, 4, 4);
+     if (def.tool.kind === "sword") {
+         vmItemMesh.rotation.x = Math.PI / 4; 
+         vmItemMesh.rotation.y = 0;
+         vmItemMesh.rotation.z = 0;
+         vmItemMesh.scaling.set(4, 4, 4);
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
-     handle.material = handleMat;
-     handle.position.y = 0.02;
-     
-     const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
-     guard.material = headMat;
-     guard.position.y = 0.16;
-     
-     const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
-     blade.material = headMat;
-     blade.position.y = 0.56;
-     
-     handle.parent = vmItemMesh;
-     guard.parent = vmItemMesh;
-     blade.parent = vmItemMesh;
+         const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
+         if (handleMat) handle.material = handleMat;
+         handle.position.y = 0.02;
+         
+         const guard = BABYLON.MeshBuilder.CreateBox("guard", { width: 0.22, height: 0.06, depth: 0.10 }, vmScene);
+         if (headMat) guard.material = headMat;
+         guard.position.y = 0.16;
+         
+         const blade = BABYLON.MeshBuilder.CreateBox("blade", { width: 0.10, height: 0.75, depth: 0.03 }, vmScene);
+         if (headMat) blade.material = headMat;
+         blade.position.y = 0.56;
+         
+         handle.parent = vmItemMesh;
+         guard.parent = vmItemMesh;
+         blade.parent = vmItemMesh;
 
-     // Centered and forward for massive impact
-     vmItemMesh.position.set(0.3, -0.4, 0.5);
+         vmItemMesh.position.set(0.3, -0.4, 0.5);
 
-  } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
-     vmItemMesh.rotation.x = Math.PI / 4;
-     vmItemMesh.rotation.y = -Math.PI / 10;
-     vmItemMesh.rotation.z = 0;
+     } else if (def.tool.kind === "pick" || def.tool.kind === "axe") {
+         vmItemMesh.rotation.x = Math.PI / 4;
+         vmItemMesh.rotation.y = -Math.PI / 10;
+         vmItemMesh.rotation.z = 0;
+         vmItemMesh.scaling.set(3.5, 3.5, 3.5);
 
-     // Minecraft-style HUGE scaling
-     vmItemMesh.scaling.set(3.5, 3.5, 3.5);
+         const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
+         if (handleMat) handle.material = handleMat;
+         handle.position.y = 0.2;
+         
+         const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
+         if (headMat) head.material = headMat;
+         head.position.y = 0.45;
 
-     const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
-     handle.material = handleMat;
-     handle.position.y = 0.2;
-     
-     const head = BABYLON.MeshBuilder.CreateBox("head", { width: 0.45, height: 0.10, depth: 0.10 }, vmScene);
-     head.material = headMat;
-     head.position.y = 0.45;
+         if (def.tool.kind === "axe") {
+           head.position.x = 0.08;
+           head.scaling.set(0.6, 2.5, 1);
+         }
+         
+         handle.parent = vmItemMesh;
+         head.parent = vmItemMesh;
 
-     if (def.tool.kind === "axe") {
-       head.position.x = 0.08;
-       head.scaling.set(0.6, 2.5, 1);
+         vmItemMesh.position.set(0.3, -0.4, 0.5);
      }
-     
-     handle.parent = vmItemMesh;
-     head.parent = vmItemMesh;
-
-     // Centered and forward
-     vmItemMesh.position.set(0.3, -0.4, 0.5);
-
   } else {
-     // Blocks or Raw Items (Cubes)
+     // Blocks or Raw Items
      vmItemMesh.rotation.x = Math.PI / 8;
      vmItemMesh.rotation.y = Math.PI / 4;
      vmItemMesh.rotation.z = 0;
-
-     // Minecraft-style HUGE scaling
      vmItemMesh.scaling.set(2, 2, 2);
 
-     const tile = itemIdToAtlasIndex(heldId);
-     const alpha =
-       heldId === Items.LEAVES ||
-       heldId === (Items as any).MOSS ||
-       heldId === (Items as any).DRIPSTONE ||
-       heldId === (Items as any).GLOW_SHROOM ||
-       heldId === (Items as any).CRYSTAL ||
-       heldId === GLASS_ID ||
-       heldId === LANTERN_ID;
-
      const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
-
-     box.material = getVmAtlasMaterial(vmScene, tile, !!alpha);
+     
+     if (matManager) {
+        const m = matManager.getMaterialForBlock(heldId);
+        if (Array.isArray(m)) {
+            const multi = new BABYLON.MultiMaterial(`vmMulti_${heldId}`, vmScene);
+            m.forEach(mat => multi.subMaterials.push(mat));
+            box.material = multi;
+        } else if (m) {
+            box.material = m;
+        }
+     }
+     
      box.parent = vmItemMesh;
-
-     // Pushed heavily into view
      vmItemMesh.position.set(0.3, -0.2, 0.6);
   }
 
@@ -2392,8 +2179,11 @@ function ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
   let parts: any = {};
 
   if (isMob) {
-    const baseMat = getDropAtlasMaterial(rpScene, ATLAS.DEEPSLATE);
-    const mobMat = baseMat.clone(`rpMat:${id}`) as BABYLON.StandardMaterial;
+    let baseMatInfo = matManager?.getMaterialForBlock(Items.DEEPSLATE);
+    if (Array.isArray(baseMatInfo)) baseMatInfo = baseMatInfo[0];
+    const baseMat = baseMatInfo as BABYLON.StandardMaterial | undefined;
+
+    const mobMat = baseMat ? baseMat.clone(`rpMat:${id}`) : makeRemoteMaterial(id, rpScene);
     remoteMats.set(id, mobMat);
     
     const body = BABYLON.MeshBuilder.CreateBox(`mobBody:${id}`, { width: 0.9, height: 0.9, depth: 0.6 }, rpScene);
@@ -3556,6 +3346,8 @@ function updateDayNightCycle(dt: number) {
 
   const scene = getStableScene();
   if (scene) {
+    ensureMaterialManager(scene);
+
     ensureVmScene(scene);
     ensureRpScene(scene);
     ensureDropVisuals(scene);
