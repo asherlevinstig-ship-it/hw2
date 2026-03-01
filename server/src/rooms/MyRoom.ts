@@ -1,12 +1,10 @@
 // server/src/rooms/MyRoom.ts
 // FULL FILE - No Omits
-// Option B (server authoritative chunks) + multiplayer + persistence + Chest Debug Logs + Signage System + JSON Structure Loading + Extended Interior Textures
 
 import { Room, Client } from "colyseus";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// Shared items (single source of truth) - NodeNext requires ".js"
 import {
   Items,
   ITEM_DEFS,
@@ -14,13 +12,11 @@ import {
   type ItemStack as SharedItemStack,
 } from "../shared/items.js";
 
-// Path B: load pre-expanded block structures
 import {
   loadBlockStructure,
   type BlockStructure,
 } from "../shared/structureLoader.js";
 
-// Combat System Imports
 import { 
   CombatSystem, 
   type CombatEvent, 
@@ -35,15 +31,15 @@ import { CooldownComponent } from "../combat/components/CooldownComponent.js";
 import { StateComponent } from "../combat/components/StateComponent.js";
 import { EquipmentComponent } from "../combat/components/EquipmentComponent.js";
 
-// Inventory Manager Extraction
 import { InventoryManager, type InvState } from "../inventory/InventoryManager.js";
+import { WorldGenerator } from "../world/WorldGenerator.js";
 
 type Vec3 = { x: number; y: number; z: number };
 
 type WorldDataNeededMsg = {
   id: string;
   chunkSize: number;
-  x: number; // NOA chunk coord (often chunk ORIGIN)
+  x: number; 
   y: number;
   z: number;
 };
@@ -51,7 +47,6 @@ type WorldDataNeededMsg = {
 type ChunkDataMsg = {
   id: string;
   chunkSize: number;
-  // echo request coords exactly so client pending check passes
   x: number;
   y: number;
   z: number;
@@ -59,16 +54,14 @@ type ChunkDataMsg = {
 };
 
 type PlayerInfo = {
-  id: string; // sessionId
-  userId: string; // persistent id from client localStorage
+  id: string; 
+  userId: string; 
   x: number;
   y: number;
   z: number;
   yaw: number;
   lastMoveAt: number;
   joinedAt: number;
-  
-  // Stats (Authoritative truth synced from Combatant)
   hp: number;
   maxHp: number;
   mana: number;
@@ -87,15 +80,13 @@ type MobInfo = {
   spawnX: number;
   spawnY: number;
   spawnZ: number;
-  vy: number; // Vertical velocity for gravity and jumping
-  tickPhase: number; // For interleaved AI ticking
-  targetId: string | null; // Cached aggro target
-
-  // Stuck/Frustration Logic
+  vy: number; 
+  tickPhase: number; 
+  targetId: string | null; 
   lastPos: { x: number, y: number, z: number };
   lastPosTime: number;
-  stuckAccumulator: number; // ms stuck
-  attackCooldown: number;   // ms until next attack/throw
+  stuckAccumulator: number; 
+  attackCooldown: number;   
 };
 
 type Projectile = {
@@ -139,8 +130,8 @@ type PlaceBlockMsg = {
   x: number;
   y: number;
   z: number;
-  id: number; // blockId to place
-  fromSlot?: number; // hotbar index to consume from
+  id: number; 
+  fromSlot?: number; 
 };
 
 type StartMineMsg = { x: number; y: number; z: number; heldSlot?: number };
@@ -148,8 +139,8 @@ type MineProgressMsg = {
   x: number;
   y: number;
   z: number;
-  progress: number; // 0..1
-  stage: number; // 0..9
+  progress: number; 
+  stage: number; 
   done?: boolean;
   reason?: string;
 };
@@ -161,31 +152,14 @@ type MiningState = {
   y: number;
   z: number;
   heldSlot: number;
-  startedAt: number; // ms
-  lastHeartbeatAt: number; // ms
+  startedAt: number; 
+  lastHeartbeatAt: number; 
   breakTimeMs: number;
   lastStageSent: number;
   lastProgressSentAt: number;
   lastBlockId: number;
 };
 
-// =========================
-// Cave Biome Typings
-// =========================
-type CaveBiome = "LUSH" | "DRIPSTONE" | "DEEP_DARKISH" | "CRYSTAL" | "TUFFY";
-
-type OreDef = {
-  id: number;
-  minY: number;
-  peakY: number;
-  maxY: number;
-  baseChance: number; // chance per solid block *at peak*
-  veinSize: [number, number]; // min,max
-};
-
-// =========================
-// Client Message Typings
-// =========================
 type UseManaMsg = {
   amount: number;
   reason?: string;
@@ -193,7 +167,7 @@ type UseManaMsg = {
 
 type AddContainerMsg = {
   kind: "heart" | "mana";
-  amount?: number; // default 1 container
+  amount?: number; 
 };
 
 function isFiniteNumber(n: unknown): n is number {
@@ -218,61 +192,24 @@ function safeUserId(v: unknown): string {
   return ok.length >= 3 ? ok : "anon";
 }
 
-/** =========================
- * POIs (region grid)
- * ========================= */
-type PoiType = "HUT";
-type PoiTier = "COMMON" | "RARE" | "LEGENDARY";
-
-type PoiCandidate = {
-  exists: boolean;
-  rx: number;
-  rz: number;
-  x0: number; // world origin for placement (min corner)
-  y0: number;
-  z0: number;
-  rot: 0 | 90 | 180 | 270;
-  tier: PoiTier;
-  type: PoiType;
-  // world bbox inclusive
-  minX: number;
-  minY: number;
-  minZ: number;
-  maxX: number;
-  maxY: number;
-  maxZ: number;
-};
-
-type StampOp = { dx: number; dy: number; dz: number; id: number };
-
 export class MyRoom extends Room {
-  // =========================
-  // Constants
-  // =========================
-  private readonly chunkSize = 32; // MUST match client
+  private readonly chunkSize = 32; 
   private readonly baseHeight = 12;
 
-  // Block IDs (MUST match client)
   private readonly AIR_ID = 0;
   private readonly GRASS_ID = 1;
   private readonly DIRT_ID = 2;
   private readonly STONE_ID = 3;
   private readonly WOOD_ID = 4;
   private readonly LEAVES_ID = 5;
-
-  // Minerals + bedrock (MUST match client)
   private readonly BEDROCK_ID = 6;
-  private readonly CHEST_ID = 8; // Interactive Container (Loot/Signs)
+  private readonly CHEST_ID = 8; 
   private readonly COAL_ORE_ID = 30; 
   private readonly IRON_ORE_ID = 31; 
   private readonly GOLD_ORE_ID = 32; 
   private readonly DIAMOND_ORE_ID = 33; 
-
-  // Biome surface blocks (MUST match client)
   private readonly SAND_ID = 11;
   private readonly SNOW_ID = 12;
-
-  // ===== CAVE BIOME BLOCKS =====
   private readonly DEEPSLATE_ID = 90;
   private readonly TUFF_ID = 91;
   private readonly MOSS_ID = 92;
@@ -281,125 +218,46 @@ export class MyRoom extends Room {
   private readonly DRIPSTONE_BLOCK_ID = 95;
   private readonly GLOW_SHROOM_ID = 96;
   private readonly CRYSTAL_ID = 97;
-
-  // ===== INTERIOR BLOCKS =====
   private readonly PLANKS_ID = 40;
   private readonly STONE_BRICKS_ID = 41;
   private readonly CARPET_ID = 42;
   private readonly GLASS_ID = 43;
   private readonly LANTERN_ID = 44;
 
-  private readonly CaveBiomeRules: Record<
-    CaveBiome,
-    {
-      wall: number;
-      floor: number;
-      ceil: number;
-      deco?: {
-        chance: number;
-        place: (ctx: { x: number; y: number; z: number; rand: () => number }) => number | null;
-      }[];
-    }
-  > = {
-    LUSH: {
-      wall: this.MOSSY_STONE_ID,
-      floor: this.MOSS_ID,
-      ceil: this.MOSSY_STONE_ID,
-      deco: [{ chance: 0.03, place: ({ rand }) => (rand() < 0.5 ? this.GLOW_SHROOM_ID : null) }],
-    },
-    DRIPSTONE: {
-      wall: this.DRIPSTONE_BLOCK_ID,
-      floor: this.DRIPSTONE_BLOCK_ID,
-      ceil: this.DRIPSTONE_BLOCK_ID,
-      deco: [{ chance: 0.06, place: ({ rand }) => (rand() < 0.7 ? this.DRIPSTONE_ID : null) }],
-    },
-    DEEP_DARKISH: {
-      wall: this.DEEPSLATE_ID,
-      floor: this.DEEPSLATE_ID,
-      ceil: this.DEEPSLATE_ID,
-    },
-    CRYSTAL: {
-      wall: this.STONE_ID,
-      floor: this.STONE_ID,
-      ceil: this.STONE_ID,
-      deco: [{ chance: 0.02, place: ({ rand }) => (rand() < 0.8 ? this.CRYSTAL_ID : null) }],
-    },
-    TUFFY: {
-      wall: this.TUFF_ID,
-      floor: this.TUFF_ID,
-      ceil: this.TUFF_ID,
-    },
-  };
-
-  private readonly ORES: OreDef[] = [
-    { id: this.COAL_ORE_ID, minY: 15, peakY: 45, maxY: 90, baseChance: 0.06, veinSize: [6, 14] },
-    { id: this.IRON_ORE_ID, minY: 10, peakY: 28, maxY: 70, baseChance: 0.05, veinSize: [4, 10] },
-    { id: this.GOLD_ORE_ID, minY: 5, peakY: 16, maxY: 35, baseChance: 0.025, veinSize: [3, 8] },
-    { id: this.DIAMOND_ORE_ID, minY: -10, peakY: 5, maxY: 18, baseChance: 0.012, veinSize: [2, 6] },
-  ];
-
-  // Drops cleanup
-  private readonly DROP_TTL_MS = 3 * 60 * 1000; // 3 minutes
+  private readonly DROP_TTL_MS = 3 * 60 * 1000; 
   private readonly DROP_CLEANUP_EVERY_MS = 5000;
 
-  // Movement / safety
   private readonly minMoveIntervalMs = 60;
   private readonly snapshotIntervalMs = 500;
   private readonly maxAbsCoord = 100000;
   private readonly maxSpeedBlocksPerSec = 18;
 
-  private lastMoveLogAt = 0;
   private lastSnapshotLogAt = 0;
 
-  // Mining: hold-to-mine
   private readonly mineTickMs = 50;
   private readonly mineHeartbeatTimeoutMs = 450;
   private readonly mineReach = 6.0;
   private readonly mineProgressSendMinMs = 80;
 
-  // Day/Night Cycle
-  private worldTime = 0; // 0.0 to 1.0 (0=midnight, 0.5=noon)
-  private readonly DAY_DURATION_MS = 1200000; // 20 minutes per day
+  private worldTime = 0; 
+  private readonly DAY_DURATION_MS = 1200000; 
 
-  // Biomes
-  private readonly BIOME_FOREST = 1;
-  private readonly BIOME_DESERT = 2;
-  private readonly BIOME_SNOW = 3;
-
-  // POIs (region grid)
-  private readonly REGION_SIZE = 128;
-  private readonly POI_CHANCE = 0.13;
-  private readonly POI_EDGE_PAD = 16;
-
-  // =========================
-  // Town of Beginnings (safe zone)
-  // MASSIVE EXPANSION VARIABLES
-  // =========================
   private readonly TOWN_CENTER_X = 0;
   private readonly TOWN_CENTER_Z = 0;
   private readonly SAFE_RADIUS = 64; 
-
   private readonly TOWN_PLAZA_RADIUS = 24; 
   private readonly TOWN_RING_RADIUS = 56;  
   private readonly TOWN_PATH_HALF_W = 3;  
   private readonly TOWN_CLEAR_HEIGHT = 24; 
 
-  // =========================
-  // World meta / seed
-  // =========================
   private readonly worldDir = path.join(process.cwd(), "world");
   private readonly chunksDir = path.join(this.worldDir, "chunks");
   private readonly metaPath = path.join(this.worldDir, "meta.json");
   private worldSeed = 0;
 
-  // =========================
-  // Inventory System
-  // =========================
   private invManager!: InventoryManager;
+  private worldGen!: WorldGenerator;
 
-  // =========================
-  // State Maps
-  // =========================
   private players = new Map<string, PlayerInfo>();
   private mobs = new Map<string, MobInfo>();
   private chunks = new Map<string, Uint8Array>();
@@ -408,31 +266,125 @@ export class MyRoom extends Room {
   private nextDropSeq = 1;
   private mining = new Map<string, MiningState>(); 
   
-  // Content & Interaction Maps
-  private chestLoot = new Map<string, SharedItemStack[]>(); // Key: "x,y,z"
-  private signTexts = new Map<string, string>(); // Key: "x,y,z"
+  private chestLoot = new Map<string, SharedItemStack[]>(); 
+  private signTexts = new Map<string, string>(); 
   
-  // =========================
-  // Spatial Hashing (50+ Player Scaling)
-  // =========================
-  private playerChunks = new Map<string, string>(); // sessionId -> "cx,cz"
-  private spatialGrid = new Map<string, Set<string>>(); // "cx,cz" -> Set<sessionId>
+  private playerChunks = new Map<string, string>(); 
+  private spatialGrid = new Map<string, Set<string>>(); 
   private combatTickCount = 0;
 
-  // =========================
-  // Combat System
-  // =========================
   private combat!: CombatSystem;
   private combatants = new Map<string, Combatant>();
 
-  // =========================
-  // Structures
-  // =========================
   private townHall: BlockStructure | null = null;
 
   // =========================
-  // Spatial Hashing Helpers
+  // Helper Methods Restored
   // =========================
+  private ensureDirs(): void {
+    if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
+    if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
+  }
+
+  private loadOrCreateWorldSeed(options: any): number {
+    const optSeedRaw = (options as any)?.worldSeed;
+    if (typeof optSeedRaw === "number" && Number.isFinite(optSeedRaw)) {
+      const s = (optSeedRaw | 0) >>> 0;
+      this.writeWorldMeta({ worldSeed: s });
+      console.log("[WORLD] seed set from options:", s);
+      return s;
+    }
+
+    const meta = this.readWorldMeta();
+    if (meta && typeof meta.worldSeed === "number" && Number.isFinite(meta.worldSeed)) {
+      const s = (meta.worldSeed | 0) >>> 0;
+      console.log("[WORLD] seed loaded from meta:", s);
+      return s;
+    }
+
+    const gen = this.generateSeed();
+    this.writeWorldMeta({ worldSeed: gen });
+    console.log("[WORLD] seed generated + saved:", gen);
+    return gen;
+  }
+
+  private generateSeed(): number {
+    const a = (Date.now() & 0xffffffff) >>> 0;
+    const b = ((Math.random() * 0xffffffff) >>> 0) >>> 0;
+    let s = (a ^ (b + 0x9e3779b9)) >>> 0;
+    s = (s ^ (s >>> 16)) >>> 0;
+    s = Math.imul(s, 0x85ebca6b) >>> 0;
+    s = (s ^ (s >>> 13)) >>> 0;
+    s = Math.imul(s, 0xc2b2ae35) >>> 0;
+    s = (s ^ (s >>> 16)) >>> 0;
+    return s >>> 0;
+  }
+
+  private readWorldMeta(): { worldSeed?: number, worldTime?: number } | null {
+    try {
+      if (!fs.existsSync(this.metaPath)) return null;
+      const raw = fs.readFileSync(this.metaPath, "utf8");
+      const j = JSON.parse(raw);
+      if (typeof j !== "object" || j === null) return null;
+      return j as any;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private writeWorldMeta(meta: { worldSeed?: number, worldTime?: number }): void {
+    try {
+      const existing = this.readWorldMeta() || {};
+      const combined = { ...existing, ...meta, worldTime: this.worldTime }; 
+      const tmp = this.metaPath + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(combined));
+      fs.renameSync(tmp, this.metaPath);
+    } catch (e) {
+      console.warn("[WORLD] meta write failed:", this.metaPath, e);
+    }
+  }
+
+  private isCombatAllowedHere(x: number, z: number): boolean { 
+    return !this.isInSafeZoneXZ(toInt(x), toInt(z)); 
+  }
+
+  private normalizeChunkRequestToIndex(rx: number, ry: number, rz: number): { cx: number; cy: number; cz: number } {
+    const CS = this.chunkSize;
+    const toIndex = (v: number) => {
+      if (v !== 0 && v % CS === 0) return toInt(v / CS);
+      return toInt(v);
+    };
+    return { cx: toIndex(rx), cy: toIndex(ry), cz: toIndex(rz) };
+  }
+
+  private chunkKey(cx: number, cy: number, cz: number): string { return `${cx},${cy},${cz}`; }
+  
+  private chunkFilePath(cx: number, cy: number, cz: number): string { return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`); }
+  
+  private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
+    const fp = this.chunkFilePath(cx, cy, cz);
+    try {
+      if (!fs.existsSync(fp)) return null;
+      const buf = fs.readFileSync(fp);
+      const expected = this.chunkSize * this.chunkSize * this.chunkSize;
+      if (buf.byteLength !== expected) {
+        return null;
+      }
+      const out = new Uint8Array(expected);
+      out.set(buf);
+      return out;
+    } catch (e) {
+      return null;
+    }
+  }
+  
+  private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
+    const fp = this.chunkFilePath(cx, cy, cz);
+    const tmp = fp + ".tmp";
+    fs.writeFileSync(tmp, Buffer.from(chunk));
+    fs.renameSync(tmp, fp);
+  }
+
   private updatePlayerSpatial(sessionId: string, x: number, z: number) {
     const cx = Math.floor(x / this.chunkSize);
     const cz = Math.floor(z / this.chunkSize);
@@ -470,9 +422,6 @@ export class MyRoom extends Room {
     this.playerChunks.delete(sessionId);
   }
 
-  // =========================
-  // onCreate
-  // =========================
   onCreate(options: any) {
     console.log("MyRoom created", options);
     this.maxClients = 64;
@@ -480,14 +429,89 @@ export class MyRoom extends Room {
 
     this.ensureDirs();
     
-    // Initialize specific component directors
     const invDir = path.join(this.worldDir, "inventories");
     this.invManager = new InventoryManager(invDir);
     
-    console.log("[WORLD] persistence dirs:", { chunks: this.chunksDir, inventories: invDir });
     this.worldSeed = this.loadOrCreateWorldSeed(options);
 
-    // Initialize Component-Based Combat Engine
+    try {
+      const dataFolder = path.join(process.cwd(), "data");
+      const townHallPath = path.join(dataFolder, "town_hall_v1.json");
+      
+      if (!fs.existsSync(dataFolder)) {
+        fs.mkdirSync(dataFolder, { recursive: true });
+      }
+
+      if (fs.existsSync(townHallPath)) {
+        this.townHall = loadBlockStructure(townHallPath);
+      } else {
+        this.townHall = this.buildMassiveTownHall();
+      }
+      
+      const townY = this.baseHeight + 2;
+      const baseY = townY + 1;
+      const anchorX = this.townHall?.anchor.x ?? Math.floor(51 / 2);
+      const anchorZ = this.townHall?.anchor.z ?? Math.floor(31 / 2);
+      const worldX = this.TOWN_CENTER_X - anchorX;
+      const worldY = baseY;
+      const worldZ = this.TOWN_CENTER_Z - anchorZ;
+
+      const registerSign = (lx: number, ly: number, lz: number, text: string) => {
+          this.signTexts.set(`${worldX + lx},${worldY + ly},${worldZ + lz}`, text);
+      };
+
+      registerSign(25, 1, 3, "Welcome to the Town of Beginnings! West: Casino. East: Market.");
+      registerSign(16, 1, 15, "[Gambling Den] Try your luck at the Moss Tables!");
+      registerSign(6, 1, 15, "House Rules: 1. No weapons drawn. 2. All bets are final.");
+      registerSign(34, 1, 15, "[Market District] Trade your hard-earned ores here!");
+      registerSign(44, 1, 15, "Market Stall Available! Contact the Warden to rent.");
+
+    } catch (e) {
+      console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
+      this.townHall = null;
+    }
+
+    this.worldGen = new WorldGenerator({
+        worldSeed: this.worldSeed,
+        chunkSize: this.chunkSize,
+        baseHeight: this.baseHeight,
+        TOWN_CENTER_X: this.TOWN_CENTER_X,
+        TOWN_CENTER_Z: this.TOWN_CENTER_Z,
+        SAFE_RADIUS: this.SAFE_RADIUS,
+        TOWN_PLAZA_RADIUS: this.TOWN_PLAZA_RADIUS,
+        TOWN_RING_RADIUS: this.TOWN_RING_RADIUS,
+        TOWN_PATH_HALF_W: this.TOWN_PATH_HALF_W,
+        TOWN_CLEAR_HEIGHT: this.TOWN_CLEAR_HEIGHT,
+        townHall: this.townHall,
+        AIR_ID: this.AIR_ID,
+        GRASS_ID: this.GRASS_ID,
+        DIRT_ID: this.DIRT_ID,
+        STONE_ID: this.STONE_ID,
+        WOOD_ID: this.WOOD_ID,
+        LEAVES_ID: this.LEAVES_ID,
+        BEDROCK_ID: this.BEDROCK_ID,
+        CHEST_ID: this.CHEST_ID,
+        COAL_ORE_ID: this.COAL_ORE_ID,
+        IRON_ORE_ID: this.IRON_ORE_ID,
+        GOLD_ORE_ID: this.GOLD_ORE_ID,
+        DIAMOND_ORE_ID: this.DIAMOND_ORE_ID,
+        SAND_ID: this.SAND_ID,
+        SNOW_ID: this.SNOW_ID,
+        DEEPSLATE_ID: this.DEEPSLATE_ID,
+        TUFF_ID: this.TUFF_ID,
+        MOSS_ID: this.MOSS_ID,
+        MOSSY_STONE_ID: this.MOSSY_STONE_ID,
+        DRIPSTONE_ID: this.DRIPSTONE_ID,
+        DRIPSTONE_BLOCK_ID: this.DRIPSTONE_BLOCK_ID,
+        GLOW_SHROOM_ID: this.GLOW_SHROOM_ID,
+        CRYSTAL_ID: this.CRYSTAL_ID,
+        PLANKS_ID: this.PLANKS_ID,
+        STONE_BRICKS_ID: this.STONE_BRICKS_ID,
+        CARPET_ID: this.CARPET_ID,
+        GLASS_ID: this.GLASS_ID,
+        LANTERN_ID: this.LANTERN_ID
+    });
+
     this.combat = new CombatSystem({
       isSafeZoneXZ: (x, z) => this.isInSafeZoneXZ(x, z),
       getBlockAt: (x, y, z) => this.getBlockAt(x, y, z),
@@ -497,10 +521,11 @@ export class MyRoom extends Room {
       AIR_ID: this.AIR_ID
     });
 
-    // Spawn initial dummy
     this.spawnDummy("target_dummy_1", -77, 18, -2);
+    
+    const townY = this.baseHeight + 2;
+    this.spawnStaticNPC("npc_giant_warden", 0, townY, -35);
 
-    // Start Combat & Physics Tick Loop
     let lastCombatTick = Date.now();
     this.clock.setInterval(() => {
       const now = Date.now();
@@ -509,22 +534,20 @@ export class MyRoom extends Room {
       lastCombatTick = now;
       this.combatTickCount++;
 
-      // Day/Night Cycle Tick
       this.worldTime = (this.worldTime + (dt / this.DAY_DURATION_MS)) % 1;
 
-      this.tickProjectiles(); // Move projectiles every tick
+      this.tickProjectiles(); 
 
-      // Upgraded Mob AI: Interleaved, Chunk-Sleep, Spatial Aggro, Stuck Check
       for (const mob of this.mobs.values()) {
         const c = this.combatants.get(mob.id);
         if (!c || c.health.isDead() || c.state.isStaggered()) continue;
 
-        // Reduce cooldowns
+        if (mob.id.startsWith("npc_")) continue;
+
         if (mob.attackCooldown > 0) mob.attackCooldown -= dt;
 
         let isMoving = false;
 
-        // 1. Determine Chunk Sleep State
         const mcx = Math.floor(c.pos.x / this.chunkSize);
         const mcz = Math.floor(c.pos.z / this.chunkSize);
         let hasLocalPlayers = false;
@@ -543,12 +566,9 @@ export class MyRoom extends Room {
           }
         }
 
-        // Chunk Sleep: Skip all AI and physics if no players are nearby
         if (!hasLocalPlayers) continue;
 
-        // 2. Interleaved Target Finding (Only run AI every 5th tick based on mob identity)
         if (this.combatTickCount % 5 === mob.tickPhase) {
-          // STUCK CHECK LOGIC
           if (now - mob.lastPosTime > 1000) {
             const dist = Math.sqrt((c.pos.x - mob.lastPos.x)**2 + (c.pos.z - mob.lastPos.z)**2);
             if (mob.targetId && dist < 1.5) {
@@ -561,7 +581,7 @@ export class MyRoom extends Room {
           }
 
           let nearestPlayerId: string | null = null;
-          let closestDist = 16.0; // Aggro Radius
+          let closestDist = 16.0; 
 
           for (const pl of nearbyPlayers) {
             const pdx = pl.x - c.pos.x;
@@ -577,7 +597,6 @@ export class MyRoom extends Room {
           mob.targetId = nearestPlayerId;
         }
 
-        // 3. Gravity & Ground Check (Runs every tick for active chunks)
         let grounded = false;
         const cx = Math.floor(c.pos.x);
         const cz = Math.floor(c.pos.z);
@@ -598,35 +617,27 @@ export class MyRoom extends Room {
           }
         }
 
-        // Horizontal movement intent
         let targetDx = 0;
         let targetDz = 0;
         let intentDist = 0;
 
-        // 4. Frustration / Stuck State: Throw Rock
         if (mob.stuckAccumulator > 3000 && mob.targetId && mob.attackCooldown <= 0) {
             const target = this.players.get(mob.targetId);
             if (target) {
-                // Face target
                 const pdx = target.x - c.pos.x;
                 const pdz = target.z - c.pos.z;
                 mob.yaw = Math.atan2(pdx, pdz);
                 c.yaw = mob.yaw;
 
-                // Fire Projectile
                 this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
-                
-                // Trigger animation via fake attack event
                 this.broadcast("playerSwing", { id: mob.id, attackId: "SLAM" });
 
-                // Reset stuck timer & set cooldown
                 mob.stuckAccumulator = 0;
                 mob.attackCooldown = 2500;
-                continue; // Skip movement this tick
+                continue; 
             }
         }
 
-        // 5. State: CHASE
         if (mob.targetId && mob.attackCooldown <= 0) {
           const target = this.players.get(mob.targetId);
           if (target) {
@@ -644,10 +655,9 @@ export class MyRoom extends Room {
                intentDist = 0;
             }
           } else {
-            mob.targetId = null; // Lost target
+            mob.targetId = null; 
           }
         } 
-        // 6. State: RETURN TO SPAWN
         if (!mob.targetId) {
           targetDx = mob.spawnX - c.pos.x;
           targetDz = mob.spawnZ - c.pos.z;
@@ -661,7 +671,6 @@ export class MyRoom extends Room {
           }
         }
 
-        // 7. Apply Horizontal Movement & Jumping
         if (intentDist > 0) {
           const speed = mob.targetId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
           const moveX = (targetDx / intentDist) * speed;
@@ -702,16 +711,13 @@ export class MyRoom extends Room {
       }
     }, 50);
 
-    // Broadcast World Time (Every 1 second)
     this.clock.setInterval(() => {
         this.broadcast("worldTime", { time: this.worldTime });
-        // Save persistantly
-        if (this.combatTickCount % 200 === 0) { // Every 10s
-             this.writeWorldMeta({ worldSeed: this.worldSeed }); // Will update to include time below
+        if (this.combatTickCount % 200 === 0) { 
+             this.writeWorldMeta({ worldSeed: this.worldSeed }); 
         }
     }, 1000);
 
-    // Dynamic Dharma Spawners
     this.clock.setInterval(() => {
       for (const [chunkKey, playerIds] of this.spatialGrid.entries()) {
         if (playerIds.size === 0) continue;
@@ -723,21 +729,18 @@ export class MyRoom extends Room {
         for (const m of this.mobs.values()) {
           const mcx = Math.floor(m.x / this.chunkSize);
           const mcz = Math.floor(m.z / this.chunkSize);
-          if (mcx === cx && mcz === cz) mobsInChunk++;
+          if (mcx === cx && mcz === cz && !m.id.startsWith("npc_")) mobsInChunk++; 
         }
 
-        // Night time (0.8 - 0.2) allows higher mob density
         const isNight = this.worldTime < 0.2 || this.worldTime > 0.8;
         const limit = isNight ? 5 : 2;
 
-        // Station dispensing limit per active chunk
         if (mobsInChunk < limit) {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
              const spawnX = p.x + (Math.random() * 24 - 12);
              const spawnZ = p.z + (Math.random() * 24 - 12);
-             // Avoid spawning too close to player or in safe zone
              const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
              if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
                  const spawnY = this.heightAt(spawnX, spawnZ) + 1;
@@ -749,48 +752,6 @@ export class MyRoom extends Room {
       }
     }, 5000);
 
-    // GENERATE OR LOAD MASSIVE PROCEDURAL TOWN HALL
-    try {
-      const dataFolder = path.join(process.cwd(), "data");
-      const townHallPath = path.join(dataFolder, "town_hall_v1.json");
-      
-      if (!fs.existsSync(dataFolder)) {
-        fs.mkdirSync(dataFolder, { recursive: true });
-      }
-
-      if (fs.existsSync(townHallPath)) {
-        this.townHall = loadBlockStructure(townHallPath);
-        console.log(`[STRUCT] Massive TownHall loaded from JSON. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
-      } else {
-        this.townHall = this.buildMassiveTownHall();
-        console.log(`[STRUCT] Massive TownHall generated in-memory. Blocks: ${this.townHall?.blocks?.length ?? 0}`);
-      }
-      
-      // REGISTER SIGNS (Information Stones)
-      const townY = this.baseHeight + 2;
-      const baseY = townY + 1;
-      const anchorX = this.townHall?.anchor.x ?? Math.floor(51 / 2);
-      const anchorZ = this.townHall?.anchor.z ?? Math.floor(31 / 2);
-      const worldX = this.TOWN_CENTER_X - anchorX;
-      const worldY = baseY;
-      const worldZ = this.TOWN_CENTER_Z - anchorZ;
-
-      const registerSign = (lx: number, ly: number, lz: number, text: string) => {
-          this.signTexts.set(`${worldX + lx},${worldY + ly},${worldZ + lz}`, text);
-      };
-
-      registerSign(25, 1, 3, "Welcome to the Town of Beginnings! West: Casino. East: Market.");
-      registerSign(16, 1, 15, "[Gambling Den] Try your luck at the Moss Tables!");
-      registerSign(6, 1, 15, "House Rules: 1. No weapons drawn. 2. All bets are final.");
-      registerSign(34, 1, 15, "[Market District] Trade your hard-earned ores here!");
-      registerSign(44, 1, 15, "Market Stall Available! Contact the Warden to rent.");
-
-    } catch (e) {
-      console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
-      this.townHall = null;
-    }
-
-    // players + mobs snapshot
     this.clock.setInterval(() => {
       const allPlayers = Array.from(this.players.values()).map((p) => ({
         id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw,
@@ -807,13 +768,9 @@ export class MyRoom extends Room {
       }
     }, this.snapshotIntervalMs);
 
-    // mining + drops
     this.clock.setInterval(() => this.tickMining(), this.mineTickMs);
     this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
 
-    // =========================
-    // Cave Teleport Developer Tool (SPIRAL RADAR)
-    // =========================
     this.onMessage("devTpCave", (client: Client) => {
       const pl = this.players.get(client.sessionId);
       const c = this.combatants.get(client.sessionId);
@@ -875,9 +832,6 @@ export class MyRoom extends Room {
       }
     });
 
-    // =========================
-    // Chunk streaming
-    // =========================
     this.onMessage("worldDataNeeded", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<WorldDataNeededMsg>;
@@ -894,9 +848,6 @@ export class MyRoom extends Room {
       client.send("chunkData", { id: p.id, chunkSize: this.chunkSize, x: rx, y: ry, z: rz, voxels: chunk });
     });
 
-    // =========================
-    // Movement
-    // =========================
     this.onMessage("playerMove", (client: Client, payload: unknown) => {
       const now = Date.now();
       const pl = this.players.get(client.sessionId);
@@ -921,7 +872,6 @@ export class MyRoom extends Room {
       pl.x = x; pl.y = y; pl.z = z; pl.yaw = yaw; pl.lastMoveAt = now;
       this.updatePlayerSpatial(client.sessionId, x, z);
 
-      // Sync to Combatant
       const c = this.combatants.get(client.sessionId);
       if (c) {
         c.pos.x = x; c.pos.y = y; c.pos.z = z; c.yaw = yaw;
@@ -930,9 +880,6 @@ export class MyRoom extends Room {
       this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
     });
 
-    // =========================
-    // Class Selection Handler
-    // =========================
     this.onMessage("selectClass", (client: Client, payload: unknown) => {
       const p = payload as { classId?: string };
       if (!p || typeof p.classId !== "string") return;
@@ -999,9 +946,6 @@ export class MyRoom extends Room {
       client.send("chatMessage", { msg: `You have awakened as ${p.classId}.` });
     });
 
-    // =========================
-    // Combat Listeners
-    // =========================
     this.onMessage("attack", (client: Client, payload: unknown) => {
       const req = (payload as Partial<AttackRequest>) || {};
       this.combat.requestAttack(client.sessionId, {
@@ -1024,9 +968,6 @@ export class MyRoom extends Room {
       this.combat.setBlocking(client.sessionId, active);
     });
 
-    // =========================
-    // Stats: Use Mana
-    // =========================
     this.onMessage("useMana", (client: Client, payload: unknown) => {
       const pl = this.players.get(client.sessionId);
       const c = this.combatants.get(client.sessionId);
@@ -1046,9 +987,6 @@ export class MyRoom extends Room {
       client.send("useManaResult", { ok: true, mana: c.resources.mana, maxMana: c.resources.maxMana });
     });
 
-    // =========================
-    // Stats: Add Container (Heart/Mana)
-    // =========================
     this.onMessage("addContainer", (client: Client, payload: unknown) => {
       const pl = this.players.get(client.sessionId);
       const c = this.combatants.get(client.sessionId);
@@ -1071,9 +1009,6 @@ export class MyRoom extends Room {
       client.send("addContainerResult", { ok: true, kind, hp: c.health.hp, maxHp: c.health.maxHp, mana: c.resources.mana, maxMana: c.resources.maxMana });
     });
 
-    // =========================
-    // Item Consumption & Awakening
-    // =========================
     this.onMessage("useItem", (client: Client, payload: unknown) => {
       const pl = this.players.get(client.sessionId);
       const c = this.combatants.get(client.sessionId);
@@ -1112,9 +1047,6 @@ export class MyRoom extends Room {
       }
     });
 
-    // =========================
-    // Mining, Placing, Crafting, Inventory ...
-    // =========================
     this.onMessage("startMine", (client: Client, payload: unknown) => {
       if (typeof payload !== "object" || payload === null) return;
       const p = payload as Partial<StartMineMsg>;
@@ -1227,7 +1159,6 @@ export class MyRoom extends Room {
       this.setBlockAuthoritative(x, y, z, blockId);
     });
 
-    // Handle Chest Interaction & Sign Reading
     this.onMessage("interact", (client: Client, payload: unknown) => {
         const p = payload as { x: number, y: number, z: number };
         if (!p || !isFiniteNumber(p.x)) return;
@@ -1240,10 +1171,8 @@ export class MyRoom extends Room {
             const loot = this.chestLoot.get(key);
             
             if (signText) {
-                // If it's a registered sign, display the message and do not break it.
                 client.send("chatMessage", { msg: `📖 ${signText}` });
             } else if (loot && loot.length > 0) {
-                // If it's a Loot Chest, unpack it.
                 const inv = this.invManager.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
                 
                 let found = "";
@@ -1256,7 +1185,6 @@ export class MyRoom extends Room {
                 this.invManager.sendInvStateToClient(client, inv);
                 client.send("chatMessage", { msg: `Looted Chest: ${found}` });
                 
-                // Empty the chest and break it visually
                 this.chestLoot.delete(key);
                 this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID); 
                 this.spawnDrop(Items.CHEST, 1, p.x + 0.5, p.y + 0.5, p.z + 0.5); 
@@ -1376,13 +1304,10 @@ export class MyRoom extends Room {
     this.onMessage("ping", (client: Client, payload: unknown) => client.send("pong", payload));
   }
 
-  // =========================
-  // Spawner Helper
-  // =========================
   private spawnDummy(id: string, x: number, y: number, z: number) {
     const mob: MobInfo = { 
       id, x, y, z, yaw: 0, 
-      hp: 1000, maxHp: 1000, 
+      hp: 100, maxHp: 100, 
       spawnX: x, spawnY: y, spawnZ: z,
       vy: 0,
       tickPhase: id.charCodeAt(id.length - 1) % 5,
@@ -1432,9 +1357,59 @@ export class MyRoom extends Room {
     this.combatants.set(id, c);
   }
 
-  // =========================
-  // Projectile System
-  // =========================
+  private spawnStaticNPC(id: string, x: number, y: number, z: number) {
+    const mob: MobInfo = { 
+      id, x, y, z, yaw: Math.PI, 
+      hp: 999999, maxHp: 999999, 
+      spawnX: x, spawnY: y, spawnZ: z,
+      vy: 0,
+      tickPhase: 0,
+      targetId: null,
+      lastPos: { x, y, z },
+      lastPosTime: Date.now(),
+      stuckAccumulator: 0,
+      attackCooldown: 0
+    };
+    this.mobs.set(id, mob);
+
+    const health = new HealthComponent(mob.hp, mob.maxHp);
+    const resources = new ResourceComponent(0, 0, 0, 0);
+    const aura = new AuraComponent("BASIC", 0, 0, 0);
+    const status = new StatusComponent();
+    const cooldowns = new CooldownComponent();
+    const state = new StateComponent();
+    const equipment = new EquipmentComponent(() => 0); 
+
+    const c: Combatant = {
+      id,
+      faction: "MOB", 
+      pos: { x, y, z },
+      yaw: Math.PI,
+      radius: 1.5, 
+      height: 6.0, 
+      health, resources, aura, status, cooldowns, state, equipment,
+      armor: 9999, resist: {}, critChance: 0, critMult: 1.0, maxPoise: 99999, poise: 99999,
+      blockAngleDeg: 0, blockMitigation: 1.0, dodgeIframesMs: 0, moveSpeedMul: 0.0, invulnUntil: 0,
+      snapshot() {
+        return {
+          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
+          radius: this.radius, height: this.height, state: this.state.state,
+          hp: this.health.hp, maxHp: this.health.maxHp,
+          mana: this.resources.mana, maxMana: this.resources.maxMana,
+          aura: this.resources.aura, maxAura: this.resources.maxAura,
+          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
+          poise: this.poise, maxPoise: this.maxPoise,
+          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
+          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
+        };
+      },
+      onSync: (snap) => {
+        mob.hp = snap.hp;
+      }
+    };
+    this.combatants.set(id, c);
+  }
+
   private spawnProjectile(ownerId: string, x: number, y: number, z: number, tx: number, ty: number, tz: number) {
       const id = `proj_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
       
@@ -1442,12 +1417,10 @@ export class MyRoom extends Room {
       const dy = ty - y;
       const dz = tz - z;
       const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-      const speed = 1.0; // blocks per tick (50ms) = 20 blocks/sec
+      const speed = 1.0; 
 
-      // Simple ballistic arc estimate
       const timeToTarget = dist / speed;
-      const gravity = 0.04; // Must match physics loop
-      // Add extra Y velocity to arc it
+      const gravity = 0.04; 
       const arcY = (0.5 * gravity * timeToTarget * timeToTarget + dy) / timeToTarget;
 
       const p: Projectile = {
@@ -1478,9 +1451,8 @@ export class MyRoom extends Room {
           p.x += p.vx;
           p.y += p.vy;
           p.z += p.vz;
-          p.vy -= 0.04; // Gravity
+          p.vy -= 0.04; 
 
-          // Ground Collision
           const cx = Math.floor(p.x);
           const cy = Math.floor(p.y);
           const cz = Math.floor(p.z);
@@ -1489,11 +1461,10 @@ export class MyRoom extends Room {
               continue;
           }
 
-          // Player Collision
           for (const pl of this.players.values()) {
               if (pl.id === p.ownerId) continue;
               const dx = pl.x - p.x;
-              const dy = (pl.y + 0.9) - p.y; // Center mass
+              const dy = (pl.y + 0.9) - p.y; 
               const dz = pl.z - p.z;
               if (dx*dx + dy*dy + dz*dz < 1.0) {
                   const combatant = this.combatants.get(pl.id);
@@ -1518,9 +1489,6 @@ export class MyRoom extends Room {
       }
   }
 
-  // =========================
-  // Combat Event Router
-  // =========================
   private handleCombatEvent(e: CombatEvent): void {
     if (e.type === "ATTACK_START") {
       this.broadcast("playerSwing", { id: e.attackerId, attackId: e.attackId });
@@ -1603,9 +1571,6 @@ export class MyRoom extends Room {
     }
   }
 
-  // =========================
-  // Combatant Factory
-  // =========================
   private buildCombatant(client: Client, pl: PlayerInfo, inv: InvState): Combatant {
     const health = new HealthComponent(inv.stats.hp, inv.stats.maxHp);
     const resources = new ResourceComponent(inv.stats.mana, inv.stats.maxMana, 0, 100);
@@ -1694,9 +1659,6 @@ export class MyRoom extends Room {
     return c;
   }
 
-  // =========================
-  // In-Memory Massive Town Hall Builder (Procedural Fallback)
-  // =========================
   private buildMassiveTownHall(): BlockStructure {
     const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
     const w = 51;
@@ -1717,41 +1679,24 @@ export class MyRoom extends Room {
       }
     };
 
-    // 1. Fill entire volume with Air to hollow out the inside and overwrite anything else
     fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
-
-    // 2. Floor (Planks)
     fill(0, 0, 0, w - 1, 0, d - 1, this.PLANKS_ID);
-    
-    // 3. Outer Walls (Stone Bricks)
-    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_BRICKS_ID); // Front
-    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); // Back
-    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_BRICKS_ID); // Left
-    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); // Right
-
-    // 4. Main Entrance (Front center)
+    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_BRICKS_ID); 
+    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); 
+    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_BRICKS_ID); 
+    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); 
     fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
-
-    // 5. Roof (Wood Structure + Leaves canopy)
     fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
     fill(1, h, 1, w - 2, h + 1, d - 2, this.LEAVES_ID);
-
-    // 6. Central Lobby Carpet (Regal Carpet)
     fill(22, 1, 1, 28, 1, d - 2, this.CARPET_ID);
 
-    // =====================================
-    // WEST WING: GAMBLING DEN
-    // =====================================
-    // Wall separator
     fill(15, 1, 1, 15, h - 2, 6, this.PLANKS_ID);
     fill(15, 1, d - 7, 15, h - 2, d - 2, this.PLANKS_ID);
-    // Archway
     fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
 
     const makeTable = (tx: number, tz: number) => {
-      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.PLANKS_ID); // Table base
-      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); // Green felt
-      // Stools
+      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.PLANKS_ID); 
+      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); 
       add(tx - 1, 1, tz + 1, this.PLANKS_ID);
       add(tx + 3, 1, tz + 1, this.PLANKS_ID);
       add(tx + 1, 1, tz - 1, this.PLANKS_ID);
@@ -1765,26 +1710,18 @@ export class MyRoom extends Room {
     makeTable(3, 20);
     makeTable(9, 20);
 
-    // =====================================
-    // EAST WING: MARKET & STORES
-    // =====================================
-    // Wall separator
     fill(35, 1, 1, 35, h - 2, 6, this.PLANKS_ID);
     fill(35, 1, d - 7, 35, h - 2, d - 2, this.PLANKS_ID);
-    // Archway
     fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
 
     const makeStall = (sx: number, sz: number) => {
-      fill(sx, 1, sz, sx + 4, 1, sz, this.PLANKS_ID); // Front counter
-      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.PLANKS_ID); // Side
-      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.PLANKS_ID); // Side
-      
-      add(sx + 1, 2, sz, this.CHEST_ID); // Chest on counter
-      add(sx + 3, 2, sz, this.CHEST_ID); // Chest on counter
-      
-      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); // Awning
-      
-      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); // Pillars
+      fill(sx, 1, sz, sx + 4, 1, sz, this.PLANKS_ID); 
+      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.PLANKS_ID); 
+      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.PLANKS_ID); 
+      add(sx + 1, 2, sz, this.CHEST_ID); 
+      add(sx + 3, 2, sz, this.CHEST_ID); 
+      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); 
+      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); 
       add(sx + 4, 2, sz, this.WOOD_ID); add(sx + 4, 3, sz, this.WOOD_ID);
     };
 
@@ -1792,23 +1729,17 @@ export class MyRoom extends Room {
     makeStall(38, 12);
     makeStall(38, 20);
 
-    // =====================================
-    // SIGNAGE SYSTEM & LANTERNS
-    // =====================================
-    // Casino Visual Sign (Glowing Purple Crystal Diamond)
     add(16, 10, 15, this.CRYSTAL_ID);
     add(16, 9, 14, this.CRYSTAL_ID); add(16, 9, 16, this.CRYSTAL_ID);
     add(16, 8, 13, this.CRYSTAL_ID); add(16, 8, 17, this.CRYSTAL_ID);
     add(16, 7, 14, this.CRYSTAL_ID); add(16, 7, 16, this.CRYSTAL_ID);
     add(16, 6, 15, this.CRYSTAL_ID);
 
-    // Market Visual Sign (Glowing Green Coin/Circle)
     add(34, 9, 14, this.GLOW_SHROOM_ID); add(34, 9, 15, this.GLOW_SHROOM_ID); add(34, 9, 16, this.GLOW_SHROOM_ID);
     add(34, 8, 13, this.GLOW_SHROOM_ID); add(34, 8, 17, this.GLOW_SHROOM_ID);
     add(34, 7, 13, this.GLOW_SHROOM_ID); add(34, 7, 17, this.GLOW_SHROOM_ID);
     add(34, 6, 14, this.GLOW_SHROOM_ID); add(34, 6, 15, this.GLOW_SHROOM_ID); add(34, 6, 16, this.GLOW_SHROOM_ID);
 
-    // Lanterns down the main hall
     add(22, 6, 6, this.LANTERN_ID);
     add(28, 6, 6, this.LANTERN_ID);
     add(22, 6, 14, this.LANTERN_ID);
@@ -1816,12 +1747,11 @@ export class MyRoom extends Room {
     add(22, 6, 22, this.LANTERN_ID);
     add(28, 6, 22, this.LANTERN_ID);
 
-    // Interactive Guide Stones (Signposts - Uses CHEST_ID so players can click them)
-    add(25, 1, 3, this.CHEST_ID); // Entrance Guide Stone
-    add(16, 1, 15, this.CHEST_ID); // Casino Entry Guide Stone
-    add(6, 1, 15, this.CHEST_ID); // Casino Rules Table
-    add(34, 1, 15, this.CHEST_ID); // Market Entry Guide Stone
-    add(44, 1, 15, this.CHEST_ID); // Market Stall Notice
+    add(25, 1, 3, this.CHEST_ID); 
+    add(16, 1, 15, this.CHEST_ID); 
+    add(6, 1, 15, this.CHEST_ID); 
+    add(34, 1, 15, this.CHEST_ID); 
+    add(44, 1, 15, this.CHEST_ID); 
 
     return {
       name: "massive_town_hall",
@@ -1831,667 +1761,6 @@ export class MyRoom extends Room {
     };
   }
 
-  // =========================
-  // Chunk coord normalization
-  // =========================
-  private normalizeChunkRequestToIndex(
-    rx: number,
-    ry: number,
-    rz: number
-  ): { cx: number; cy: number; cz: number } {
-    const CS = this.chunkSize;
-    const toIndex = (v: number) => {
-      if (v !== 0 && v % CS === 0) return toInt(v / CS); // origin -> index
-      return toInt(v); // index
-    };
-    return { cx: toIndex(rx), cy: toIndex(ry), cz: toIndex(rz) };
-  }
-
-  // =========================
-  // Persistence: directories
-  // =========================
-  private ensureDirs(): void {
-    if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
-    if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
-  }
-
-  // =========================
-  // Persistence: world seed
-  // =========================
-  private loadOrCreateWorldSeed(options: any): number {
-    const optSeedRaw = (options as any)?.worldSeed;
-    if (typeof optSeedRaw === "number" && Number.isFinite(optSeedRaw)) {
-      const s = (optSeedRaw | 0) >>> 0;
-      this.writeWorldMeta({ worldSeed: s });
-      console.log("[WORLD] seed set from options:", s);
-      return s;
-    }
-
-    const meta = this.readWorldMeta();
-    if (meta && typeof meta.worldSeed === "number" && Number.isFinite(meta.worldSeed)) {
-      const s = (meta.worldSeed | 0) >>> 0;
-      console.log("[WORLD] seed loaded from meta:", s);
-      return s;
-    }
-
-    const gen = this.generateSeed();
-    this.writeWorldMeta({ worldSeed: gen });
-    console.log("[WORLD] seed generated + saved:", gen);
-    return gen;
-  }
-
-  private generateSeed(): number {
-    const a = (Date.now() & 0xffffffff) >>> 0;
-    const b = ((Math.random() * 0xffffffff) >>> 0) >>> 0;
-    let s = (a ^ (b + 0x9e3779b9)) >>> 0;
-    s = (s ^ (s >>> 16)) >>> 0;
-    s = Math.imul(s, 0x85ebca6b) >>> 0;
-    s = (s ^ (s >>> 13)) >>> 0;
-    s = Math.imul(s, 0xc2b2ae35) >>> 0;
-    s = (s ^ (s >>> 16)) >>> 0;
-    return s >>> 0;
-  }
-
-  private readWorldMeta(): { worldSeed?: number, worldTime?: number } | null {
-    try {
-      if (!fs.existsSync(this.metaPath)) return null;
-      const raw = fs.readFileSync(this.metaPath, "utf8");
-      const j = JSON.parse(raw);
-      if (typeof j !== "object" || j === null) return null;
-      return j as any;
-    } catch (e) {
-      console.warn("[WORLD] meta read failed:", this.metaPath, e);
-      return null;
-    }
-  }
-
-  private writeWorldMeta(meta: { worldSeed: number, worldTime?: number }): void {
-    try {
-      // Preserve existing if passing partial
-      const existing = this.readWorldMeta() || {};
-      const combined = { ...existing, ...meta, worldTime: this.worldTime }; // Always save current time
-      
-      const tmp = this.metaPath + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(combined));
-      fs.renameSync(tmp, this.metaPath);
-    } catch (e) {
-      console.warn("[WORLD] meta write failed:", this.metaPath, e);
-    }
-  }
-
-  // =========================
-  // Persistence: chunks
-  // =========================
-  private chunkKey(cx: number, cy: number, cz: number): string { return `${cx},${cy},${cz}`; }
-  private chunkFilePath(cx: number, cy: number, cz: number): string { return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`); }
-  private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
-    const fp = this.chunkFilePath(cx, cy, cz);
-    try {
-      if (!fs.existsSync(fp)) return null;
-      const buf = fs.readFileSync(fp);
-      const expected = this.chunkSize * this.chunkSize * this.chunkSize;
-      if (buf.byteLength !== expected) {
-        console.warn("[WORLD] chunk file wrong size, ignoring:", fp, { got: buf.byteLength, expected });
-        return null;
-        }
-      const out = new Uint8Array(expected);
-      out.set(buf);
-      return out;
-    } catch (e) {
-      console.warn("[WORLD] read failed:", fp, e);
-      return null;
-    }
-  }
-  private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
-    const fp = this.chunkFilePath(cx, cy, cz);
-    const tmp = fp + ".tmp";
-    fs.writeFileSync(tmp, Buffer.from(chunk));
-    fs.renameSync(tmp, fp);
-  }
-
-  // =========================
-  // World internals
-  // =========================
-  private idx(i: number, j: number, k: number): number {
-    const CS = this.chunkSize;
-    return i + CS * (j + CS * k);
-  }
-
-  private hash3i(x: number, y: number, z: number): number {
-    const seed = this.worldSeed | 0;
-    let h = x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1597334677;
-    h = (h ^ (h >>> 13)) * 1274126177;
-    h = h ^ (h >>> 16);
-    return (h >>> 0) / 4294967296;
-  }
-
-  private hash2i(x: number, z: number, salt = 0): number {
-    const seed = (this.worldSeed + (salt | 0)) | 0;
-    let h = x * 374761393 + z * 668265263 + seed * 1597334677;
-    h = (h ^ (h >>> 13)) * 1274126177;
-    h = h ^ (h >>> 16);
-    return (h >>> 0) / 4294967296;
-  }
-
-  private smoothstep(t: number): number { return t * t * (3 - 2 * t); }
-
-  private valueNoise2(x: number, z: number, cellSize: number, salt = 0): number {
-    const cx = floorDiv(x, cellSize); const cz = floorDiv(z, cellSize);
-    const fx = (x - cx * cellSize) / cellSize; const fz = (z - cz * cellSize) / cellSize;
-    const sx = this.smoothstep(clamp(fx, 0, 1)); const sz = this.smoothstep(clamp(fz, 0, 1));
-
-    const v00 = this.hash2i(cx, cz, salt); const v10 = this.hash2i(cx + 1, cz, salt);
-    const v01 = this.hash2i(cx, cz + 1, salt); const v11 = this.hash2i(cx + 1, cz + 1, salt);
-
-    const ix0 = v00 + (v10 - v00) * sx; const ix1 = v01 + (v11 - v01) * sx;
-    return ix0 + (ix1 - ix0) * sz;
-  }
-
-  private fbm2(x: number, z: number, baseCell: number, octaves: number, salt = 0): number {
-    let sum = 0; let amp = 1; let norm = 0; let cell = baseCell;
-    for (let i = 0; i < octaves; i++) {
-      const n = this.valueNoise2(x, z, Math.max(4, cell), salt + i * 1013);
-      sum += n * amp; norm += amp; amp *= 0.5; cell = Math.floor(cell * 0.5);
-    }
-    return norm > 0 ? sum / norm : 0.5;
-  }
-
-  private valueNoise3(x: number, y: number, z: number, cellSize: number, salt = 0): number {
-    const cx = floorDiv(x, cellSize); const cy = floorDiv(y, cellSize); const cz = floorDiv(z, cellSize);
-    const fx = (x - cx * cellSize) / cellSize; const fy = (y - cy * cellSize) / cellSize; const fz = (z - cz * cellSize) / cellSize;
-    const sx = this.smoothstep(clamp(fx, 0, 1)); const sy = this.smoothstep(clamp(fy, 0, 1)); const sz = this.smoothstep(clamp(fz, 0, 1));
-    const h = (ix: number, iy: number, iz: number) => this.hash3i(ix, iy, iz + salt);
-
-    const v000 = h(cx, cy, cz); const v100 = h(cx + 1, cy, cz); const v010 = h(cx, cy + 1, cz); const v110 = h(cx + 1, cy + 1, cz);
-    const v001 = h(cx, cy, cz + 1); const v101 = h(cx + 1, cy, cz + 1); const v011 = h(cx, cy + 1, cz + 1); const v111 = h(cx + 1, cy + 1, cz + 1);
-
-    const ix00 = v000 + (v100 - v000) * sx; const ix10 = v010 + (v110 - v010) * sx;
-    const ix01 = v001 + (v101 - v001) * sx; const ix11 = v011 + (v111 - v011) * sx;
-    const iy0 = ix00 + (ix10 - ix00) * sy; const iy1 = ix01 + (ix11 - ix01) * sy;
-    return iy0 + (iy1 - iy0) * sz;
-  }
-
-  private fbm3(x: number, y: number, z: number, baseCell: number, octaves: number, salt = 0): number {
-    let sum = 0; let amp = 1; let norm = 0; let cell = baseCell;
-    for (let i = 0; i < octaves; i++) {
-      const n = this.valueNoise3(x, y, z, Math.max(4, cell), salt + i * 1013);
-      sum += n * amp; norm += amp; amp *= 0.5; cell = Math.floor(cell * 0.5);
-    }
-    return norm > 0 ? sum / norm : 0.5;
-  }
-
-  private getBiome(worldX: number, worldZ: number): number {
-    const dx = worldX - this.TOWN_CENTER_X; const dz = worldZ - this.TOWN_CENTER_Z;
-    if (dx * dx + dz * dz <= (this.SAFE_RADIUS + 10) * (this.SAFE_RADIUS + 10)) return this.BIOME_FOREST;
-    const temp = this.fbm2(worldX, worldZ, 320, 3, 10000);
-    const moist = this.fbm2(worldX, worldZ, 260, 3, 20000);
-    if (temp < 0.36) return this.BIOME_SNOW;
-    if (temp > 0.66 && moist < 0.46) return this.BIOME_DESERT;
-    return this.BIOME_FOREST;
-  }
-
-  private heightAt(worldX: number, worldZ: number): number {
-    const biome = this.getBiome(worldX, worldZ);
-    const macro = Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6;
-    if (biome === this.BIOME_DESERT) return this.baseHeight + Math.floor(macro * 0.45 + Math.sin(worldX / 34) * 2 + Math.cos(worldZ / 31) * 2);
-    if (biome === this.BIOME_SNOW) return this.baseHeight + 4 + Math.floor(macro * 0.85 + (Math.sin(worldX / 22) * 4 + Math.cos(worldZ / 19) * 4) * 0.75);
-    return this.baseHeight + Math.floor(macro * 0.9);
-  }
-
-  // =========================
-  // Trees (biome dependent)
-  // =========================
-  private shouldPlaceTreeAt(worldX: number, worldZ: number, biome: number): boolean {
-    if (this.isInSafeZoneXZ(worldX, worldZ)) return false;
-    if (biome === this.BIOME_DESERT) return false;
-    const cell = biome === this.BIOME_FOREST ? 6 : 9;
-    const r = this.hash2i(floorDiv(worldX, cell), floorDiv(worldZ, cell), 33333);
-    if (biome === this.BIOME_FOREST) return r > 0.73;
-    if (biome === this.BIOME_SNOW) return r > 0.88;
-    return false;
-  }
-
-  private treeHeight(worldX: number, worldZ: number, biome: number): number {
-    const r = this.hash2i(worldX, worldZ, 44444);
-    if (biome === this.BIOME_SNOW) return 6 + Math.floor(r * 4);
-    return 4 + Math.floor(r * 3);
-  }
-
-  // =========================
-  // Helpers
-  // =========================
-  private isCombatAllowedHere(x: number, z: number): boolean { return !this.isInSafeZoneXZ(toInt(x), toInt(z)); }
-  private isInSafeZoneXZ(worldX: number, worldZ: number): boolean {
-    const dx = worldX - this.TOWN_CENTER_X; const dz = worldZ - this.TOWN_CENTER_Z;
-    return dx * dx + dz * dz <= this.SAFE_RADIUS * this.SAFE_RADIUS;
-  }
-
-  // =========================
-  // POIs (region grid, stamped per chunk)
-  // =========================
-  private poiCandidateForRegion(rx: number, rz: number): PoiCandidate {
-    const regionSize = this.REGION_SIZE;
-    const roll = this.hash2i(rx, rz, 70001);
-    if (roll >= this.POI_CHANCE) return { exists: false, rx, rz, x0: 0, y0: 0, z0: 0, rot: 0, tier: "COMMON", type: "HUT", minX: 0, minY: 0, minZ: 0, maxX: -1, maxY: -1, maxZ: -1 };
-
-    const type: PoiType = "HUT";
-    const tierRoll = this.hash2i(rx, rz, 70003);
-    const tier: PoiTier = tierRoll < 0.84 ? "COMMON" : tierRoll < 0.97 ? "RARE" : "LEGENDARY";
-    const rotRoll = this.hash2i(rx, rz, 70004);
-    const rot: 0 | 90 | 180 | 270 = rotRoll < 0.25 ? 0 : rotRoll < 0.5 ? 90 : rotRoll < 0.75 ? 180 : 270;
-
-    const pad = this.POI_EDGE_PAD;
-    const ox = pad + Math.floor(this.hash2i(rx, rz, 70005) * (regionSize - pad * 2));
-    const oz = pad + Math.floor(this.hash2i(rx, rz, 70006) * (regionSize - pad * 2));
-    const worldX = rx * regionSize + ox; const worldZ = rz * regionSize + oz;
-
-    if (this.isInSafeZoneXZ(worldX, worldZ)) return { exists: false, rx, rz, x0: 0, y0: 0, z0: 0, rot: 0, tier: "COMMON", type: "HUT", minX: 0, minY: 0, minZ: 0, maxX: -1, maxY: -1, maxZ: -1 };
-
-    const y0 = this.heightAt(worldX, worldZ) + 1;
-    const dims = this.poiDims(type, tier);
-    return { exists: true, rx, rz, x0: worldX, y0, z0: worldZ, rot, tier, type, minX: worldX, minY: y0, minZ: worldZ, maxX: worldX + dims.w - 1, maxY: y0 + dims.h - 1, maxZ: worldZ + dims.d - 1 };
-  }
-
-  private poiDims(type: PoiType, tier: PoiTier): { w: number; h: number; d: number } {
-    if (type === "HUT") {
-      if (tier === "LEGENDARY") return { w: 11, h: 7, d: 11 };
-      if (tier === "RARE") return { w: 9, h: 6, d: 9 };
-      return { w: 7, h: 5, d: 7 };
-    }
-    return { w: 7, h: 5, d: 7 };
-  }
-
-  private poiOps(type: PoiType, tier: PoiTier): StampOp[] {
-    const ops: StampOp[] = [];
-    const wood = this.PLANKS_ID; const stone = this.STONE_BRICKS_ID; const leaves = this.LEAVES_ID;
-
-    if (type === "HUT") {
-      const dims = this.poiDims(type, tier);
-      const w = dims.w, d = dims.d, h = dims.h;
-
-      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: 0, dz: z, id: stone });
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 0; x < w; x++) { ops.push({ dx: x, dy: y, dz: 0, id: wood }); ops.push({ dx: x, dy: y, dz: d - 1, id: wood }); }
-        for (let z = 0; z < d; z++) { ops.push({ dx: 0, dy: y, dz: z, id: wood }); ops.push({ dx: w - 1, dy: y, dz: z, id: wood }); }
-      }
-      const roofY = h - 1;
-      for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) ops.push({ dx: x, dy: roofY, dz: z, id: leaves });
-
-      const doorX = Math.floor(w / 2);
-      return ops.filter((o) => !(o.id === wood && o.dz === 0 && o.dx === doorX && (o.dy === 1 || o.dy === 2)));
-    }
-    return [];
-  }
-
-  private rotateLocal(dx: number, dz: number, w: number, d: number, rot: 0 | 90 | 180 | 270): { rx: number; rz: number } {
-    if (rot === 0) return { rx: dx, rz: dz };
-    if (rot === 90) return { rx: d - 1 - dz, rz: dx };
-    if (rot === 180) return { rx: w - 1 - dx, rz: d - 1 - dz };
-    return { rx: dz, rz: w - 1 - dx };
-  }
-
-  private stampPoiIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
-    const CS = this.chunkSize;
-    const chunkMinX = cx * CS; const chunkMinY = cy * CS; const chunkMinZ = cz * CS;
-    const chunkMaxX = chunkMinX + CS - 1; const chunkMaxY = chunkMinY + CS - 1; const chunkMaxZ = chunkMinZ + CS - 1;
-    const regMinX = floorDiv(chunkMinX, this.REGION_SIZE); const regMaxX = floorDiv(chunkMaxX, this.REGION_SIZE);
-    const regMinZ = floorDiv(chunkMinZ, this.REGION_SIZE); const regMaxZ = floorDiv(chunkMaxZ, this.REGION_SIZE);
-
-    for (let rx = regMinX; rx <= regMaxX; rx++) {
-      for (let rz = regMinZ; rz <= regMaxZ; rz++) {
-        const poi = this.poiCandidateForRegion(rx, rz);
-        if (!poi.exists) continue;
-        if (poi.maxX < chunkMinX || poi.minX > chunkMaxX || poi.maxY < chunkMinY || poi.minY > chunkMaxY || poi.maxZ < chunkMinZ || poi.minZ > chunkMaxZ) continue;
-
-        const dims = this.poiDims(poi.type, poi.tier);
-        const ops = this.poiOps(poi.type, poi.tier);
-
-        for (const op of ops) {
-          const rotPos = this.rotateLocal(op.dx, op.dz, dims.w, dims.d, poi.rot);
-          const wx = poi.x0 + rotPos.rx; const wy = poi.y0 + op.dy; const wz = poi.z0 + rotPos.rz;
-
-          if (wx < chunkMinX || wx > chunkMaxX || wy < chunkMinY || wy > chunkMaxY || wz < chunkMinZ || wz > chunkMaxZ) continue;
-          const ii = this.idx(wx - chunkMinX, wy - chunkMinY, wz - chunkMinZ);
-          if (vox[ii] === this.BEDROCK_ID || op.id === this.AIR_ID) continue;
-          vox[ii] = clamp(toInt(op.id), 0, 255);
-        }
-      }
-    }
-  }
-
-  private stampTownIntoChunk(vox: Uint8Array, cx: number, cy: number, cz: number): void {
-    const CS = this.chunkSize;
-    const chunkMinX = cx * CS; const chunkMinY = cy * CS; const chunkMinZ = cz * CS;
-    const chunkMaxX = chunkMinX + CS - 1; const chunkMaxY = chunkMinY + CS - 1; const chunkMaxZ = chunkMinZ + CS - 1;
-
-    const closestX = clamp(this.TOWN_CENTER_X, chunkMinX, chunkMaxX);
-    const closestZ = clamp(this.TOWN_CENTER_Z, chunkMinZ, chunkMaxZ);
-    const r = this.SAFE_RADIUS + 2;
-    if ((closestX - this.TOWN_CENTER_X) ** 2 + (closestZ - this.TOWN_CENTER_Z) ** 2 > r * r) return;
-
-    // Define Shrine Centers
-    const shrines = [
-      { hx: this.TOWN_CENTER_X + 13, hz: this.TOWN_CENTER_Z + 13 },
-      { hx: this.TOWN_CENTER_X - 13, hz: this.TOWN_CENTER_Z + 13 },
-      { hx: this.TOWN_CENTER_X + 13, hz: this.TOWN_CENTER_Z - 13 },
-      { hx: this.TOWN_CENTER_X - 13, hz: this.TOWN_CENTER_Z - 13 },
-    ];
-
-    // Define Ring Pillars
-    const pillars = [
-      { px: 56, pz: 0 }, { px: -56, pz: 0 }, { px: 0, pz: 56 }, { px: 0, pz: -56 },
-      { px: 40, pz: 40 }, { px: -40, pz: 40 }, { px: 40, pz: -40 }, { px: -40, pz: -40 }
-    ];
-
-    for (let lx = 0; lx < CS; lx++) {
-      for (let lz = 0; lz < CS; lz++) {
-        const wx = chunkMinX + lx; const wz = chunkMinZ + lz;
-        const dx = wx - this.TOWN_CENTER_X; const dz = wz - this.TOWN_CENTER_Z;
-        const d2 = dx * dx + dz * dz;
-        const dist = Math.sqrt(d2);
-
-        if (dist > this.TOWN_RING_RADIUS + 3) continue;
-
-        // Base surface computation
-        const townY = this.baseHeight + 2; // Flatten the town exactly at baseHeight+2 to make a smooth plaza
-        
-        const inPlaza = dist <= this.TOWN_PLAZA_RADIUS + 2;
-        const inTown = dist <= this.TOWN_RING_RADIUS;
-        const inRingWall = dist >= this.TOWN_RING_RADIUS && dist <= this.TOWN_RING_RADIUS + 1.5;
-        const inPath = (Math.abs(dz) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS) || 
-                       (Math.abs(dx) <= this.TOWN_PATH_HALF_W && dist <= this.TOWN_RING_RADIUS);
-
-        // Find if we are in a shrine
-        let shrineLocal: { ox: number; oz: number } | null = null;
-        for (const c of shrines) {
-          const ox = wx - c.hx; const oz = wz - c.hz;
-          if (Math.abs(ox) <= 2 && Math.abs(oz) <= 2) { shrineLocal = { ox, oz }; break; }
-        }
-
-        // Find if we are in a pillar
-        let pillarLocal: { ox: number; oz: number } | null = null;
-        for (const p of pillars) {
-          const ox = dx - p.px; const oz = dz - p.pz;
-          if (Math.abs(ox) <= 1 && Math.abs(oz) <= 1) { pillarLocal = { ox, oz }; break; }
-        }
-
-        for (let ly = 0; ly < CS; ly++) {
-          const wy = chunkMinY + ly;
-          const ii = this.idx(lx, ly, lz);
-
-          if (vox[ii] === this.BEDROCK_ID) continue;
-
-          // CLEAR AIR ABOVE TOWN
-          if (wy > townY && wy <= townY + this.TOWN_CLEAR_HEIGHT) vox[ii] = this.AIR_ID;
-          
-          // BUILD SOLID GROUND UNDER TOWN
-          if (inTown && wy < townY) {
-             // Foundation
-             vox[ii] = wy < townY - 2 ? this.DIRT_ID : this.STONE_BRICKS_ID;
-          }
-
-          // --- PLAZA FLOOR ---
-          if (inTown && wy === townY) {
-            if (inPath) {
-               vox[ii] = this.DIRT_ID; // Dirt path
-            } else if (inPlaza) {
-               // Grand mosaic center
-               const checker = (Math.abs(wx) + Math.abs(wz)) % 2 === 0;
-               vox[ii] = checker ? this.STONE_BRICKS_ID : this.TUFF_ID;
-            } else {
-               // General plaza floor (grass with occasional moss/stone)
-               const r = this.hash2i(wx, wz, 999);
-               vox[ii] = r < 0.1 ? this.MOSS_ID : r < 0.2 ? this.MOSSY_STONE_ID : this.GRASS_ID;
-            }
-          }
-
-          // --- OUTER RING WALL ---
-          if (inRingWall && wy >= townY && wy <= townY + 3 && !inPath) { // Leave paths open
-             if (wy === townY || wy === townY + 1) vox[ii] = this.STONE_BRICKS_ID;
-             if (wy === townY + 2 || wy === townY + 3) vox[ii] = this.LEAVES_ID;
-          }
-
-          // --- GRAND PILLARS ---
-          if (pillarLocal && wy >= townY && wy <= townY + 6) {
-             if (wy === townY + 6) {
-               if (pillarLocal.ox === 0 && pillarLocal.oz === 0) vox[ii] = this.CRYSTAL_ID;
-               else vox[ii] = this.AIR_ID;
-             } else if (wy === townY) {
-               vox[ii] = this.STONE_BRICKS_ID;
-             } else {
-               // Deepslate pillar trunk
-               if (Math.abs(pillarLocal.ox) + Math.abs(pillarLocal.oz) <= 1) vox[ii] = this.DEEPSLATE_ID;
-               else vox[ii] = this.AIR_ID;
-             }
-          }
-
-          // --- AWAKENING SHRINES ---
-          if (shrineLocal && wy >= townY && wy <= townY + 6) {
-            const ox = shrineLocal.ox; const oz = shrineLocal.oz;
-            const isCorner = Math.abs(ox) === 2 && Math.abs(oz) === 2;
-            const isCenter = ox === 0 && oz === 0;
-            const distToCenter = Math.max(Math.abs(ox), Math.abs(oz));
-
-            if (wy === townY) {
-              vox[ii] = this.STONE_BRICKS_ID; // Shrine base
-            } else if (wy > townY && wy <= townY + 3) {
-              if (isCorner) vox[ii] = this.WOOD_ID; // Corner pillars
-              else if (isCenter && wy === townY + 1) vox[ii] = this.TUFF_ID; // Pedestal
-              else if (isCenter && wy === townY + 2) vox[ii] = this.CRYSTAL_ID; // Glowing crystal
-              else vox[ii] = this.AIR_ID; // Open air for the rest
-            } else if (wy === townY + 4) {
-              // Outer roof lip
-              if (distToCenter === 2) vox[ii] = this.PLANKS_ID;
-              else vox[ii] = this.AIR_ID;
-            } else if (wy === townY + 5) {
-              // Inner roof
-              if (distToCenter === 1) vox[ii] = this.PLANKS_ID;
-              else vox[ii] = this.AIR_ID;
-            } else if (wy === townY + 6) {
-              // Roof tip
-              if (isCenter) vox[ii] = this.PLANKS_ID;
-              else vox[ii] = this.AIR_ID;
-            }
-          }
-        }
-      }
-    }
-
-    // Structure stamping for Town Hall (must be shifted to new townY)
-    if (this.townHall) {
-      const townY = this.baseHeight + 2;
-      const baseY = townY + 1; // Start building on top of the plaza floor
-      const worldX = this.TOWN_CENTER_X - this.townHall.anchor.x;
-      const worldY = baseY - this.townHall.anchor.y;
-      const worldZ = this.TOWN_CENTER_Z - this.townHall.anchor.z;
-      this.stampStructureIntoChunk(vox, cx, cy, cz, this.townHall, worldX, worldY, worldZ);
-    }
-  }
-
-  // =========================
-  // Path B: Structure stamping (seam-safe per chunk)
-  // =========================
-  private stampStructureIntoChunk(
-    vox: Uint8Array, cx: number, cy: number, cz: number,
-    s: { size: { w: number; h: number; d: number }; blocks: Array<{ x: number; y: number; z: number; id: number }> },
-    worldX: number, worldY: number, worldZ: number
-  ): void {
-    const CS = this.chunkSize;
-    const chunkMinX = cx * CS; const chunkMinY = cy * CS; const chunkMinZ = cz * CS;
-    const chunkMaxX = chunkMinX + CS - 1; const chunkMaxY = chunkMinY + CS - 1; const chunkMaxZ = chunkMinZ + CS - 1;
-    if (worldX + s.size.w - 1 < chunkMinX || worldX > chunkMaxX || worldY + s.size.h - 1 < chunkMinY || worldY > chunkMaxY || worldZ + s.size.d - 1 < chunkMinZ || worldZ > chunkMaxZ) return;
-
-    for (const b of s.blocks) {
-      const wx = worldX + b.x; const wy = worldY + b.y; const wz = worldZ + b.z;
-      if (wx < chunkMinX || wx > chunkMaxX || wy < chunkMinY || wy > chunkMaxY || wz < chunkMinZ || wz > chunkMaxZ) continue;
-      const ii = this.idx(wx - chunkMinX, wy - chunkMinY, wz - chunkMinZ);
-      if (vox[ii] === this.BEDROCK_ID) continue;
-      // Overwrites existing terrain, including AIR (0) for hollowing out cuts
-      vox[ii] = clamp(toInt(b.id), 0, 255);
-    }
-  }
-
-  // =========================
-  // Cave Generation Utilities
-  // =========================
-  private pickCaveBiome(y: number, biomeNoise: number): CaveBiome {
-    if (y < 18) return "DEEP_DARKISH";
-    if (biomeNoise > 0.55) return "DRIPSTONE";
-    if (biomeNoise < -0.55) return "LUSH";
-    if (y > 25 && biomeNoise > 0.35 && biomeNoise < 0.45) return "CRYSTAL";
-    if (biomeNoise < -0.2 && biomeNoise > -0.35) return "TUFFY";
-    return "DEEP_DARKISH";
-  }
-
-  private baseStoneForDepth(y: number): number { return y < 18 ? this.DEEPSLATE_ID : this.STONE_ID; }
-
-  private triCurve(y: number, minY: number, peakY: number, maxY: number) {
-    if (y <= minY || y >= maxY) return 0;
-    if (y === peakY) return 1;
-    return y < peakY ? (y - minY) / (peakY - minY) : (maxY - y) / (maxY - peakY);
-  }
-
-  private chooseOreForY(y: number, rand: () => number): number | null {
-    for (const ore of this.ORES) if (rand() < ore.baseChance * this.triCurve(y, ore.minY, ore.peakY, ore.maxY)) return ore.id;
-    return null;
-  }
-
-  private carveVein(vox: Uint8Array, startX: number, startY: number, startZ: number, oreId: number, size: number, rand: () => number) {
-    let x = startX, y = startY, z = startZ;
-    for (let i = 0; i < size; i++) {
-      if (x >= 0 && x < this.chunkSize && y >= 0 && y < this.chunkSize && z >= 0 && z < this.chunkSize) {
-        const idx = this.idx(x, y, z);
-        const current = vox[idx];
-        if (current === this.STONE_ID || current === this.DEEPSLATE_ID || current === this.TUFF_ID) vox[idx] = oreId;
-      }
-      const r = rand();
-      if (r < 0.25) x++; else if (r < 0.5) x--; else if (r < 0.7) z++; else if (r < 0.9) z--; else y += rand() < 0.5 ? 1 : -1;
-    }
-  }
-
-  // =========================
-  // Chunk generation
-  // =========================
-  private generateChunk(cx: number, cy: number, cz: number): Uint8Array {
-    const CS = this.chunkSize;
-    const vox = new Uint8Array(CS * CS * CS);
-
-    // 1. Base Terrain
-    for (let i = 0; i < CS; i++) {
-      for (let k = 0; k < CS; k++) {
-        const worldX = cx * CS + i; const worldZ = cz * CS + k;
-        const biome = this.getBiome(worldX, worldZ);
-        const height = this.heightAt(worldX, worldZ);
-        const surfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : biome === this.BIOME_SNOW ? this.SNOW_ID : this.GRASS_ID;
-        const subsurfaceId = biome === this.BIOME_DESERT ? this.SAND_ID : this.DIRT_ID;
-
-        for (let j = 0; j < CS; j++) {
-          const worldY = cy * CS + j;
-          const idx = this.idx(i, j, k);
-
-          if (worldY <= 4 && this.hash3i(worldX, worldY, worldZ) < 0.95 - worldY * 0.18) { vox[idx] = this.BEDROCK_ID; continue; }
-          if (worldY > height) { vox[idx] = this.AIR_ID; continue; }
-          if (worldY === height) { vox[idx] = surfaceId; continue; }
-          if (worldY > height - 4) { vox[idx] = subsurfaceId; continue; }
-
-          let block = this.baseStoneForDepth(worldY);
-          if (worldY < height - 5 && worldY > 5 && this.fbm3(worldX, worldY, worldZ, 24, 2, 8888) < 0.45) block = this.AIR_ID;
-          vox[idx] = block;
-        }
-      }
-    }
-
-    // 2. Cave Skinning
-    const skinnedVox = new Uint8Array(vox);
-    for (let x = 0; x < CS; x++) {
-      for (let y = 0; y < CS; y++) {
-        for (let z = 0; z < CS; z++) {
-          const idx = this.idx(x, y, z);
-          const current = vox[idx];
-          if (current === this.STONE_ID || current === this.DEEPSLATE_ID) {
-            const worldX = cx * CS + x; const worldY = cy * CS + y; const worldZ = cz * CS + z;
-            const up = y < CS - 1 ? vox[this.idx(x, y + 1, z)] : this.AIR_ID;
-            const down = y > 0 ? vox[this.idx(x, y - 1, z)] : this.STONE_ID;
-            const left = x > 0 ? vox[this.idx(x - 1, y, z)] : this.STONE_ID;
-            const right = x < CS - 1 ? vox[this.idx(x + 1, y, z)] : this.STONE_ID;
-            const front = z > 0 ? vox[this.idx(x, y, z - 1)] : this.STONE_ID;
-            const back = z < CS - 1 ? vox[this.idx(x, y, z + 1)] : this.STONE_ID;
-
-            const isCeil = down === this.AIR_ID;
-            const isFloor = up === this.AIR_ID;
-            const isWall = !isCeil && !isFloor && (left === this.AIR_ID || right === this.AIR_ID || front === this.AIR_ID || back === this.AIR_ID);
-
-            if (isFloor || isCeil || isWall) {
-              const rules = this.CaveBiomeRules[this.pickCaveBiome(worldY, this.fbm2(worldX, worldZ, 120, 2, 7777))];
-              if (isFloor) skinnedVox[idx] = rules.floor; else if (isCeil) skinnedVox[idx] = rules.ceil; else if (isWall) skinnedVox[idx] = rules.wall;
-
-              if (rules.deco) {
-                let rSalt = 0; const rand = () => this.hash3i(worldX, worldY, worldZ + rSalt++);
-                for (const d of rules.deco) {
-                  if (rand() < d.chance) {
-                    const decoId = d.place({ x: worldX, y: worldY, z: worldZ, rand });
-                    if (decoId !== null) {
-                      if (isFloor && y < CS - 1) skinnedVox[this.idx(x, y + 1, z)] = decoId;
-                      else if (isCeil && y > 0) skinnedVox[this.idx(x, y - 1, z)] = decoId;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    vox.set(skinnedVox);
-
-    // 3. Ores
-    let oreSalt = 0;
-    for (let x = 0; x < CS; x++) {
-      for (let y = 0; y < CS; y++) {
-        for (let z = 0; z < CS; z++) {
-          const idx = this.idx(x, y, z);
-          if (vox[idx] === this.STONE_ID || vox[idx] === this.DEEPSLATE_ID || vox[idx] === this.TUFF_ID) {
-            const worldY = cy * CS + y;
-            const rand = () => this.hash3i(cx * CS + x, worldY, cz * CS + z + oreSalt++);
-            const oreId = this.chooseOreForY(worldY, rand);
-            if (oreId) {
-              const def = this.ORES.find((o) => o.id === oreId);
-              if (def) this.carveVein(vox, x, y, z, oreId, Math.floor(def.veinSize[0] + (def.veinSize[1] - def.veinSize[0] + 1) * rand()), rand);
-            }
-          }
-        }
-      }
-    }
-
-    // 4. Trees
-    for (let i = 0; i < CS; i++) {
-      for (let k = 0; k < CS; k++) {
-        const worldX = cx * CS + i; const worldZ = cz * CS + k;
-        const biome = this.getBiome(worldX, worldZ);
-        if (this.shouldPlaceTreeAt(worldX, worldZ, biome) && biome !== this.BIOME_DESERT) {
-          const height = this.heightAt(worldX, worldZ);
-          const tH = this.treeHeight(worldX, worldZ, biome);
-          for (let j = 0; j < CS; j++) {
-            const worldY = cy * CS + j; const idx = this.idx(i, j, k);
-            if (worldY >= height + 1 && worldY <= height + tH) { vox[idx] = this.WOOD_ID; } 
-            else if (worldY >= height + tH - 1 && worldY <= height + tH + 2) {
-              if (this.hash3i(worldX, worldY, worldZ) > (biome === this.BIOME_SNOW ? 0.42 : 0.22) && vox[idx] === this.AIR_ID) vox[idx] = this.LEAVES_ID;
-            }
-          }
-        }
-      }
-    }
-
-    // 5. Structures & Town
-    this.stampPoiIntoChunk(vox, cx, cy, cz);
-    this.stampTownIntoChunk(vox, cx, cy, cz);
-
-    return vox;
-  }
-
-  // =========================
-  // OPTION B: upgrade loaded chunks
-  // =========================
   private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
     const key = this.chunkKey(cx, cy, cz);
     const cached = this.chunks.get(key);
@@ -2500,21 +1769,21 @@ export class MyRoom extends Room {
     const fromDisk = this.readChunkFromDisk(cx, cy, cz);
     if (fromDisk) {
       try {
-        this.stampTownIntoChunk(fromDisk, cx, cy, cz);
+        this.worldGen.stampTownIntoChunk(fromDisk, cx, cy, cz);
         this.writeChunkToDisk(cx, cy, cz, fromDisk);
       } catch (e) {}
       this.chunks.set(key, fromDisk);
       return fromDisk;
     }
 
-    const gen = this.generateChunk(cx, cy, cz);
+    const gen = this.worldGen.generateChunk(cx, cy, cz);
     this.chunks.set(key, gen);
     return gen;
   }
 
   private getBlockAt(x: number, y: number, z: number): number {
     const CS = this.chunkSize;
-    return this.getOrCreateChunk(floorDiv(x, CS), floorDiv(y, CS), floorDiv(z, CS))[this.idx(mod(x, CS), mod(y, CS), mod(z, CS))] | 0;
+    return this.getOrCreateChunk(floorDiv(x, CS), floorDiv(y, CS), floorDiv(z, CS))[this.worldGen["idx"](mod(x, CS), mod(y, CS), mod(z, CS))] | 0;
   }
 
   private setBlockAuthoritative(x: number, y: number, z: number, id: number): void {
@@ -2522,15 +1791,12 @@ export class MyRoom extends Room {
     const cx = floorDiv(x, CS); const cy = floorDiv(y, CS); const cz = floorDiv(z, CS);
     const chunk = this.getOrCreateChunk(cx, cy, cz);
     const v = clamp(toInt(id), 0, 255);
-    chunk[this.idx(mod(x, CS), mod(y, CS), mod(z, CS))] = v;
+    chunk[this.worldGen["idx"](mod(x, CS), mod(y, CS), mod(z, CS))] = v;
 
     try { this.writeChunkToDisk(cx, cy, cz, chunk); } catch (e) {}
     this.broadcast("blockUpdate", { x, y, z, id: v });
   }
 
-  // =========================
-  // Drops internals
-  // =========================
   private cleanupDrops(): void {
     if (this.drops.size <= 0) return;
     const now = Date.now();
@@ -2558,20 +1824,14 @@ export class MyRoom extends Room {
     if (blockId === this.IRON_ORE_ID) return Items.RAW_IRON;
     if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
     if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
-    
-    // UPDATED: Now interior blocks properly drop themselves!
     if (blockId === this.PLANKS_ID) return Items.PLANKS;
     if (blockId === this.STONE_BRICKS_ID) return Items.STONE_BRICKS;
     if (blockId === this.CARPET_ID) return Items.CARPET;
     if (blockId === this.GLASS_ID) return Items.GLASS;
     if (blockId === this.LANTERN_ID) return Items.LANTERN;
-    
-    return 0; // Everything else breaks to air/nothing by default
+    return 0; 
   }
 
-  // =========================
-  // Mining helpers (tiers + durability)
-  // =========================
   private isStoneLike(blockId: number): boolean { 
     return (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID || blockId === this.MOSSY_STONE_ID || blockId === this.DRIPSTONE_BLOCK_ID || blockId === this.STONE_BRICKS_ID); 
   }
@@ -2674,5 +1934,18 @@ export class MyRoom extends Room {
         }
       }
     }
+  }
+
+  public heightAt(worldX: number, worldZ: number): number {
+    return this.worldGen.heightAt(worldX, worldZ);
+  }
+
+  public isInSafeZoneXZ(worldX: number, worldZ: number): boolean {
+    if(!this.worldGen) {
+        const dx = worldX - this.TOWN_CENTER_X; 
+        const dz = worldZ - this.TOWN_CENTER_Z;
+        return dx * dx + dz * dz <= this.SAFE_RADIUS * this.SAFE_RADIUS;
+    }
+    return this.worldGen.isInSafeZoneXZ(worldX, worldZ);
   }
 }
