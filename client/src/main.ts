@@ -785,14 +785,13 @@ let vmRotX = 0.22;
 let vmRotY = 0.1;
 let vmRotZ = -0.58;
 
-// INCREASED MULTIPLIERS FOR HEAVY SWING
 let vmPitchMul = 0.45;
-let vmPunchRotMul = 1.2; // Increased rotation distance
+let vmPunchRotMul = 1.2; 
 let vmTurnSwayMulY = 0.35;
 let vmTurnSwayMulZ = 0.25;
-let vmPunchMoveX = 0.25; // Push further horizontally
-let vmPunchMoveY = 0.15; // Push further vertically
-let vmPunchMoveZ = 0.35; // Push weapon deep into the screen Z-axis
+let vmPunchMoveX = 0.25; 
+let vmPunchMoveY = 0.15; 
+let vmPunchMoveZ = 0.35; 
 
 /* ===============================
    6.2 Remote state
@@ -863,18 +862,16 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
   if (stack && stack.id > 0 && stack.count > 0) {
     const def = (ITEM_DEFS as any)[stack.id] as ItemDef | undefined;
     
-    // 1. Icon Rendering (replacing plain text)
+    // 1. Icon Rendering 
     if (def && def.icon) {
       const img = document.createElement("img");
       img.src = def.icon;
       img.style.width = "42px";
       img.style.height = "42px";
       img.style.imageRendering = "pixelated";
-      // Game-Icons.net are black; invert to white for dark UI
       img.style.filter = "invert(1)"; 
       img.style.opacity = "0.9";
       
-      // Fallback to emoji if image fails to load
       img.onerror = () => {
           img.style.display = "none";
           const fallback = document.createElement("div");
@@ -896,7 +893,6 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
         }
       }
     } else {
-      // Fallback if no icon defined
       const name = document.createElement("div");
       name.textContent = itemName(stack.id);
       name.style.fontSize = "11px";
@@ -907,7 +903,7 @@ function renderSlot(el: HTMLDivElement, stack: ItemStack, isSelected = false) {
     }
 
     // 3. Count Overlay
-    if (!def || (def.id < 1000)) { // Don't show count 1 for skills
+    if (!def || (def.id < 1000)) {
       if (stack.count > 1 || (def && def.maxStack > 1)) {
         const count = document.createElement("div");
         count.textContent = `${stack.count}`;
@@ -1947,7 +1943,6 @@ function itemIdToAtlasIndex(itemId: number): number {
   if ((Items as any).GLOW_SHROOM && itemId === (Items as any).GLOW_SHROOM) return ATLAS.GLOW_SHROOM;
   if ((Items as any).CRYSTAL && itemId === (Items as any).CRYSTAL) return ATLAS.CRYSTAL;
   
-  // Mapping block IDs directly for extended compatibility
   if (itemId === PLANKS_ID) return ATLAS.PLANKS;
   if (itemId === STONE_BRICKS_ID) return ATLAS.STONE_BRICKS;
   if (itemId === CARPET_ID) return ATLAS.CARPET;
@@ -2310,13 +2305,12 @@ let vmScene: BABYLON.Scene | null = null;
 let vmCam: BABYLON.FreeCamera | null = null;
 let vmRoot: BABYLON.TransformNode | null = null;
 let vmArmRoot: BABYLON.TransformNode | null = null;
-let vmGrip: BABYLON.TransformNode | null = null; // Dedicated item anchor
+let vmGrip: BABYLON.TransformNode | null = null; 
 let vmEngineHooked = false;
 
 let vmAxes: BABYLON.TransformNode | null = null;
 let vmFrame: BABYLON.LinesMesh | null = null;
 
-// New Scene Node Variables for Arm Meshes
 let vmUpperArmMesh: BABYLON.Mesh | null = null;
 let vmForeArmMesh: BABYLON.Mesh | null = null;
 let vmHandMesh: BABYLON.Mesh | null = null;
@@ -2347,7 +2341,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmArmRoot = new BABYLON.TransformNode("vmArmRoot", vmScene);
   vmArmRoot.parent = vmRoot;
 
-  // Assign meshes to scene node variables
   vmUpperArmMesh = BABYLON.MeshBuilder.CreateBox("vmUpperArm", { width: 0.16, height: 0.44, depth: 0.16 }, vmScene);
   vmForeArmMesh = BABYLON.MeshBuilder.CreateBox("vmForeArm", { width: 0.16, height: 0.38, depth: 0.16 }, vmScene);
   vmHandMesh = BABYLON.MeshBuilder.CreateBox("vmHand", { width: 0.17, height: 0.18, depth: 0.17 }, vmScene);
@@ -2362,10 +2355,9 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
   vmForeArmMesh.position.set(0.0, -0.14, 0.02);
   vmHandMesh.position.set(0.0, -0.4, 0.04);
 
-  // Dedicated grip node that rides the hand mesh
   vmGrip = new BABYLON.TransformNode("vmGrip", vmScene);
   vmGrip.parent = vmHandMesh;
-  vmGrip.position.set(0.0, -0.06, 0.10); // Forward from palm
+  vmGrip.position.set(0.0, -0.06, 0.10); 
   vmGrip.rotation.set(0, 0, 0);
 
   const armMat = new BABYLON.StandardMaterial("vmArmMat", vmScene);
@@ -2412,7 +2404,6 @@ function ensureVmScene(noaScene: BABYLON.Scene) {
     }
 
     if (!vmFrame) {
-      // Perspective static frame box pushed forward so it's visible
       const pts = [
         new BABYLON.Vector3(-1, -1, 1),
         new BABYLON.Vector3(1, -1, 1),
@@ -2457,7 +2448,7 @@ let vmItemMesh: BABYLON.TransformNode | null = null;
 
 function getVmAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = false) {
   const mat = new BABYLON.StandardMaterial(`vmAtlasMat:${atlasIndex}:${alpha ? 1 : 0}`, scene);
-  mat.disableLighting = true;           // Minecraft look (unlit texture)
+  mat.disableLighting = true;           
   mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   mat.specularColor = new BABYLON.Color3(0, 0, 0);
   mat.backFaceCulling = false;
@@ -2477,7 +2468,7 @@ function getVmAtlasMaterial(scene: BABYLON.Scene, atlasIndex: number, alpha = fa
   tex.vOffset = 1 - (idx + 1) / ATLAS_TILE_COUNT;
 
   mat.diffuseTexture = tex;
-  mat.opacityTexture = alpha ? tex : null;   // cutout-ish look
+  mat.opacityTexture = alpha ? tex : null;   
   return mat;
 }
 
@@ -2487,11 +2478,11 @@ function updateVmItem() {
   const heldStack = invState.slots[selectedHotbar];
   const heldId = (heldStack && heldStack.count > 0) ? heldStack.id : 0;
 
-  // Always show the arm so we see the hand holding the weapon
-  const showArm = true;
-  if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(showArm);
-  if (vmForeArmMesh) vmForeArmMesh.setEnabled(showArm);
-  if (vmHandMesh) vmHandMesh.setEnabled(showArm);
+  // The requested feature: Shows Arm when unarmed, replaces with HUGE Item Mesh when equipped.
+  const isUnarmed = heldId === 0;
+  if (vmUpperArmMesh) vmUpperArmMesh.setEnabled(isUnarmed);
+  if (vmForeArmMesh) vmForeArmMesh.setEnabled(isUnarmed);
+  if (vmHandMesh) vmHandMesh.setEnabled(isUnarmed);
 
   if (heldId === currentVmItemId) return;
   currentVmItemId = heldId;
@@ -2501,19 +2492,16 @@ function updateVmItem() {
     vmItemMesh = null;
   }
 
-  // If unarmed, we are done
-  if (heldId === 0) return;
+  // If unarmed, we simply return since the arm is already shown above
+  if (isUnarmed) return;
 
   const def = (ITEM_DEFS as any)[heldId] as ItemDef | undefined;
   if (!def) return;
 
   vmItemMesh = new BABYLON.TransformNode("vmItemMesh", vmScene);
   
-  // Attach to the dedicated grip on the hand
-  vmItemMesh.parent = vmGrip ?? vmArmRoot;
-  
-  // Ensure scaling allows it to be visible alongside thicker geometry
-  vmItemMesh.scaling.set(1.4, 1.4, 1.4);
+  // Attach to the arm root so it gets the sway/punch kinematics but ignores the hand's local offsets
+  vmItemMesh.parent = vmArmRoot;
 
   const headTile =
     def.tool?.kind === "sword" ? ATLAS.IRON_ORE :
@@ -2529,7 +2517,9 @@ function updateVmItem() {
      vmItemMesh.rotation.y = 0;
      vmItemMesh.rotation.z = 0;
 
-     // Thicker sword geometry adjusted for correct alignments
+     // Minecraft-style HUGE scaling
+     vmItemMesh.scaling.set(4, 4, 4);
+
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.22, depth: 0.07 }, vmScene);
      handle.material = handleMat;
      handle.position.y = 0.02;
@@ -2546,15 +2536,17 @@ function updateVmItem() {
      guard.parent = vmItemMesh;
      blade.parent = vmItemMesh;
 
-     // Keep relative to the hand rather than floating center screen
-     vmItemMesh.position.set(0.05, -0.03, 0.12);
+     // Centered and forward for massive impact
+     vmItemMesh.position.set(0.3, -0.4, 0.5);
 
   } else if (def.tool?.kind === "pick" || def.tool?.kind === "axe") {
      vmItemMesh.rotation.x = Math.PI / 4;
      vmItemMesh.rotation.y = -Math.PI / 10;
      vmItemMesh.rotation.z = 0;
 
-     // Thicker tool geometry adjusted for visibility
+     // Minecraft-style HUGE scaling
+     vmItemMesh.scaling.set(3.5, 3.5, 3.5);
+
      const handle = BABYLON.MeshBuilder.CreateBox("handle", { width: 0.07, height: 0.65, depth: 0.07 }, vmScene);
      handle.material = handleMat;
      handle.position.y = 0.2;
@@ -2571,13 +2563,17 @@ function updateVmItem() {
      handle.parent = vmItemMesh;
      head.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.05, -0.03, 0.12);
+     // Centered and forward
+     vmItemMesh.position.set(0.3, -0.4, 0.5);
 
   } else {
      // Blocks or Raw Items (Cubes)
      vmItemMesh.rotation.x = Math.PI / 8;
      vmItemMesh.rotation.y = Math.PI / 4;
      vmItemMesh.rotation.z = 0;
+
+     // Minecraft-style HUGE scaling
+     vmItemMesh.scaling.set(2, 2, 2);
 
      const tile = itemIdToAtlasIndex(heldId);
      const alpha =
@@ -2591,11 +2587,11 @@ function updateVmItem() {
 
      const box = BABYLON.MeshBuilder.CreateBox("vmBlock", { size: 0.22 }, vmScene);
 
-     // Same texture on all faces for now (Minecraft-ish enough)
      box.material = getVmAtlasMaterial(vmScene, tile, !!alpha);
      box.parent = vmItemMesh;
 
-     vmItemMesh.position.set(0.05, 0.05, 0.12);
+     // Pushed heavily into view
+     vmItemMesh.position.set(0.3, -0.2, 0.6);
   }
 
   // Enforce overlay depth buffer
