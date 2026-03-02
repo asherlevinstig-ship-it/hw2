@@ -2,6 +2,7 @@
 // FULL FILE - No Omits
 
 import * as BABYLON from "@babylonjs/core/Legacy/legacy";
+import "@babylonjs/loaders/glTF"; // <--- INJECTS GLTF SUPPORT
 import type { BlockMaterialManager } from "./BlockMaterialManager";
 
 export type NetTransform = { 
@@ -51,6 +52,13 @@ export class RemoteEntityRenderer {
     this.scene.useRightHandedSystem = noaScene.useRightHandedSystem;
     this.scene.autoClear = false;
     this.scene.autoClearDepthAndStencil = false;
+
+    // ADDED: Ambient Light for PBR Materials! (GLTF models will be pitch black without this)
+    if (!this.scene.lights || this.scene.lights.length === 0) {
+        const light = new BABYLON.HemisphericLight("rpLight", new BABYLON.Vector3(0, 1, 0), this.scene);
+        light.intensity = 1.2;
+        light.specular = new BABYLON.Color3(0.1, 0.1, 0.1);
+    }
 
     this.cam = new BABYLON.FreeCamera("rpCam", new BABYLON.Vector3(0, 0, 0), this.scene);
     this.cam.minZ = 0.05;
@@ -273,16 +281,14 @@ export class RemoteEntityRenderer {
 
     this.mats.set(id, []);
 
-    const stoneMat = this.getMat(matManager, 90, new BABYLON.Color3(0.2, 0.2, 0.2), false, id); 
-    const trimMat = this.getMat(matManager, 91, new BABYLON.Color3(0.3, 0.3, 0.3), false, id); 
-    const darkMat = this.getMat(matManager, 30, new BABYLON.Color3(0.05, 0.05, 0.05), false, id); 
-    const goldMat = this.getMat(matManager, 32, new BABYLON.Color3(0.8, 0.7, 0.1), false, id); 
-    const woodMat = this.getMat(matManager, 4, new BABYLON.Color3(0.4, 0.3, 0.1), false, id); 
-
     if (isGiant) {
       // ==========================================
       // THE ANCIENT WARDEN 
       // ==========================================
+      const stoneMat = this.getMat(matManager, 90, new BABYLON.Color3(0.2, 0.2, 0.2), false, id); 
+      const goldMat = this.getMat(matManager, 32, new BABYLON.Color3(0.8, 0.7, 0.1), false, id); 
+      const darkMat = this.getMat(matManager, 30, new BABYLON.Color3(0.05, 0.05, 0.05), false, id); 
+
       const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
       magicMat.disableLighting = true;
       magicMat.emissiveColor = new BABYLON.Color3(0, 1, 1);
@@ -316,7 +322,6 @@ export class RemoteEntityRenderer {
       head.parent = headJoint;
       head.position.y = 0.4;
 
-      // Warden Face Plate & Eyes
       const face = BABYLON.MeshBuilder.CreateBox(`gFace:${id}`, { width: 0.45, height: 0.35, depth: 0.05 }, this.scene);
       face.parent = head;
       face.position.set(0, -0.05, 0.31); 
@@ -325,7 +330,7 @@ export class RemoteEntityRenderer {
       const brow = BABYLON.MeshBuilder.CreateBox(`gBrow:${id}`, { width: 0.5, height: 0.1, depth: 0.1 }, this.scene);
       brow.parent = head;
       brow.position.set(0, 0.15, 0.31);
-      brow.material = goldMat; // Golden regal brow
+      brow.material = goldMat; 
 
       const eyeL = BABYLON.MeshBuilder.CreateBox(`gEyeL:${id}`, { size: 0.08 }, this.scene);
       eyeL.parent = face;
@@ -404,6 +409,10 @@ export class RemoteEntityRenderer {
       // ==========================================
       // STANDARD GOLEM RIG
       // ==========================================
+      const stoneMat = this.getMat(matManager, 90, new BABYLON.Color3(0.2, 0.2, 0.2), false, id); 
+      const trimMat = this.getMat(matManager, 91, new BABYLON.Color3(0.3, 0.3, 0.3), false, id); 
+      const darkMat = this.getMat(matManager, 30, new BABYLON.Color3(0.05, 0.05, 0.05), false, id); 
+
       const eyeMat = new BABYLON.StandardMaterial(`mobEyeMat:${id}`, this.scene);
       eyeMat.disableLighting = true;
       eyeMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0.1); 
@@ -532,91 +541,49 @@ export class RemoteEntityRenderer {
 
     } else {
       // ==========================================
-      // STANDARD PLAYER RIG
+      // GLTF MODEL INTEGRATION (Players)
       // ==========================================
-      const hips = new BABYLON.TransformNode(`pHips:${id}`, this.scene);
-      hips.parent = root;
-      hips.position.y = 0.9;
+      parts = { isGltf: true }; 
 
-      const torso = new BABYLON.TransformNode(`pTorso:${id}`, this.scene);
-      torso.parent = hips;
-      torso.position.y = 0;
+      BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "/models/sukuna/", 
+        "Sukuna Character GLTF.gltf",
+        this.scene
+      ).then(result => {
+        if (root.isDisposed()) {
+          result.meshes.forEach(m => m.dispose());
+          return;
+        }
 
-      const body = BABYLON.MeshBuilder.CreateBox(`pBody:${id}`, { width: 0.65, height: 0.95, depth: 0.32 }, this.scene);
-      body.parent = torso;
-      body.position.y = 0.475;
-      body.material = woodMat; 
+        const rootMesh = result.meshes[0];
+        rootMesh.parent = root;
 
-      const headJoint = new BABYLON.TransformNode(`pHeadJoint:${id}`, this.scene);
-      headJoint.parent = torso;
-      headJoint.position.y = 0.95;
+        rootMesh.scaling.setAll(0.01);
+        rootMesh.rotation.y = Math.PI;
 
-      const head = BABYLON.MeshBuilder.CreateBox(`pHead:${id}`, { size: 0.55 }, this.scene);
-      head.parent = headJoint;
-      head.position.y = 0.275;
-      head.material = woodMat;
-
-      const face = BABYLON.MeshBuilder.CreateBox(`pFace:${id}`, { width: 0.45, height: 0.35, depth: 0.05 }, this.scene);
-      face.parent = head;
-      face.position.set(0, -0.05, 0.28); 
-      face.material = darkMat;
-
-      const eyeMat = new BABYLON.StandardMaterial(`pEyeMat:${id}`, this.scene);
-      eyeMat.disableLighting = true;
-      eyeMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 0.9); 
-      (eyeMat as any).fogEnabled = false;
-      this.mats.get(id)!.push(eyeMat);
-
-      const eyeL = BABYLON.MeshBuilder.CreateBox(`pEyeL:${id}`, { size: 0.08 }, this.scene);
-      eyeL.parent = face;
-      eyeL.position.set(-0.12, 0.0, 0.02);
-      eyeL.material = eyeMat;
-
-      const eyeR = BABYLON.MeshBuilder.CreateBox(`pEyeR:${id}`, { size: 0.08 }, this.scene);
-      eyeR.parent = face;
-      eyeR.position.set(0.12, 0.0, 0.02);
-      eyeR.material = eyeMat;
-
-      const armJointL = new BABYLON.TransformNode(`pArmJL:${id}`, this.scene);
-      armJointL.parent = torso;
-      armJointL.position.set(-0.45, 0.8, 0);
-
-      const armL = BABYLON.MeshBuilder.CreateBox(`pArmL:${id}`, { width: 0.2, height: 0.85, depth: 0.2 }, this.scene);
-      armL.parent = armJointL;
-      armL.position.y = -0.3;
-      armL.material = woodMat;
-
-      const armJointR = new BABYLON.TransformNode(`pArmJR:${id}`, this.scene);
-      armJointR.parent = torso;
-      armJointR.position.set(0.45, 0.8, 0);
-
-      const armR = BABYLON.MeshBuilder.CreateBox(`pArmR:${id}`, { width: 0.2, height: 0.85, depth: 0.2 }, this.scene);
-      armR.parent = armJointR;
-      armR.position.y = -0.3;
-      armR.material = woodMat;
-
-      const legL = BABYLON.MeshBuilder.CreateBox(`pLegL:${id}`, { width: 0.22, height: 0.9, depth: 0.22 }, this.scene);
-      legL.parent = hips;
-      legL.position.set(-0.16, -0.45, 0);
-      legL.material = woodMat;
-
-      const legR = BABYLON.MeshBuilder.CreateBox(`pLegR:${id}`, { width: 0.22, height: 0.9, depth: 0.22 }, this.scene);
-      legR.parent = hips;
-      legR.position.set(0.16, -0.45, 0);
-      legR.material = woodMat;
-
-      [body, head, face, armL, armR, legL, legR].forEach(m => {
+        result.meshes.forEach(m => {
           m.isPickable = false;
-          (m as any).isInFrustum = () => true;
-      });
+        });
 
-      if (seed > 0.5) {
-        const pack = BABYLON.MeshBuilder.CreateBox(`pPack:${id}`, { width: 0.5, height: 0.6, depth: 0.2 }, this.scene);
-        pack.parent = torso; pack.position.set(0, 0.5, -0.26); pack.material = trimMat;
-      }
+        if (result.animationGroups && result.animationGroups.length > 0) {
+            console.log(`[GLTF] Animations loaded for ${id}. Playing IDLE.`);
+            result.animationGroups[0].start(true);
+        }
 
-      flashMats.push(woodMat, darkMat, trimMat);
-      parts = { hips, torso, headJoint, armJointL, armJointR, legL, legR, flashMats };
+        if (result.skeletons && result.skeletons.length > 0) {
+            const skeleton = result.skeletons[0];
+            (root as any).__skeleton = skeleton;
+            (root as any).__bones = {
+                spine: skeleton.bones.find(b => b.name.toLowerCase().includes("spine")),
+                head: skeleton.bones.find(b => b.name.toLowerCase().includes("head")),
+                armR: skeleton.bones.find(b => b.name.toLowerCase().includes("arm") && b.name.toLowerCase().includes("r")),
+                armL: skeleton.bones.find(b => b.name.toLowerCase().includes("arm") && b.name.toLowerCase().includes("l")),
+                legR: skeleton.bones.find(b => b.name.toLowerCase().includes("leg") && b.name.toLowerCase().includes("r")),
+                legL: skeleton.bones.find(b => b.name.toLowerCase().includes("leg") && b.name.toLowerCase().includes("l")),
+            };
+        }
+      }).catch(err => console.warn(`[GLTF] Failed to load model for ${id}:`, err));
     }
 
     (root as any).__parts = parts;
@@ -671,6 +638,7 @@ export class RemoteEntityRenderer {
 
       const isGiant = (root as any).__isGiant;
       const isMob = (root as any).__isMob;
+      const isPlayer = (root as any).__isPlayer;
       const targetYOffset = isGiant ? -0.5 : this.Y_VISUAL_OFFSET;
 
       const target = this.targetPos.get(id) ?? new BABYLON.Vector3();
@@ -736,7 +704,7 @@ export class RemoteEntityRenderer {
             else parts.magicMat.emissiveColor.set(0, 1, 1);
         }
 
-      } else {
+      } else if (isMob) {
         const healthPct = hp / Math.max(1, maxHp);
         const isRaging = isMob && healthPct < 0.5;
 
@@ -774,7 +742,7 @@ export class RemoteEntityRenderer {
         phase += moving ? phaseSpeed : 0.02; 
         (root as any).__walkPhase = phase;
 
-        const baseHipY = isMob ? 0.5 : 0.9;
+        const baseHipY = 0.5;
         const breath = Math.sin(now * 0.002) * 0.02;
         const bounce = moving ? Math.abs(Math.sin(phase * 2)) * 0.06 : 0;
         const swing = Math.sin(phase) * (moving ? 0.6 : 0.05);
@@ -814,6 +782,29 @@ export class RemoteEntityRenderer {
         
         parts.armJointL.rotation.x = -swing * 0.5; 
         parts.armJointR.rotation.x = swing * 0.5 - armPitch; 
+
+      } else if (isPlayer && parts.isGltf) {
+        // =====================================
+        // GLTF PLAYER PROCEDURAL ANIMATIONS
+        // =====================================
+        const moving = speed > 0.15;
+        const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
+        let phase = (root as any).__walkPhase as number;
+        if (!Number.isFinite(phase)) phase = 0;
+        phase += moving ? phaseSpeed : 0.02; 
+        (root as any).__walkPhase = phase;
+
+        const bones = (root as any).__bones;
+        if (bones) {
+           const breath = Math.sin(now * 0.002) * 0.02;
+           const swing = Math.sin(phase) * (moving ? 0.8 : 0.05);
+
+           if (bones.spine) bones.spine.setRotation(new BABYLON.Vector3(breath, 0, 0), BABYLON.Space.LOCAL);
+           if (bones.head) bones.head.setRotation(new BABYLON.Vector3(0, Math.sin(now * 0.001) * 0.2, 0), BABYLON.Space.LOCAL);
+           
+           if (bones.armR) bones.armR.setRotation(new BABYLON.Vector3(swing, 0, 0), BABYLON.Space.LOCAL);
+           if (bones.armL) bones.armL.setRotation(new BABYLON.Vector3(-swing, 0, 0), BABYLON.Space.LOCAL);
+        }
       }
     }
   }
