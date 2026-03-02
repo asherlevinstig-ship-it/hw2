@@ -169,6 +169,7 @@ export class RemoteEntityRenderer {
           this.mats.get(id)!.push(mat);
       }
 
+      // Distance Fade Logic
       const dist = BABYLON.Vector3.Distance(this.cam.position, plate.getAbsolutePosition());
       const maxDist = isGiant ? 60 : 15; 
       const fadeAlpha = BABYLON.Scalar.Clamp(1.0 - (dist - (maxDist - 5)) / 5, 0, 1);
@@ -220,6 +221,7 @@ export class RemoteEntityRenderer {
     let parts: any = {};
     this.mats.set(id, []);
 
+    // 1. ADD BOSS HALO IF GIANT
     if (isGiant) {
         const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
         magicMat.disableLighting = true;
@@ -234,6 +236,7 @@ export class RemoteEntityRenderer {
         parts.halo = halo;
     }
 
+    // 2. LOAD UNIFIED GLTF MODEL FOR EVERYONE
     BABYLON.SceneLoader.ImportMeshAsync(
         "",
         "/models/sukuna/", 
@@ -248,6 +251,7 @@ export class RemoteEntityRenderer {
         const rootMesh = result.meshes[0];
         rootMesh.parent = root;
 
+        // Scale: 4x bigger for the Giant Warden, Standard 1x for Players/Dummies
         const baseScale = isGiant ? 0.045 : 0.012;
         rootMesh.scaling.setAll(baseScale);
         rootMesh.rotation.y = Math.PI;
@@ -256,6 +260,7 @@ export class RemoteEntityRenderer {
             m.isPickable = false;
         });
 
+        // Loop the idle animation natively
         if (result.animationGroups && result.animationGroups.length > 0) {
             result.animationGroups[0].start(true);
             (root as any).__animGroup = result.animationGroups[0];
@@ -334,10 +339,12 @@ export class RemoteEntityRenderer {
       
       this.updateMobNameplate(root, id, hp, maxHp);
 
+      // Spin the giant's halo
       if (isGiant && parts.halo) {
           parts.halo.rotation.y += dtSec * 1.5;
       }
 
+      // Safe PBR Hit Flashing
       const flashTime = remoteFlashes.get(id);
       const isHit = flashTime && now - flashTime < 200;
 
