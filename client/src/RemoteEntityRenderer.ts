@@ -265,6 +265,8 @@ export class RemoteEntityRenderer {
 
         const rootMesh = result.meshes[0];
         rootMesh.parent = root;
+        
+        parts.rootMesh = rootMesh;
 
         const baseScale = isGiant ? 0.25 : 0.012;
         rootMesh.scaling.setAll(baseScale);
@@ -360,32 +362,30 @@ export class RemoteEntityRenderer {
       if (!root) continue;
 
       const isGiant = (root as any).__isGiant;
+      const parts = (root as any).__parts;
 
-      const prev = this.prevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
-      const prevAt = this.prevAt.get(id) ?? now;
-      const dtMove = Math.max(0.001, (now - prevAt) / 1000);
-
-      const dx = root.position.x - prev.x;
-      const dz = root.position.z - prev.z;
-      const speed = Math.sqrt(dx * dx + dz * dz) / dtMove;
-      
+      const speed = (root as any).__speed || 0;
       const moving = speed > 0.15;
 
       const idleAnim = (root as any).__animIdle as BABYLON.AnimationGroup;
       const walkAnim = (root as any).__animWalk as BABYLON.AnimationGroup;
 
       let bounce = 0;
+      let phase = (root as any).__walkPhase as number || 0;
+      const phaseSpeed = BABYLON.Scalar.Clamp(speed, 0, 6) * 0.18;
+      phase += moving ? phaseSpeed : 0.02; 
+      (root as any).__walkPhase = phase;
 
       if (idleAnim && walkAnim) {
           const targetWalkWeight = moving ? 1.0 : 0.0;
           walkAnim.weight += (targetWalkWeight - walkAnim.weight) * (dtSec * 10.0); 
           idleAnim.weight = 1.0 - walkAnim.weight;
       } else {
-          let phase = (root as any).__walkPhase as number || 0;
-          phase += moving ? Math.min(speed, 6) * (isGiant ? 0.05 : 0.18) : 0.02; 
-          (root as any).__walkPhase = phase;
-          
           bounce = moving ? Math.abs(Math.sin(phase * 2)) * (isGiant ? 0.4 : 0.08) : 0;
+
+          if (parts.rootMesh) {
+              parts.rootMesh.rotation.z = Math.sin(phase) * (moving ? 0.15 : 0.01);
+          }
 
           const bones = (root as any).__bones;
           if (bones) {
@@ -394,10 +394,8 @@ export class RemoteEntityRenderer {
 
               if (bones.spine) bones.spine.setRotation(new BABYLON.Vector3(breath, 0, 0), BABYLON.Space.LOCAL);
               if (bones.head) bones.head.setRotation(new BABYLON.Vector3(0, Math.sin(now * 0.001) * 0.2, 0), BABYLON.Space.LOCAL);
-              
               if (bones.armR) bones.armR.setRotation(new BABYLON.Vector3(swing, 0, 0), BABYLON.Space.LOCAL);
               if (bones.armL) bones.armL.setRotation(new BABYLON.Vector3(-swing, 0, 0), BABYLON.Space.LOCAL);
-              
               if (bones.legR) bones.legR.setRotation(new BABYLON.Vector3(-swing, 0, 0), BABYLON.Space.LOCAL);
               if (bones.legL) bones.legL.setRotation(new BABYLON.Vector3(swing, 0, 0), BABYLON.Space.LOCAL);
           }
@@ -408,6 +406,8 @@ export class RemoteEntityRenderer {
       const target = this.targetPos.get(id) ?? new BABYLON.Vector3();
       target.set(t.x + this.renderOffset.x, t.y + this.renderOffset.y + targetYOffset, t.z + this.renderOffset.z);
       this.targetPos.set(id, target);
+
+      const posBeforeLerp = root.position.clone();
 
       const lerp = 1 - Math.pow(0.001, dtSec);
       root.position.x += (target.x - root.position.x) * lerp;
@@ -421,14 +421,12 @@ export class RemoteEntityRenderer {
         root.rotation.y += dyaw * lerp;
       }
 
-      prev.copyFrom(root.position);
-      this.prevPos.set(id, prev);
-      this.prevAt.set(id, now);
+      const dx = root.position.x - posBeforeLerp.x;
+      const dz = root.position.z - posBeforeLerp.z;
+      (root as any).__speed = Math.sqrt(dx * dx + dz * dz) / Math.max(0.001, dtSec);
 
-      const parts = (root as any).__parts;
       const hp = t.hp ?? 100;
       const maxHp = t.maxHp ?? 100;
-      
       this.updateMobNameplate(root, id, hp, maxHp);
 
       if (isGiant && parts.halo) {
