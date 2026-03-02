@@ -26,7 +26,6 @@ export class RemoteEntityRenderer {
   private renderOffset = new BABYLON.Vector3(0, 0, 0);
   private readonly Y_VISUAL_OFFSET = -1.65;
 
-  // Restored these maps to track speed for Walk Animations!
   private prevPos = new Map<string, BABYLON.Vector3>();
   private prevAt = new Map<string, number>();
   private targetPos = new Map<string, BABYLON.Vector3>();
@@ -53,7 +52,6 @@ export class RemoteEntityRenderer {
     this.scene.autoClear = false;
     this.scene.autoClearDepthAndStencil = false;
 
-    // Ambient lighting so PBR materials on GLTFs aren't pitch black
     if (!this.scene.lights || this.scene.lights.length === 0) {
         const light = new BABYLON.HemisphericLight("rpLight", new BABYLON.Vector3(0, 1, 0), this.scene);
         light.intensity = 1.2;
@@ -129,8 +127,20 @@ export class RemoteEntityRenderer {
 
     if (this.xrayEnabled) {
       this.scene.autoClearDepthAndStencil = true;
+      for (const matList of this.mats.values()) {
+        matList.forEach(mat => {
+          mat.disableDepthWrite = true;
+          mat.depthFunction = BABYLON.Constants.ALWAYS;
+        });
+      }
     } else {
       this.scene.autoClearDepthAndStencil = false;
+      for (const matList of this.mats.values()) {
+        matList.forEach(mat => {
+          mat.disableDepthWrite = false;
+          mat.depthFunction = BABYLON.Constants.LESS;
+        });
+      }
     }
   }
 
@@ -146,7 +156,6 @@ export class RemoteEntityRenderer {
       const nameplateWidth = isGiant ? 16.0 : (isPlayer ? 2.0 : 1.5);
       const nameplateHeight = isGiant ? 4.0 : 0.4;
       
-      // Scaled up high enough to clear the colossal model
       const nameplateYOffset = isGiant ? 42.0 : 2.6; 
 
       if (!plate) {
@@ -211,7 +220,6 @@ export class RemoteEntityRenderer {
       }
   }
 
-  // Pure GLTF Load for everyone
   private ensureRemoteMesh(id: string): BABYLON.TransformNode | null {
     if (!this.scene) return null;
 
@@ -230,7 +238,6 @@ export class RemoteEntityRenderer {
     let parts: any = {};
     this.mats.set(id, []);
 
-    // Giant boss halo directly onto the massive GLTF scale
     if (isGiant) {
         const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
         magicMat.disableLighting = true;
@@ -241,7 +248,7 @@ export class RemoteEntityRenderer {
         const halo = BABYLON.MeshBuilder.CreateTorus(`gHalo:${id}`, { diameter: 14.0, thickness: 0.8, tessellation: 32 }, this.scene);
         halo.material = magicMat;
         halo.parent = root;
-        halo.position.y = 35.0; // Scaled up height
+        halo.position.y = 35.0; 
         parts.halo = halo;
     }
 
@@ -259,7 +266,6 @@ export class RemoteEntityRenderer {
         const rootMesh = result.meshes[0];
         rootMesh.parent = root;
 
-        // MASSIVE SCALE (0.25 is over 20x a normal player)
         const baseScale = isGiant ? 0.25 : 0.012;
         rootMesh.scaling.setAll(baseScale);
         rootMesh.rotation.y = Math.PI;
@@ -268,20 +274,15 @@ export class RemoteEntityRenderer {
             m.isPickable = false;
         });
 
-        // ----------------------------------------------------
-        // ANIMATION BLENDING ENGINE (Idle <-> Walk)
-        // ----------------------------------------------------
         if (result.animationGroups && result.animationGroups.length > 0) {
             let idleAnim = result.animationGroups.find(a => a.name.toLowerCase().includes("idle"));
             let walkAnim = result.animationGroups.find(a => a.name.toLowerCase().includes("walk") || a.name.toLowerCase().includes("run"));
             
-            // Fallback if names are weird
             if (!idleAnim) idleAnim = result.animationGroups[0]; 
 
-            // Start all matching animations but set their initial influence weights
             result.animationGroups.forEach(anim => {
                 anim.start(true);
-                anim.weight = 0; // Mute all initially
+                anim.weight = 0; 
             });
 
             if (idleAnim) {
@@ -291,6 +292,20 @@ export class RemoteEntityRenderer {
             if (walkAnim) {
                 (root as any).__animWalk = walkAnim;
             }
+        }
+
+        if (result.skeletons && result.skeletons.length > 0) {
+            const skeleton = result.skeletons[0];
+            (root as any).__skeleton = skeleton;
+            
+            (root as any).__bones = {
+                spine: skeleton.bones.find(b => b.name.toLowerCase().includes("spine")),
+                head: skeleton.bones.find(b => b.name.toLowerCase().includes("head")),
+                armR: skeleton.bones.find(b => b.name.toLowerCase().includes("arm") && (b.name.toLowerCase().includes("right") || b.name.toLowerCase().includes("_r"))),
+                armL: skeleton.bones.find(b => b.name.toLowerCase().includes("arm") && (b.name.toLowerCase().includes("left") || b.name.toLowerCase().includes("_l"))),
+                legR: skeleton.bones.find(b => (b.name.toLowerCase().includes("leg") || b.name.toLowerCase().includes("thigh")) && (b.name.toLowerCase().includes("right") || b.name.toLowerCase().includes("_r"))),
+                legL: skeleton.bones.find(b => (b.name.toLowerCase().includes("leg") || b.name.toLowerCase().includes("thigh")) && (b.name.toLowerCase().includes("left") || b.name.toLowerCase().includes("_l"))),
+            };
         }
 
     }).catch(err => console.warn(`[GLTF] Failed to load model for ${id}:`, err));
@@ -329,7 +344,6 @@ export class RemoteEntityRenderer {
     this.targetPos.delete(id);
   }
 
-  // Unused params _matManager and _remoteSwings correctly ignored
   public update(dtSec: number, netTransforms: Map<string, NetTransform>, mySessionId: string | undefined, _matManager: any, remoteFlashes: Map<string, number>, _remoteSwings: any) {
     if (!this.enabled || !this.ready || !this.scene) return;
 
@@ -347,7 +361,6 @@ export class RemoteEntityRenderer {
 
       const isGiant = (root as any).__isGiant;
 
-      // 1. Calculate Movement Speed
       const prev = this.prevPos.get(id) ?? new BABYLON.Vector3(root.position.x, root.position.y, root.position.z);
       const prevAt = this.prevAt.get(id) ?? now;
       const dtMove = Math.max(0.001, (now - prevAt) / 1000);
@@ -358,27 +371,38 @@ export class RemoteEntityRenderer {
       
       const moving = speed > 0.15;
 
-      // 2. Smooth Animation Blending
       const idleAnim = (root as any).__animIdle as BABYLON.AnimationGroup;
       const walkAnim = (root as any).__animWalk as BABYLON.AnimationGroup;
 
-      if (idleAnim && walkAnim) {
-          // If moving, fade walk to 1.0. If stopped, fade walk to 0.0.
-          const targetWalkWeight = moving ? 1.0 : 0.0;
-          walkAnim.weight += (targetWalkWeight - walkAnim.weight) * (dtSec * 10.0); // Smooth Lerp
-          idleAnim.weight = 1.0 - walkAnim.weight;
-      }
-
-      // Procedural bounce fallback if model has no walk animation
       let bounce = 0;
-      if (!walkAnim && moving) {
+
+      if (idleAnim && walkAnim) {
+          const targetWalkWeight = moving ? 1.0 : 0.0;
+          walkAnim.weight += (targetWalkWeight - walkAnim.weight) * (dtSec * 10.0); 
+          idleAnim.weight = 1.0 - walkAnim.weight;
+      } else {
           let phase = (root as any).__walkPhase as number || 0;
-          phase += Math.min(speed, 6) * 0.18;
+          phase += moving ? Math.min(speed, 6) * (isGiant ? 0.05 : 0.18) : 0.02; 
           (root as any).__walkPhase = phase;
-          bounce = Math.abs(Math.sin(phase * 2)) * (isGiant ? 0.4 : 0.08);
+          
+          bounce = moving ? Math.abs(Math.sin(phase * 2)) * (isGiant ? 0.4 : 0.08) : 0;
+
+          const bones = (root as any).__bones;
+          if (bones) {
+              const breath = Math.sin(now * 0.002) * 0.02;
+              const swing = Math.sin(phase) * (moving ? 1.0 : 0.05);
+
+              if (bones.spine) bones.spine.setRotation(new BABYLON.Vector3(breath, 0, 0), BABYLON.Space.LOCAL);
+              if (bones.head) bones.head.setRotation(new BABYLON.Vector3(0, Math.sin(now * 0.001) * 0.2, 0), BABYLON.Space.LOCAL);
+              
+              if (bones.armR) bones.armR.setRotation(new BABYLON.Vector3(swing, 0, 0), BABYLON.Space.LOCAL);
+              if (bones.armL) bones.armL.setRotation(new BABYLON.Vector3(-swing, 0, 0), BABYLON.Space.LOCAL);
+              
+              if (bones.legR) bones.legR.setRotation(new BABYLON.Vector3(-swing, 0, 0), BABYLON.Space.LOCAL);
+              if (bones.legL) bones.legL.setRotation(new BABYLON.Vector3(swing, 0, 0), BABYLON.Space.LOCAL);
+          }
       }
       
-      // Giant offset to ensure feet touch the floor
       const targetYOffset = (isGiant ? -1.0 : this.Y_VISUAL_OFFSET) + bounce;
 
       const target = this.targetPos.get(id) ?? new BABYLON.Vector3();
@@ -411,7 +435,6 @@ export class RemoteEntityRenderer {
           parts.halo.rotation.y += dtSec * 1.5;
       }
 
-      // Safe PBR Hit Flashing
       const flashTime = remoteFlashes.get(id);
       const isHit = flashTime && now - flashTime < 200;
 
