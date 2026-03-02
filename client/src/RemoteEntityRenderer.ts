@@ -159,7 +159,6 @@ export class RemoteEntityRenderer {
       mat.emissiveColor = fallbackColor;
     }
 
-    // Cache the base color for hit flashing restoration
     (mat as any).__baseEmissive = mat.emissiveColor.clone();
 
     if (!this.mats.has(idKey)) this.mats.set(idKey, []);
@@ -317,6 +316,27 @@ export class RemoteEntityRenderer {
       head.parent = headJoint;
       head.position.y = 0.4;
 
+      // Warden Face Plate & Eyes
+      const face = BABYLON.MeshBuilder.CreateBox(`gFace:${id}`, { width: 0.45, height: 0.35, depth: 0.05 }, this.scene);
+      face.parent = head;
+      face.position.set(0, -0.05, 0.31); 
+      face.material = darkMat;
+
+      const brow = BABYLON.MeshBuilder.CreateBox(`gBrow:${id}`, { width: 0.5, height: 0.1, depth: 0.1 }, this.scene);
+      brow.parent = head;
+      brow.position.set(0, 0.15, 0.31);
+      brow.material = goldMat; // Golden regal brow
+
+      const eyeL = BABYLON.MeshBuilder.CreateBox(`gEyeL:${id}`, { size: 0.08 }, this.scene);
+      eyeL.parent = face;
+      eyeL.position.set(-0.12, 0.0, 0.02);
+      eyeL.material = magicMat;
+
+      const eyeR = BABYLON.MeshBuilder.CreateBox(`gEyeR:${id}`, { size: 0.08 }, this.scene);
+      eyeR.parent = face;
+      eyeR.position.set(0.12, 0.0, 0.02);
+      eyeR.material = magicMat;
+
       const halo = BABYLON.MeshBuilder.CreateTorus(`gHalo:${id}`, { diameter: 1.2, thickness: 0.1, tessellation: 16 }, this.scene);
       halo.material = magicMat;
       halo.parent = headJoint;
@@ -371,7 +391,7 @@ export class RemoteEntityRenderer {
       crystal.parent = staff;
       crystal.position.y = 2.0;
 
-      [body, head, pL, pR, armL, armR, legL, legR, halo, chestCore, staff, crystal].forEach(m => {
+      [body, head, face, brow, eyeL, eyeR, pL, pR, armL, armR, legL, legR, halo, chestCore, staff, crystal].forEach(m => {
           m.isPickable = false;
           (m as any).isInFrustum = () => true;
       });
