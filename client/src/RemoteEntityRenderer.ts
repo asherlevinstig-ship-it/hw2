@@ -154,8 +154,8 @@ export class RemoteEntityRenderer {
       const nameplateWidth = isGiant ? 16.0 : (isPlayer ? 2.0 : 1.5);
       const nameplateHeight = isGiant ? 4.0 : 0.4;
       
-      // TWEAKED: Snug right above the head/halo
-      const nameplateYOffset = isGiant ? 38.0 : 2.2; 
+      // TWEAKED: Significantly lowered to sit closely to the top of the scaled model's head
+      const nameplateYOffset = isGiant ? 16.0 : 2.0; 
 
       if (!plate) {
           plate = BABYLON.MeshBuilder.CreatePlane("np:" + id, { width: nameplateWidth, height: nameplateHeight }, this.scene);
@@ -236,20 +236,6 @@ export class RemoteEntityRenderer {
 
     let parts: any = {};
     this.mats.set(id, []);
-
-    if (isGiant) {
-        const magicMat = new BABYLON.StandardMaterial(`gMagic:${id}`, this.scene);
-        magicMat.disableLighting = true;
-        magicMat.emissiveColor = new BABYLON.Color3(0, 1, 1);
-        (magicMat as any).fogEnabled = false;
-        this.mats.get(id)!.push(magicMat);
-
-        const halo = BABYLON.MeshBuilder.CreateTorus(`gHalo:${id}`, { diameter: 14.0, thickness: 0.8, tessellation: 32 }, this.scene);
-        halo.material = magicMat;
-        halo.parent = root;
-        halo.position.y = 35.0; 
-        parts.halo = halo;
-    }
 
     BABYLON.SceneLoader.ImportMeshAsync(
         "",
@@ -352,15 +338,10 @@ export class RemoteEntityRenderer {
         root.rotation.y += dyaw * lerp;
       }
 
-      const parts = (root as any).__parts;
       const hp = t.hp ?? 100;
       const maxHp = t.maxHp ?? 100;
       
       this.updateMobNameplate(root, id, hp, maxHp);
-
-      if (isGiant && parts.halo) {
-          parts.halo.rotation.y += dtSec * 1.5;
-      }
 
       const flashTime = remoteFlashes.get(id);
       const isHit = flashTime && now - flashTime < 200;
