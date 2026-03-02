@@ -266,7 +266,7 @@ export class RemoteEntityRenderer {
     const existing = this.meshes.get(id);
     if (existing) return existing;
 
-    const isMob = id.includes("dummy") || id.includes("mob") || id.includes("golem") || id.includes("npc_");
+    const isMob = id.includes("mob") || id.includes("golem") || (id.includes("npc_") && !id.includes("giant"));
     const isGiant = id.includes("npc_giant");
     const isPlayer = !isMob && !isGiant;
 
