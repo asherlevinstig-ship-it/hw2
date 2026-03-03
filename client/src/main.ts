@@ -2575,10 +2575,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
       m.name = name;
       m.parent = skyRoot;
       m.layerMask = ALL_MASK;
-      // CRUCIAL: Overrides any engine culling rules
       m.alwaysSelectAsActiveMesh = true;
       m.isPickable = false;
-      m.renderingGroupId = 0;
       return m;
   };
 
@@ -2587,23 +2585,21 @@ function ensureSkybox(scene: BABYLON.Scene) {
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 120, segments: 16 }, scene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 60, segments: 16 }, scene);
   createSkyMesh("sun", sunMesh);
   
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
-  (sunMat as any).disableDepthWrite = true;
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 80, segments: 16 }, scene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 45, segments: 16 }, scene);
   createSkyMesh("moon", moonMesh);
   
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
-  (moonMat as any).disableDepthWrite = true;
   (moonMat as any).fogEnabled = false;
   
   const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, scene);
@@ -2612,37 +2608,35 @@ function ensureSkybox(scene: BABYLON.Scene) {
   moonMat.diffuseTexture = noiseTex;
   moonMesh.material = moonMat;
 
-  const starCount = 800;
-  const pcs = new BABYLON.PointsCloudSystem("starsPCS", 1, scene);
-
-  pcs.addPoints(starCount, (p: any) => {
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    const r = 750 + Math.random() * 20;
-    p.position.set(
-      r * Math.sin(phi) * Math.cos(theta),
-      r * Math.sin(phi) * Math.sin(theta),
-      r * Math.cos(phi)
-    );
-  });
-
-  pcs.buildMeshAsync().then((m) => {
-    m.parent = skyRoot!;
-    m.layerMask = ALL_MASK;
-    m.isPickable = false;
-    m.alwaysSelectAsActiveMesh = true;
-    m.renderingGroupId = 0;
-
-    const mat = new BABYLON.StandardMaterial("starMat", scene);
-    mat.emissiveColor = BABYLON.Color3.White();
-    mat.disableLighting = true;
-    mat.pointsCloud = true;
-    mat.pointSize = 3;
-    mat.disableDepthWrite = true;
-    (mat as any).fogEnabled = false;
-
-    m.material = mat;
-  });
+  // Stars - Manual Vertex Data with Indices to prevent WebGL dropping unindexed points
+  const starCount = 1000;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i < starCount; i++) {
+     const theta = Math.random() * Math.PI * 2;
+     const phi = Math.acos(2 * Math.random() - 1);
+     const r = 450 + Math.random() * 20;
+     positions.push(r * Math.sin(phi) * Math.cos(theta));
+     positions.push(r * Math.cos(phi));
+     positions.push(r * Math.sin(phi) * Math.sin(theta));
+     indices.push(i);
+  }
+  
+  const stars = new BABYLON.Mesh("stars", scene);
+  createSkyMesh("stars", stars);
+  
+  const vertexData = new BABYLON.VertexData();
+  vertexData.positions = positions;
+  vertexData.indices = indices;
+  vertexData.applyToMesh(stars, true);
+  
+  const starMat = new BABYLON.StandardMaterial("starMat", scene);
+  starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+  starMat.disableLighting = true;
+  starMat.pointsCloud = true;
+  starMat.pointSize = 4;
+  (starMat as any).fogEnabled = false;
+  stars.material = starMat;
 
   for (let i=0; i<15; i++) {
      const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 40 + Math.random()*20, segments: 4 }, scene);
@@ -2652,13 +2646,12 @@ function ensureSkybox(scene: BABYLON.Scene) {
      cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
      cMat.alpha = 0.4;
      cMat.disableLighting = true;
-     cMat.disableDepthWrite = true;
      (cMat as any).fogEnabled = false; 
      c.material = cMat;
      
      const theta = Math.random() * Math.PI * 2;
      const phi = Math.random() * Math.PI * 0.35; 
-     const r = 650;
+     const r = 380;
      c.position.set(
        r * Math.sin(phi) * Math.cos(theta),
        Math.abs(r * Math.cos(phi)), 
@@ -2675,42 +2668,31 @@ function updateDayNightCycle(dt: number) {
     const scene = getStableScene();
     if (!scene) return;
 
-    if (!(scene as any).__skyboxMaxZHook) {
-        (scene as any).__skyboxMaxZHook = true;
-        scene.onBeforeRenderObservable.add(() => {
-            if (scene.activeCamera && scene.activeCamera.maxZ < 2500) {
-                scene.activeCamera.maxZ = 2500;
-            }
-        });
-    }
-
     ensureSkybox(scene);
 
     if (skyRoot) {
        const cam = scene.activeCamera;
        if (cam) {
-          skyRoot.position.copyFrom(cam.globalPosition);
-          
+          // Sync layer masks every tick to survive engine overrides
           const mask = cam.layerMask ?? 0x0FFFFFFF;
           for (const child of skyRoot.getChildren()) {
             (child as any).layerMask = mask;
           }
-       } else {
-          const p = noa.ents.getPosition(noa.playerEntity);
-          if (p) skyRoot.position.set(p[0], p[1], p[2]);
-       }
+       } 
+
+       // Attach position tracking to the player entity rather than camera to avoid weird visual shifts
+       const p = noa.ents.getPosition(noa.playerEntity);
+       if (p) skyRoot.position.set(p[0], p[1], p[2]);
 
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
+       // ORBIT IN Z-Y PLANE: Sun now rises exactly in front of the forward (+Z) direction
        if (sunMesh) {
-           sunMesh.position.set(Math.cos(angle) * 800, Math.sin(angle) * 800, 0);
-           
-           // Ensure it faces camera if using a texture, safe for spheres
+           sunMesh.position.set(0, Math.sin(angle) * 400, Math.cos(angle) * 400);
            if (cam) sunMesh.lookAt(cam.globalPosition); 
        }
        if (moonMesh) {
-           moonMesh.position.set(-Math.cos(angle) * 800, -Math.sin(angle) * 800, 0);
-           
+           moonMesh.position.set(0, -Math.sin(angle) * 400, -Math.cos(angle) * 400);
            if (cam) moonMesh.lookAt(cam.globalPosition);
        }
        
