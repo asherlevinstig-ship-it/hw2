@@ -2569,14 +2569,15 @@ function ensureSkybox(scene: BABYLON.Scene) {
 
   skyRoot = new BABYLON.TransformNode("skyRoot", scene);
 
-  const camMask = scene.activeCamera ? scene.activeCamera.layerMask : 0x0FFFFFFF;
+  const ALL_MASK = 0x0FFFFFFF;
 
   const createSkyMesh = (name: string, m: BABYLON.Mesh) => {
       m.name = name;
       m.parent = skyRoot;
-      m.layerMask = camMask;
+      m.layerMask = ALL_MASK;
       (m as any).isInFrustum = () => true;
       m.isPickable = false;
+      m.renderingGroupId = 0;
       return m;
   };
 
@@ -2590,6 +2591,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
+  (sunMat as any).disableDepthWrite = true;
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
@@ -2598,6 +2600,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
+  (moonMat as any).disableDepthWrite = true;
   (moonMat as any).fogEnabled = false;
   
   const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, scene);
@@ -2607,28 +2610,36 @@ function ensureSkybox(scene: BABYLON.Scene) {
   moonMesh.material = moonMat;
 
   const starCount = 800;
-  const starData = new Float32Array(starCount * 3);
-  for (let i=0; i<starCount; i++) {
-     const theta = Math.random() * Math.PI * 2;
-     const phi = Math.acos(2 * Math.random() - 1);
-     const r = 750 + Math.random() * 20;
-     starData[i*3] = r * Math.sin(phi) * Math.cos(theta);
-     starData[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
-     starData[i*3+2] = r * Math.cos(phi);
-  }
-  const stars = new BABYLON.Mesh("stars", scene);
-  createSkyMesh("stars", stars);
-  const vertexData = new BABYLON.VertexData();
-  vertexData.positions = starData;
-  vertexData.applyToMesh(stars, true);
-  
-  const starMat = new BABYLON.StandardMaterial("starMat", scene);
-  starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  starMat.disableLighting = true;
-  (starMat as any).fogEnabled = false;
-  starMat.pointsCloud = true;
-  starMat.pointSize = 3;
-  stars.material = starMat;
+  const pcs = new BABYLON.PointsCloudSystem("starsPCS", 1, scene);
+
+  pcs.addPoints(starCount, (p: any) => {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 750 + Math.random() * 20;
+    p.position.set(
+      r * Math.sin(phi) * Math.cos(theta),
+      r * Math.sin(phi) * Math.sin(theta),
+      r * Math.cos(phi)
+    );
+  });
+
+  pcs.buildMeshAsync().then((m) => {
+    m.parent = skyRoot!;
+    m.layerMask = 0x0FFFFFFF;
+    m.isPickable = false;
+    (m as any).isInFrustum = () => true;
+    m.renderingGroupId = 0;
+
+    const mat = new BABYLON.StandardMaterial("starMat", scene);
+    mat.emissiveColor = BABYLON.Color3.White();
+    mat.disableLighting = true;
+    mat.pointsCloud = true;
+    mat.pointSize = 3;
+    mat.disableDepthWrite = true;
+    (mat as any).fogEnabled = false;
+
+    m.material = mat;
+  });
 
   for (let i=0; i<15; i++) {
      const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 40 + Math.random()*20, segments: 4 }, scene);
@@ -2638,6 +2649,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
      cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
      cMat.alpha = 0.4;
      cMat.disableLighting = true;
+     cMat.disableDepthWrite = true;
      (cMat as any).fogEnabled = false; 
      c.material = cMat;
      
@@ -2671,10 +2683,20 @@ function updateDayNightCycle(dt: number) {
 
     ensureSkybox(scene);
 
+    if (scene.activeCamera) {
+      console.log("cam layerMask", scene.activeCamera.layerMask, "maxZ", scene.activeCamera.maxZ);
+    }
+    if (sunMesh) console.log("sun enabled", sunMesh.isEnabled(), "mask", sunMesh.layerMask);
+
     if (skyRoot) {
        const cam = scene.activeCamera;
        if (cam) {
           skyRoot.position.copyFrom(cam.globalPosition);
+          
+          const mask = cam.layerMask ?? 0x0FFFFFFF;
+          for (const child of skyRoot.getChildren()) {
+            (child as any).layerMask = mask;
+          }
        } else {
           const p = noa.ents.getPosition(noa.playerEntity);
           if (p) skyRoot.position.set(p[0], p[1], p[2]);
