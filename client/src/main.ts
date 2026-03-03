@@ -2094,7 +2094,7 @@ function ensureUserId(): string {
 }
 
 let canSendMoves = false;
-let clientWorldTime = 0.5; // Start at Noon to guarantee sun visibility immediately
+let clientWorldTime = 0.26; // HARD START AT DAWN: Sun will spawn low on the horizon directly in front of you.
 
 async function connect() {
   try {
@@ -2575,7 +2575,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
       m.name = name;
       m.parent = skyRoot;
       m.layerMask = ALL_MASK;
-      (m as any).isInFrustum = () => true;
+      // CRUCIAL: Overrides any engine culling rules
+      m.alwaysSelectAsActiveMesh = true;
       m.isPickable = false;
       m.renderingGroupId = 0;
       return m;
@@ -2586,8 +2587,9 @@ function ensureSkybox(scene: BABYLON.Scene) {
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 60, segments: 16 }, scene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 120, segments: 16 }, scene);
   createSkyMesh("sun", sunMesh);
+  
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
@@ -2595,8 +2597,9 @@ function ensureSkybox(scene: BABYLON.Scene) {
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 45, segments: 16 }, scene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 80, segments: 16 }, scene);
   createSkyMesh("moon", moonMesh);
+  
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
@@ -2625,9 +2628,9 @@ function ensureSkybox(scene: BABYLON.Scene) {
 
   pcs.buildMeshAsync().then((m) => {
     m.parent = skyRoot!;
-    m.layerMask = 0x0FFFFFFF;
+    m.layerMask = ALL_MASK;
     m.isPickable = false;
-    (m as any).isInFrustum = () => true;
+    m.alwaysSelectAsActiveMesh = true;
     m.renderingGroupId = 0;
 
     const mat = new BABYLON.StandardMaterial("starMat", scene);
@@ -2683,11 +2686,6 @@ function updateDayNightCycle(dt: number) {
 
     ensureSkybox(scene);
 
-    if (scene.activeCamera) {
-      console.log("cam layerMask", scene.activeCamera.layerMask, "maxZ", scene.activeCamera.maxZ);
-    }
-    if (sunMesh) console.log("sun enabled", sunMesh.isEnabled(), "mask", sunMesh.layerMask);
-
     if (skyRoot) {
        const cam = scene.activeCamera;
        if (cam) {
@@ -2706,11 +2704,14 @@ function updateDayNightCycle(dt: number) {
        
        if (sunMesh) {
            sunMesh.position.set(Math.cos(angle) * 800, Math.sin(angle) * 800, 0);
-           sunMesh.lookAt(skyRoot.position); 
+           
+           // Ensure it faces camera if using a texture, safe for spheres
+           if (cam) sunMesh.lookAt(cam.globalPosition); 
        }
        if (moonMesh) {
            moonMesh.position.set(-Math.cos(angle) * 800, -Math.sin(angle) * 800, 0);
-           moonMesh.lookAt(skyRoot.position);
+           
+           if (cam) moonMesh.lookAt(cam.globalPosition);
        }
        
        if (skyRoot.getChildren) {
