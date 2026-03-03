@@ -2342,7 +2342,7 @@ async function connect() {
 
     room.onMessage("chatMessage", (msg: any) => {
       if (msg && typeof msg.msg === "string") {
-        updateOverlay(`<span style="color: #00FFFF; font-weight: bold; text-shadow: 0 0 5px #00FFFF;">*** ${msg.msg} ***</span>`);
+        updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** ${msg.msg} ***</span>`);
       }
     });
 
@@ -2549,7 +2549,7 @@ function updateZoneCheck() {
         newState = "cave";
         title = "Deep Caverns";
         sub = "Darkness Encroaches";
-        color = "#b026ff"; // Purple/Red
+        color = "#b026ff"; 
     }
 
     if (newState !== currentZoneState) {
@@ -2575,27 +2575,33 @@ function ensureSkybox(scene: BABYLON.Scene) {
   skyMaterial.disableLighting = true;
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
+  skyMaterial.disableDepthWrite = true;
+  skyMaterial.depthFunction = BABYLON.Constants.ALWAYS;
 
   // SUN: Yellow Sphere with Halo
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 40 }, scene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 10 }, scene);
   (sunMesh as any).isInFrustum = () => true;
   
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
-  (sunMat as any).fogEnabled = false; // Important: Make sun visible through atmosphere
+  sunMat.disableDepthWrite = true;
+  sunMat.depthFunction = BABYLON.Constants.ALWAYS;
+  (sunMat as any).fogEnabled = false; 
   sunMesh.material = sunMat;
   sunMesh.parent = skyRoot;
-  sunMesh.position.set(0, 0, 600); 
+  sunMesh.position.set(0, 0, 150); 
 
   // MOON: White Sphere with Detail
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 25 }, scene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 7 }, scene);
   (moonMesh as any).isInFrustum = () => true;
 
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
-  (moonMat as any).fogEnabled = false; // Important
+  moonMat.disableDepthWrite = true;
+  moonMat.depthFunction = BABYLON.Constants.ALWAYS;
+  (moonMat as any).fogEnabled = false; 
   
   // Add noise for moon craters
   const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, scene);
@@ -2605,7 +2611,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   
   moonMesh.material = moonMat;
   moonMesh.parent = skyRoot;
-  moonMesh.position.set(0, 0, -600);
+  moonMesh.position.set(0, 0, -150);
 
   // STARS: Points Cloud
   const starCount = 800;
@@ -2613,7 +2619,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   for (let i=0; i<starCount; i++) {
      const theta = Math.random() * Math.PI * 2;
      const phi = Math.acos(2 * Math.random() - 1);
-     const r = 550 + Math.random() * 50;
+     const r = 140 + Math.random() * 10;
      starData[i*3] = r * Math.sin(phi) * Math.cos(theta);
      starData[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
      starData[i*3+2] = r * Math.cos(phi);
@@ -2629,97 +2635,90 @@ function ensureSkybox(scene: BABYLON.Scene) {
   starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   starMat.pointsCloud = true;
   starMat.pointSize = 2;
-  (starMat as any).fogEnabled = false; // Important
+  starMat.disableDepthWrite = true;
+  starMat.depthFunction = BABYLON.Constants.ALWAYS;
+  (starMat as any).fogEnabled = false; 
   stars.material = starMat;
   stars.parent = skyRoot;
 
   // CLOUDS: Floating low-poly spheres
   for (let i=0; i<15; i++) {
-     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 30 + Math.random()*40, segments: 4 }, scene);
+     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 8 + Math.random()*10, segments: 4 }, scene);
      (c as any).isInFrustum = () => true;
 
      const cMat = new BABYLON.StandardMaterial("cloudMat", scene);
      cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
      cMat.alpha = 0.3;
      cMat.disableLighting = true;
+     cMat.disableDepthWrite = true;
+     cMat.depthFunction = BABYLON.Constants.ALWAYS;
      (cMat as any).fogEnabled = false; 
      c.material = cMat;
      c.parent = skyRoot;
      
      // Random pos in upper hemisphere
      const theta = Math.random() * Math.PI * 2;
-     const phi = Math.random() * Math.PI * 0.35; // 0 to ~60 deg
-     const r = 450;
+     const phi = Math.random() * Math.PI * 0.35; 
+     const r = 120;
      c.position.set(
        r * Math.sin(phi) * Math.cos(theta),
-       Math.abs(r * Math.cos(phi)), // Always above
+       Math.abs(r * Math.cos(phi)), 
        r * Math.sin(phi) * Math.sin(theta)
      );
-     c.scaling.y = 0.3; // flatten
+     c.scaling.y = 0.3; 
      (c as any).rotationSpeed = (Math.random() - 0.5) * 0.001;
   }
 }
 
 function updateDayNightCycle(dt: number) {
-    // Client prediction
     clientWorldTime = (clientWorldTime + (dt / 1200)) % 1; 
 
     const scene = getStableScene();
     if (!scene) return;
 
-    // FIX: Push out the clipping plane so Noa doesn't aggressively cull our celestial bodies
-    if (scene.activeCamera && scene.activeCamera.maxZ < 1500) {
-        scene.activeCamera.maxZ = 1500;
+    if (scene.activeCamera && scene.activeCamera.maxZ < 300) {
+        scene.activeCamera.maxZ = 300;
     }
 
     ensureSkybox(scene);
 
     if (skyRoot) {
-       // Lock sky to player position (infinite horizon effect)
        const p = noa.ents.getPosition(noa.playerEntity);
        if (p) {
           skyRoot.position.set(p[0], p[1], p[2]);
        }
 
-       // Rotate Celestial Bodies based on time (0..1)
-       // Time 0 = Midnight (Sun -Z, Moon +Z)
-       // Time 0.25 = Dawn (Sun +X, Moon -X)
-       // Time 0.5 = Noon (Sun +Y, Moon -Y)
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
        if (sunMesh) {
-           sunMesh.position.set(Math.cos(angle) * 600, Math.sin(angle) * 600, 0);
-           sunMesh.lookAt(skyRoot.position); // Always face center
+           sunMesh.position.set(Math.cos(angle) * 150, Math.sin(angle) * 150, 0);
+           sunMesh.lookAt(skyRoot.position); 
        }
        if (moonMesh) {
-           moonMesh.position.set(-Math.cos(angle) * 600, -Math.sin(angle) * 600, 0);
+           moonMesh.position.set(-Math.cos(angle) * 150, -Math.sin(angle) * 150, 0);
            moonMesh.lookAt(skyRoot.position);
        }
        
-       // Clouds slow drift
        if (skyRoot.getChildren) {
            for(const child of skyRoot.getChildren()) {
                if (child.name.startsWith("cloud")) {
-                   // Fix rotation error by casting to Mesh
                    (child as BABYLON.Mesh).rotation.y += dt * 0.02;
                }
            }
        }
     }
 
-    // Gradient Phases for Sky Color
     let r=0, g=0, b=0;
     
-    // Simple 4-point gradient interpolation
-    if (clientWorldTime < 0.2) { // Night -> Dawn
+    if (clientWorldTime < 0.2) { 
         r = 0.05; g = 0.05; b = 0.15;
-    } else if (clientWorldTime < 0.3) { // Dawn
+    } else if (clientWorldTime < 0.3) { 
         r = 0.8; g = 0.5; b = 0.4;
-    } else if (clientWorldTime < 0.7) { // Day
+    } else if (clientWorldTime < 0.7) { 
         r = 0.5; g = 0.7; b = 1.0;
-    } else if (clientWorldTime < 0.8) { // Dusk
+    } else if (clientWorldTime < 0.8) { 
         r = 0.7; g = 0.4; b = 0.6;
-    } else { // Night
+    } else { 
         r = 0.05; g = 0.05; b = 0.15;
     }
 
@@ -2752,7 +2751,6 @@ function updateDayNightCycle(dt: number) {
 
     ensureVmScene(scene);
     
-    // Defer to the new renderer for remote entities
     remoteRenderer.ensureScene(scene);
     remoteRenderer.syncCamera(scene, noa.ents.getPosition(noa.playerEntity) as number[] | null, remoteRenderer.xrayEnabled);
 
