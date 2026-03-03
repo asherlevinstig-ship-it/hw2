@@ -607,8 +607,8 @@ function updateCoordsHUD() {
   const cz = Math.floor(z / chunkSize);
 
   coordsHUD.innerHTML = `
-    <div><strong>XYZ:</strong> ${x} / ${y} / ${z}</div>
-    <div style="opacity:.85"><strong>Chunk:</strong> ${cx}, ${cz}</div>
+    <div><u>XYZ:</u> ${x} / ${y} / ${z}</div>
+    <div style="opacity:.85"><u>Chunk:</u> ${cx}, ${cz}</div>
   `;
 }
 
@@ -669,19 +669,19 @@ function updateOverlay(extraLine = "") {
   const safeLine = getSafeZoneLine();
 
   overlay.innerHTML = `
-    <strong>Status:</strong> ${status}<br>
-    <strong>Holding:</strong> [${selectedHotbar + 1}] ${heldName}<br>
-    <strong>Inventory:</strong> ${invOpen ? "OPEN" : "CLOSED"}<br>
-    <strong>Viewmodel:</strong> ${viewModelEnabled ? "ON" : "OFF"}<br>
-    <strong>Remote Players:</strong> ${remoteRenderer.enabled ? "ON" : "OFF"} |
-    <strong>Xray:</strong> ${remoteRenderer.xrayEnabled ? "ON" : "OFF"}<br>
-    <strong>VM Debug:</strong> ${vmDebug ? "ON" : "OFF"} |
-    <strong>VM Tune:</strong> ${vmTuning ? "ON" : "OFF"} |
-    <strong>Mirror:</strong> ${vmMirrorX ? "ON" : "OFF"}<br>
-    <strong>${mineLine}</strong><br>
+    <u>Status:</u> ${status}<br>
+    <u>Holding:</u> [${selectedHotbar + 1}] ${heldName}<br>
+    <u>Inventory:</u> ${invOpen ? "OPEN" : "CLOSED"}<br>
+    <u>Viewmodel:</u> ${viewModelEnabled ? "ON" : "OFF"}<br>
+    <u>Remote Players:</u> ${remoteRenderer.enabled ? "ON" : "OFF"} |
+    <u>Xray:</u> ${remoteRenderer.xrayEnabled ? "ON" : "OFF"}<br>
+    <u>VM Debug:</u> ${vmDebug ? "ON" : "OFF"} |
+    <u>VM Tune:</u> ${vmTuning ? "ON" : "OFF"} |
+    <u>Mirror:</u> ${vmMirrorX ? "ON" : "OFF"}<br>
+    <u>${mineLine}</u><br>
     <span style="opacity:.9">${psLine}</span><br>
-    <strong>DEBUG_PARTICLES_ALWAYS:</strong> ${DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"}<br>
-    <strong>${safeLine}</strong><br>
+    <u>DEBUG_PARTICLES_ALWAYS:</u> ${DEBUG_PARTICLES_ALWAYS ? "ON" : "OFF"}<br>
+    <u>${safeLine}</u><br>
     -------------------------<br>
     [Click/Hold LMB] Mine/Attack | [R-Click] Place<br>
     [1-5] Select Hotbar Slot<br>
@@ -2578,6 +2578,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
 
   // SUN: Yellow Sphere with Halo
   sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 40 }, scene);
+  (sunMesh as any).isInFrustum = () => true;
+  
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
@@ -2588,6 +2590,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
 
   // MOON: White Sphere with Detail
   moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 25 }, scene);
+  (moonMesh as any).isInFrustum = () => true;
+
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
@@ -2615,6 +2619,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
      starData[i*3+2] = r * Math.cos(phi);
   }
   const stars = new BABYLON.Mesh("stars", scene);
+  (stars as any).isInFrustum = () => true;
+
   const vertexData = new BABYLON.VertexData();
   vertexData.positions = starData;
   vertexData.applyToMesh(stars, true);
@@ -2630,6 +2636,8 @@ function ensureSkybox(scene: BABYLON.Scene) {
   // CLOUDS: Floating low-poly spheres
   for (let i=0; i<15; i++) {
      const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 30 + Math.random()*40, segments: 4 }, scene);
+     (c as any).isInFrustum = () => true;
+
      const cMat = new BABYLON.StandardMaterial("cloudMat", scene);
      cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
      cMat.alpha = 0.3;
@@ -2658,6 +2666,11 @@ function updateDayNightCycle(dt: number) {
 
     const scene = getStableScene();
     if (!scene) return;
+
+    // FIX: Push out the clipping plane so Noa doesn't aggressively cull our celestial bodies
+    if (scene.activeCamera && scene.activeCamera.maxZ < 1500) {
+        scene.activeCamera.maxZ = 1500;
+    }
 
     ensureSkybox(scene);
 
