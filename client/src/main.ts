@@ -2094,7 +2094,7 @@ function ensureUserId(): string {
 }
 
 let canSendMoves = false;
-let clientWorldTime = 0.26; // HARD START AT DAWN: Sun will spawn low on the horizon directly in front of you.
+let clientWorldTime = 0.26; // HARD START AT DAWN: Sun will spawn huge and low directly in front of you.
 
 async function connect() {
   try {
@@ -2560,21 +2560,27 @@ function updateZoneCheck() {
 
 // 13.2 Day/Night Cycle + Skybox Logic
 let skyRoot: BABYLON.TransformNode | null = null;
+let skySceneUid: string | number | null = null;
 let sunMesh: BABYLON.Mesh | null = null;
 let moonMesh: BABYLON.Mesh | null = null;
 let skyMaterial: BABYLON.StandardMaterial | null = null;
 
 function ensureSkybox(scene: BABYLON.Scene) {
-  if (skyRoot) return;
+  const uid = (scene as any).uid as string | number | undefined;
+
+  // Rebuild if the NOA engine destroyed and recreated the WebGL scene underneath us
+  if (skyRoot && skySceneUid === (uid ?? null)) return;
+  if (skyRoot) {
+      skyRoot.dispose();
+      skyRoot = null;
+  }
+  skySceneUid = uid ?? null;
 
   skyRoot = new BABYLON.TransformNode("skyRoot", scene);
-
-  const ALL_MASK = 0x0FFFFFFF;
 
   const createSkyMesh = (name: string, m: BABYLON.Mesh) => {
       m.name = name;
       m.parent = skyRoot;
-      m.layerMask = ALL_MASK;
       m.alwaysSelectAsActiveMesh = true;
       m.isPickable = false;
       return m;
@@ -2585,7 +2591,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 60, segments: 16 }, scene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 45, segments: 16 }, scene);
   createSkyMesh("sun", sunMesh);
   
   const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
@@ -2594,7 +2600,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 45, segments: 16 }, scene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 30, segments: 16 }, scene);
   createSkyMesh("moon", moonMesh);
   
   const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
@@ -2608,35 +2614,30 @@ function ensureSkybox(scene: BABYLON.Scene) {
   moonMat.diffuseTexture = noiseTex;
   moonMesh.material = moonMat;
 
-  // Stars - Manual Vertex Data with Indices to prevent WebGL dropping unindexed points
-  const starCount = 1000;
-  const positions: number[] = [];
-  const indices: number[] = [];
-  for (let i = 0; i < starCount; i++) {
-     const theta = Math.random() * Math.PI * 2;
-     const phi = Math.acos(2 * Math.random() - 1);
-     const r = 450 + Math.random() * 20;
-     positions.push(r * Math.sin(phi) * Math.cos(theta));
-     positions.push(r * Math.cos(phi));
-     positions.push(r * Math.sin(phi) * Math.sin(theta));
-     indices.push(i);
+  // Stars - Merge small physical planes to mathematically guarantee triangle rendering
+  const starMeshes: BABYLON.Mesh[] = [];
+  const starBase = BABYLON.MeshBuilder.CreatePlane("starBase", { size: 2.5 }, scene);
+  for (let i = 0; i < 800; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 380 + Math.random() * 20;
+      
+      const s = starBase.clone("star" + i);
+      s.position.set(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
+      s.lookAt(BABYLON.Vector3.Zero());
+      starMeshes.push(s);
   }
   
-  const stars = new BABYLON.Mesh("stars", scene);
-  createSkyMesh("stars", stars);
-  
-  const vertexData = new BABYLON.VertexData();
-  vertexData.positions = positions;
-  vertexData.indices = indices;
-  vertexData.applyToMesh(stars, true);
-  
-  const starMat = new BABYLON.StandardMaterial("starMat", scene);
-  starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-  starMat.disableLighting = true;
-  starMat.pointsCloud = true;
-  starMat.pointSize = 4;
-  (starMat as any).fogEnabled = false;
-  stars.material = starMat;
+  const starsMesh = BABYLON.Mesh.MergeMeshes(starMeshes, true, true, undefined, false, true);
+  if (starsMesh) {
+      createSkyMesh("stars", starsMesh as BABYLON.Mesh);
+      const starMat = new BABYLON.StandardMaterial("starMat", scene);
+      starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+      starMat.disableLighting = true;
+      (starMat as any).fogEnabled = false;
+      starsMesh.material = starMat;
+  }
+  starBase.dispose();
 
   for (let i=0; i<15; i++) {
      const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 40 + Math.random()*20, segments: 4 }, scene);
@@ -2651,7 +2652,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
      
      const theta = Math.random() * Math.PI * 2;
      const phi = Math.random() * Math.PI * 0.35; 
-     const r = 380;
+     const r = 350;
      c.position.set(
        r * Math.sin(phi) * Math.cos(theta),
        Math.abs(r * Math.cos(phi)), 
@@ -2668,25 +2669,29 @@ function updateDayNightCycle(dt: number) {
     const scene = getStableScene();
     if (!scene) return;
 
+    // Aggressive Camera Clipping Defense
+    if (scene.activeCamera && scene.activeCamera.maxZ < 1000) {
+        scene.activeCamera.maxZ = 1000;
+    }
+
     ensureSkybox(scene);
 
     if (skyRoot) {
        const cam = scene.activeCamera;
        if (cam) {
-          // Sync layer masks every tick to survive engine overrides
-          const mask = cam.layerMask ?? 0x0FFFFFFF;
-          for (const child of skyRoot.getChildren()) {
-            (child as any).layerMask = mask;
+          // Perfect Layer Mask Synchronization
+          const mask = cam.layerMask;
+          for (const child of skyRoot.getChildMeshes()) {
+            child.layerMask = mask;
           }
        } 
 
-       // Attach position tracking to the player entity rather than camera to avoid weird visual shifts
        const p = noa.ents.getPosition(noa.playerEntity);
        if (p) skyRoot.position.set(p[0], p[1], p[2]);
 
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
-       // ORBIT IN Z-Y PLANE: Sun now rises exactly in front of the forward (+Z) direction
+       // ORBIT IN Z-Y PLANE: Sun rises and sets directly in front/behind standard spawn orientation
        if (sunMesh) {
            sunMesh.position.set(0, Math.sin(angle) * 400, Math.cos(angle) * 400);
            if (cam) sunMesh.lookAt(cam.globalPosition); 
