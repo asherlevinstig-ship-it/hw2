@@ -11,22 +11,22 @@ import {
  * Import your Room files
  */
 import { MyRoom } from "./rooms/MyRoom.js";
+import { EventArenaRoom } from "./rooms/EventArenaRoom.js";
 
 const server = defineServer({
     /**
      * Define your room handlers:
      */
     rooms: {
-        my_room: defineRoom(MyRoom)
+        my_room: defineRoom(MyRoom),
+        event_arena: defineRoom(EventArenaRoom)
     },
 
     /**
      * Experimental: Define API routes. Built-in integration with the "playground" and SDK.
-     * 
-     * Usage from SDK: 
-     *   client.http.get("/api/hello").then((response) => {})
-     * 
-     */
+     * * Usage from SDK: 
+     * client.http.get("/api/hello").then((response) => {})
+     * */
     routes: createRouter({
         api_hello: createEndpoint("/api/hello", { method: "GET", }, async (ctx) => {
             return { message: "Hello World" }

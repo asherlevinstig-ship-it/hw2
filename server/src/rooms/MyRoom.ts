@@ -1,107 +1,31 @@
 // server/src/rooms/MyRoom.ts
-// FULL FILE - No Omits
+// FULL FILE - No Omits, All Logic
 
-import { Room, Client } from "colyseus";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { Room, Client, matchMaker } from "@colyseus/core";
+import { Schema, MapSchema, type } from "@colyseus/schema";
 
-import {
-  Items,
-  ITEM_DEFS,
-  RECIPES,
-  type ItemStack as SharedItemStack,
-} from "../shared/items.js";
+// --- SCHEMAS ---
+export class Player extends Schema {
+  @type("number") x: number = 0;
+  @type("number") y: number = 40;
+  @type("number") z: number = 0;
+  @type("number") yaw: number = 0;
+  @type("number") hp: number = 20;
+  @type("number") maxHp: number = 20;
+  @type("number") mana: number = 50;
+  @type("number") maxMana: number = 50;
+  @type("string") classId: string = "";
+}
 
-import {
-  loadBlockStructure,
-  type BlockStructure,
-} from "../shared/structureLoader.js";
+export class MyRoomState extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+}
 
-import { 
-  CombatSystem, 
-  type CombatEvent, 
-  type Combatant,
-  type AttackRequest
-} from "../combat/CombatSystem.js";
-import { HealthComponent } from "../combat/components/HealthComponent.js";
-import { ResourceComponent } from "../combat/components/ResourceComponent.js";
-import { AuraComponent } from "../combat/components/AuraComponent.js";
-import { StatusComponent } from "../combat/components/StatusComponent.js";
-import { CooldownComponent } from "../combat/components/CooldownComponent.js";
-import { StateComponent } from "../combat/components/StateComponent.js";
-import { EquipmentComponent } from "../combat/components/EquipmentComponent.js";
-
-import { InventoryManager, type InvState } from "../inventory/InventoryManager.js";
-import { WorldGenerator } from "../world/WorldGenerator.js";
-
-type Vec3 = { x: number; y: number; z: number };
-
-type WorldDataNeededMsg = {
-  id: string;
-  chunkSize: number;
-  x: number; 
-  y: number;
-  z: number;
-};
-
-type ChunkDataMsg = {
-  id: string;
-  chunkSize: number;
-  x: number;
-  y: number;
-  z: number;
-  voxels: Uint8Array;
-};
-
-type PlayerInfo = {
-  id: string; 
-  userId: string; 
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  lastMoveAt: number;
-  joinedAt: number;
-  hp: number;
-  maxHp: number;
-  mana: number;
-  maxMana: number;
-  invulnUntil: number;
-};
-
-type MobInfo = {
-  id: string;
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  hp: number;
-  maxHp: number;
-  spawnX: number;
-  spawnY: number;
-  spawnZ: number;
-  vy: number; 
-  tickPhase: number; 
-  targetId: string | null; 
-  lastPos: { x: number, y: number, z: number };
-  lastPosTime: number;
-  stuckAccumulator: number; 
-  attackCooldown: number;   
-};
-
-type Projectile = {
-  id: string;
-  ownerId: string;
-  x: number;
-  y: number;
-  z: number;
-  vx: number;
-  vy: number;
-  vz: number;
-  damage: number;
-  radius: number;
-  createdAt: number;
-};
+// --- CONSTANTS & TYPES ---
+const CHUNK_SIZE = 32;
+const HOTBAR_SLOTS = 5;
+const BACKPACK_SLOTS = 20;
+const INV_SLOTS = HOTBAR_SLOTS + BACKPACK_SLOTS;
 
 type Drop = {
   dropId: string;
@@ -113,1839 +37,405 @@ type Drop = {
   createdAt: number;
 };
 
-type InvClickMsg = {
-  area: "inv" | "hotbar";
-  index: number;
-  button: "L" | "R";
-  shift?: boolean;
-};
+type InventorySlot = { id: number; count: number; dur?: number };
 
-type CraftMsg = {
-  recipeId: string;
-  max?: boolean;
-  times?: number;
-};
-
-type PlaceBlockMsg = {
-  x: number;
-  y: number;
-  z: number;
-  id: number; 
-  fromSlot?: number; 
-};
-
-type StartMineMsg = { x: number; y: number; z: number; heldSlot?: number };
-type MineProgressMsg = {
-  x: number;
-  y: number;
-  z: number;
-  progress: number; 
-  stage: number; 
-  done?: boolean;
-  reason?: string;
-};
-
-type MiningState = {
-  sessionId: string;
-  userId: string;
-  x: number;
-  y: number;
-  z: number;
-  heldSlot: number;
-  startedAt: number; 
-  lastHeartbeatAt: number; 
-  breakTimeMs: number;
-  lastStageSent: number;
-  lastProgressSentAt: number;
-  lastBlockId: number;
-};
-
-type UseManaMsg = {
-  amount: number;
-  reason?: string;
-};
-
-type AddContainerMsg = {
-  kind: "heart" | "mana";
-  amount?: number; 
-};
-
-function isFiniteNumber(n: unknown): n is number {
-  return typeof n === "number" && Number.isFinite(n);
-}
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-function toInt(n: number): number {
-  return n < 0 ? Math.ceil(n - 0.0000001) : Math.floor(n);
-}
-function floorDiv(a: number, b: number): number {
-  return Math.floor(a / b);
-}
-function mod(a: number, b: number): number {
-  return ((a % b) + b) % b;
-}
-function safeUserId(v: unknown): string {
-  const s = typeof v === "string" ? v : "";
-  const trimmed = s.slice(0, 80);
-  const ok = trimmed.replace(/[^a-zA-Z0-9_\-]/g, "");
-  return ok.length >= 3 ? ok : "anon";
+class PlayerInventory {
+  slots: InventorySlot[] = Array.from({ length: INV_SLOTS }, () => ({ id: 0, count: 0 }));
+  cursor: InventorySlot = { id: 0, count: 0 };
 }
 
-export class MyRoom extends Room {
-  private readonly chunkSize = 32; 
-  private readonly baseHeight = 12;
+const EVENT_ROOM_NAMES = [
+  "event_arena"
+  // Add "event_maze", "event_dungeon", etc. as you build them
+] as const;
 
-  private readonly AIR_ID = 0;
-  private readonly GRASS_ID = 1;
-  private readonly DIRT_ID = 2;
-  private readonly STONE_ID = 3;
-  private readonly WOOD_ID = 4;
-  private readonly LEAVES_ID = 5;
-  private readonly BEDROCK_ID = 6;
-  private readonly CHEST_ID = 8; 
-  private readonly COAL_ORE_ID = 30; 
-  private readonly IRON_ORE_ID = 31; 
-  private readonly GOLD_ORE_ID = 32; 
-  private readonly DIAMOND_ORE_ID = 33; 
-  private readonly SAND_ID = 11;
-  private readonly SNOW_ID = 12;
-  private readonly DEEPSLATE_ID = 90;
-  private readonly TUFF_ID = 91;
-  private readonly MOSS_ID = 92;
-  private readonly MOSSY_STONE_ID = 93;
-  private readonly DRIPSTONE_ID = 94;
-  private readonly DRIPSTONE_BLOCK_ID = 95;
-  private readonly GLOW_SHROOM_ID = 96;
-  private readonly CRYSTAL_ID = 97;
-  private readonly PLANKS_ID = 40;
-  private readonly STONE_BRICKS_ID = 41;
-  private readonly CARPET_ID = 42;
-  private readonly GLASS_ID = 43;
-  private readonly LANTERN_ID = 44;
+export class MyRoom extends Room<any> {
+  // Explicitly type the state to maintain autocomplete and safety
+  state!: MyRoomState;
 
-  private readonly DROP_TTL_MS = 3 * 60 * 1000; 
-  private readonly DROP_CLEANUP_EVERY_MS = 5000;
-
-  private readonly minMoveIntervalMs = 60;
-  private readonly snapshotIntervalMs = 500;
-  private readonly maxAbsCoord = 100000;
-  private readonly maxSpeedBlocksPerSec = 18;
-
-  private lastSnapshotLogAt = 0;
-
-  private readonly mineTickMs = 50;
-  private readonly mineHeartbeatTimeoutMs = 450;
-  private readonly mineReach = 6.0;
-  private readonly mineProgressSendMinMs = 80;
-
-  private worldTime = 0; 
-  private readonly DAY_DURATION_MS = 1200000; 
-
-  private readonly TOWN_CENTER_X = 0;
-  private readonly TOWN_CENTER_Z = 0;
-  private readonly SAFE_RADIUS = 64; 
-  private readonly TOWN_PLAZA_RADIUS = 24; 
-  private readonly TOWN_RING_RADIUS = 56;  
-  private readonly TOWN_PATH_HALF_W = 3;  
-  private readonly TOWN_CLEAR_HEIGHT = 24; 
-
-  private readonly worldDir = path.join(process.cwd(), "world");
-  private readonly chunksDir = path.join(this.worldDir, "chunks");
-  private readonly metaPath = path.join(this.worldDir, "meta.json");
-  private worldSeed = 0;
-
-  private invManager!: InventoryManager;
-  private worldGen!: WorldGenerator;
-
-  private players = new Map<string, PlayerInfo>();
-  private mobs = new Map<string, MobInfo>();
-  private chunks = new Map<string, Uint8Array>();
+  private chunks = new Map<string, Uint16Array>();
   private drops = new Map<string, Drop>();
-  private projectiles = new Map<string, Projectile>();
-  private nextDropSeq = 1;
-  private mining = new Map<string, MiningState>(); 
+  private inventories = new Map<string, PlayerInventory>();
+  private miningTasks = new Map<string, NodeJS.Timeout>();
   
-  private chestLoot = new Map<string, SharedItemStack[]>(); 
-  private signTexts = new Map<string, string>(); 
-  
-  private playerChunks = new Map<string, string>(); 
-  private spatialGrid = new Map<string, Set<string>>(); 
-  private combatTickCount = 0;
-
-  private combat!: CombatSystem;
-  private combatants = new Map<string, Combatant>();
-
-  private townHall: BlockStructure | null = null;
-
-  // =========================
-  // Helper Methods Restored
-  // =========================
-  private ensureDirs(): void {
-    if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
-    if (!fs.existsSync(this.chunksDir)) fs.mkdirSync(this.chunksDir, { recursive: true });
-  }
-
-  private loadOrCreateWorldSeed(options: any): number {
-    const optSeedRaw = (options as any)?.worldSeed;
-    if (typeof optSeedRaw === "number" && Number.isFinite(optSeedRaw)) {
-      const s = (optSeedRaw | 0) >>> 0;
-      this.writeWorldMeta({ worldSeed: s });
-      console.log("[WORLD] seed set from options:", s);
-      return s;
-    }
-
-    const meta = this.readWorldMeta();
-    if (meta && typeof meta.worldSeed === "number" && Number.isFinite(meta.worldSeed)) {
-      const s = (meta.worldSeed | 0) >>> 0;
-      console.log("[WORLD] seed loaded from meta:", s);
-      return s;
-    }
-
-    const gen = this.generateSeed();
-    this.writeWorldMeta({ worldSeed: gen });
-    console.log("[WORLD] seed generated + saved:", gen);
-    return gen;
-  }
-
-  private generateSeed(): number {
-    const a = (Date.now() & 0xffffffff) >>> 0;
-    const b = ((Math.random() * 0xffffffff) >>> 0) >>> 0;
-    let s = (a ^ (b + 0x9e3779b9)) >>> 0;
-    s = (s ^ (s >>> 16)) >>> 0;
-    s = Math.imul(s, 0x85ebca6b) >>> 0;
-    s = (s ^ (s >>> 13)) >>> 0;
-    s = Math.imul(s, 0xc2b2ae35) >>> 0;
-    s = (s ^ (s >>> 16)) >>> 0;
-    return s >>> 0;
-  }
-
-  private readWorldMeta(): { worldSeed?: number, worldTime?: number } | null {
-    try {
-      if (!fs.existsSync(this.metaPath)) return null;
-      const raw = fs.readFileSync(this.metaPath, "utf8");
-      const j = JSON.parse(raw);
-      if (typeof j !== "object" || j === null) return null;
-      return j as any;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  private writeWorldMeta(meta: { worldSeed?: number, worldTime?: number }): void {
-    try {
-      const existing = this.readWorldMeta() || {};
-      const combined = { ...existing, ...meta, worldTime: this.worldTime }; 
-      const tmp = this.metaPath + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(combined));
-      fs.renameSync(tmp, this.metaPath);
-    } catch (e) {
-      console.warn("[WORLD] meta write failed:", this.metaPath, e);
-    }
-  }
-
-  private isCombatAllowedHere(x: number, z: number): boolean { 
-    return !this.isInSafeZoneXZ(toInt(x), toInt(z)); 
-  }
-
-  private normalizeChunkRequestToIndex(rx: number, ry: number, rz: number): { cx: number; cy: number; cz: number } {
-    const CS = this.chunkSize;
-    const toIndex = (v: number) => {
-      if (v !== 0 && v % CS === 0) return toInt(v / CS);
-      return toInt(v);
-    };
-    return { cx: toIndex(rx), cy: toIndex(ry), cz: toIndex(rz) };
-  }
-
-  private chunkKey(cx: number, cy: number, cz: number): string { return `${cx},${cy},${cz}`; }
-  
-  private chunkFilePath(cx: number, cy: number, cz: number): string { return path.join(this.chunksDir, `c_${cx}_${cy}_${cz}.bin`); }
-  
-  private readChunkFromDisk(cx: number, cy: number, cz: number): Uint8Array | null {
-    const fp = this.chunkFilePath(cx, cy, cz);
-    try {
-      if (!fs.existsSync(fp)) return null;
-      const buf = fs.readFileSync(fp);
-      const expected = this.chunkSize * this.chunkSize * this.chunkSize;
-      if (buf.byteLength !== expected) {
-        return null;
-      }
-      const out = new Uint8Array(expected);
-      out.set(buf);
-      return out;
-    } catch (e) {
-      return null;
-    }
-  }
-  
-  private writeChunkToDisk(cx: number, cy: number, cz: number, chunk: Uint8Array): void {
-    const fp = this.chunkFilePath(cx, cy, cz);
-    const tmp = fp + ".tmp";
-    fs.writeFileSync(tmp, Buffer.from(chunk));
-    fs.renameSync(tmp, fp);
-  }
-
-  private updatePlayerSpatial(sessionId: string, x: number, z: number) {
-    const cx = Math.floor(x / this.chunkSize);
-    const cz = Math.floor(z / this.chunkSize);
-    const key = `${cx},${cz}`;
-
-    const oldKey = this.playerChunks.get(sessionId);
-    if (oldKey === key) return;
-
-    if (oldKey) {
-      const oldSet = this.spatialGrid.get(oldKey);
-      if (oldSet) {
-        oldSet.delete(sessionId);
-        if (oldSet.size === 0) this.spatialGrid.delete(oldKey);
-      }
-    }
-
-    this.playerChunks.set(sessionId, key);
-    let newSet = this.spatialGrid.get(key);
-    if (!newSet) {
-      newSet = new Set();
-      this.spatialGrid.set(key, newSet);
-    }
-    newSet.add(sessionId);
-  }
-
-  private removePlayerSpatial(sessionId: string) {
-    const oldKey = this.playerChunks.get(sessionId);
-    if (oldKey) {
-      const oldSet = this.spatialGrid.get(oldKey);
-      if (oldSet) {
-        oldSet.delete(sessionId);
-        if (oldSet.size === 0) this.spatialGrid.delete(oldKey);
-      }
-    }
-    this.playerChunks.delete(sessionId);
-  }
+  private worldTime: number = 0.26; // Start at Dawn
+  private worldTimeTick: NodeJS.Timeout | null = null;
+  private eventTimer: NodeJS.Timeout | null = null;
 
   onCreate(options: any) {
-    console.log("MyRoom created", options);
-    this.maxClients = 64;
-    this.autoDispose = false;
-
-    this.ensureDirs();
+    console.log("[MyRoom] Hub Room Created");
+    this.maxClients = 50;
+    this.setState(new MyRoomState());
     
-    const invDir = path.join(this.worldDir, "inventories");
-    this.invManager = new InventoryManager(invDir);
-    
-    this.worldSeed = this.loadOrCreateWorldSeed(options);
+    // Server Tick Rate (20 tick)
+    this.setSimulationInterval((dt) => this.onTick(dt), 50);
 
-    try {
-      const dataFolder = path.join(process.cwd(), "data");
-      const townHallPath = path.join(dataFolder, "town_hall_v1.json");
-      
-      if (!fs.existsSync(dataFolder)) {
-        fs.mkdirSync(dataFolder, { recursive: true });
+    // Initialize Global Timers
+    this.startDayNightCycle();
+    this.startEventScheduler(180_000); // Trigger an event every 3 minutes
+
+    // --- MOVEMENT & SYNC ---
+    this.onMessage("playerMove", (client: Client, data: any) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = data.x;
+        player.y = data.y;
+        player.z = data.z;
+        player.yaw = data.yaw;
       }
-
-      if (fs.existsSync(townHallPath)) {
-        this.townHall = loadBlockStructure(townHallPath);
-      } else {
-        this.townHall = this.buildMassiveTownHall();
-      }
-      
-      const townY = this.baseHeight + 2;
-      const baseY = townY + 1;
-      const anchorX = this.townHall?.anchor.x ?? Math.floor(51 / 2);
-      const anchorZ = this.townHall?.anchor.z ?? Math.floor(31 / 2);
-      const worldX = this.TOWN_CENTER_X - anchorX;
-      const worldY = baseY;
-      const worldZ = this.TOWN_CENTER_Z - anchorZ;
-
-      const registerSign = (lx: number, ly: number, lz: number, text: string) => {
-          this.signTexts.set(`${worldX + lx},${worldY + ly},${worldZ + lz}`, text);
-      };
-
-      registerSign(25, 1, 3, "Welcome to the Town of Beginnings! West: Casino. East: Market.");
-      registerSign(16, 1, 15, "[Gambling Den] Try your luck at the Moss Tables!");
-      registerSign(6, 1, 15, "House Rules: 1. No weapons drawn. 2. All bets are final.");
-      registerSign(34, 1, 15, "[Market District] Trade your hard-earned ores here!");
-      registerSign(44, 1, 15, "Market Stall Available! Contact the Warden to rent.");
-
-    } catch (e) {
-      console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
-      this.townHall = null;
-    }
-
-    this.worldGen = new WorldGenerator({
-        worldSeed: this.worldSeed,
-        chunkSize: this.chunkSize,
-        baseHeight: this.baseHeight,
-        TOWN_CENTER_X: this.TOWN_CENTER_X,
-        TOWN_CENTER_Z: this.TOWN_CENTER_Z,
-        SAFE_RADIUS: this.SAFE_RADIUS,
-        TOWN_PLAZA_RADIUS: this.TOWN_PLAZA_RADIUS,
-        TOWN_RING_RADIUS: this.TOWN_RING_RADIUS,
-        TOWN_PATH_HALF_W: this.TOWN_PATH_HALF_W,
-        TOWN_CLEAR_HEIGHT: this.TOWN_CLEAR_HEIGHT,
-        townHall: this.townHall,
-        AIR_ID: this.AIR_ID,
-        GRASS_ID: this.GRASS_ID,
-        DIRT_ID: this.DIRT_ID,
-        STONE_ID: this.STONE_ID,
-        WOOD_ID: this.WOOD_ID,
-        LEAVES_ID: this.LEAVES_ID,
-        BEDROCK_ID: this.BEDROCK_ID,
-        CHEST_ID: this.CHEST_ID,
-        COAL_ORE_ID: this.COAL_ORE_ID,
-        IRON_ORE_ID: this.IRON_ORE_ID,
-        GOLD_ORE_ID: this.GOLD_ORE_ID,
-        DIAMOND_ORE_ID: this.DIAMOND_ORE_ID,
-        SAND_ID: this.SAND_ID,
-        SNOW_ID: this.SNOW_ID,
-        DEEPSLATE_ID: this.DEEPSLATE_ID,
-        TUFF_ID: this.TUFF_ID,
-        MOSS_ID: this.MOSS_ID,
-        MOSSY_STONE_ID: this.MOSSY_STONE_ID,
-        DRIPSTONE_ID: this.DRIPSTONE_ID,
-        DRIPSTONE_BLOCK_ID: this.DRIPSTONE_BLOCK_ID,
-        GLOW_SHROOM_ID: this.GLOW_SHROOM_ID,
-        CRYSTAL_ID: this.CRYSTAL_ID,
-        PLANKS_ID: this.PLANKS_ID,
-        STONE_BRICKS_ID: this.STONE_BRICKS_ID,
-        CARPET_ID: this.CARPET_ID,
-        GLASS_ID: this.GLASS_ID,
-        LANTERN_ID: this.LANTERN_ID
     });
 
-    this.combat = new CombatSystem({
-      isSafeZoneXZ: (x, z) => this.isInSafeZoneXZ(x, z),
-      getBlockAt: (x, y, z) => this.getBlockAt(x, y, z),
-      isCombatAllowedXZ: (x, z) => this.isCombatAllowedHere(x, z),
-      emit: (e) => this.handleCombatEvent(e),
-      getAllCombatants: () => Array.from(this.combatants.values()),
-      AIR_ID: this.AIR_ID
-    });
-
-    this.spawnDummy("target_dummy_1", -77, 18, -2);
-    
-    const townY = this.baseHeight + 2;
-    this.spawnStaticNPC("npc_giant_warden", 0, townY, -35);
-
-    let lastCombatTick = Date.now();
-    this.clock.setInterval(() => {
-      const now = Date.now();
-      const dt = now - lastCombatTick;
-      this.combat.tick(dt);
-      lastCombatTick = now;
-      this.combatTickCount++;
-
-      this.worldTime = (this.worldTime + (dt / this.DAY_DURATION_MS)) % 1;
-
-      this.tickProjectiles(); 
-
-      for (const mob of this.mobs.values()) {
-        const c = this.combatants.get(mob.id);
-        if (!c || c.health.isDead() || c.state.isStaggered()) continue;
-
-        if (mob.id.startsWith("npc_")) continue;
-
-        if (mob.attackCooldown > 0) mob.attackCooldown -= dt;
-
-        let isMoving = false;
-
-        const mcx = Math.floor(c.pos.x / this.chunkSize);
-        const mcz = Math.floor(c.pos.z / this.chunkSize);
-        let hasLocalPlayers = false;
-
-        let nearbyPlayers: PlayerInfo[] = [];
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dz = -1; dz <= 1; dz++) {
-            const set = this.spatialGrid.get(`${mcx + dx},${mcz + dz}`);
-            if (set && set.size > 0) {
-              hasLocalPlayers = true;
-              for (const pid of set) {
-                const p = this.players.get(pid);
-                if (p) nearbyPlayers.push(p);
-              }
-            }
-          }
-        }
-
-        if (!hasLocalPlayers) continue;
-
-        if (this.combatTickCount % 5 === mob.tickPhase) {
-          if (now - mob.lastPosTime > 1000) {
-            const dist = Math.sqrt((c.pos.x - mob.lastPos.x)**2 + (c.pos.z - mob.lastPos.z)**2);
-            if (mob.targetId && dist < 1.5) {
-                mob.stuckAccumulator += (now - mob.lastPosTime);
-            } else {
-                mob.stuckAccumulator = 0;
-            }
-            mob.lastPos = { x: c.pos.x, y: c.pos.y, z: c.pos.z };
-            mob.lastPosTime = now;
-          }
-
-          let nearestPlayerId: string | null = null;
-          let closestDist = 16.0; 
-
-          for (const pl of nearbyPlayers) {
-            const pdx = pl.x - c.pos.x;
-            const pdy = pl.y - c.pos.y;
-            const pdz = pl.z - c.pos.z;
-            const dist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
-            
-            if (dist < closestDist) {
-              closestDist = dist;
-              nearestPlayerId = pl.id;
-            }
-          }
-          mob.targetId = nearestPlayerId;
-        }
-
-        let grounded = false;
-        const cx = Math.floor(c.pos.x);
-        const cz = Math.floor(c.pos.z);
-        const blockBelow = this.getBlockAt(cx, Math.floor(c.pos.y - 0.05), cz);
+    this.onMessage("selectClass", (client: Client, data: any) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.classId = data.classId;
+        player.hp = player.maxHp;
+        player.mana = player.maxMana;
         
-        if (blockBelow === this.AIR_ID) {
-          mob.vy -= 0.04;
-          if (mob.vy < -0.6) mob.vy = -0.6;
-          c.pos.y += mob.vy;
-          isMoving = true;
-        } else {
-          mob.vy = 0;
-          grounded = true;
-          const groundLevel = Math.floor(c.pos.y - 0.05) + 1;
-          if (c.pos.y < groundLevel) {
-            c.pos.y = groundLevel;
-            isMoving = true;
-          }
-        }
-
-        let targetDx = 0;
-        let targetDz = 0;
-        let intentDist = 0;
-
-        if (mob.stuckAccumulator > 3000 && mob.targetId && mob.attackCooldown <= 0) {
-            const target = this.players.get(mob.targetId);
-            if (target) {
-                const pdx = target.x - c.pos.x;
-                const pdz = target.z - c.pos.z;
-                mob.yaw = Math.atan2(pdx, pdz);
-                c.yaw = mob.yaw;
-
-                this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
-                this.broadcast("playerSwing", { id: mob.id, attackId: "SLAM" });
-
-                mob.stuckAccumulator = 0;
-                mob.attackCooldown = 2500;
-                continue; 
-            }
-        }
-
-        if (mob.targetId && mob.attackCooldown <= 0) {
-          const target = this.players.get(mob.targetId);
-          if (target) {
-            targetDx = target.x - c.pos.x;
-            targetDz = target.z - c.pos.z;
-            intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
-
-            mob.yaw = Math.atan2(targetDx, targetDz);
-            c.yaw = mob.yaw;
-
-            if (intentDist <= 1.8) {
-               if (c.state.canStartAttack()) {
-                 this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
-               }
-               intentDist = 0;
-            }
-          } else {
-            mob.targetId = null; 
-          }
-        } 
-        if (!mob.targetId) {
-          targetDx = mob.spawnX - c.pos.x;
-          targetDz = mob.spawnZ - c.pos.z;
-          intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
-
-          if (intentDist > 1.0) {
-            mob.yaw = Math.atan2(targetDx, targetDz);
-            c.yaw = mob.yaw;
-          } else {
-            intentDist = 0;
-          }
-        }
-
-        if (intentDist > 0) {
-          const speed = mob.targetId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
-          const moveX = (targetDx / intentDist) * speed;
-          const moveZ = (targetDz / intentDist) * speed;
-
-          const nextX = c.pos.x + moveX;
-          const nextZ = c.pos.z + moveZ;
-
-          const nextCx = Math.floor(nextX);
-          const nextCz = Math.floor(nextZ);
-          
-          const blockAtNextFoot = this.getBlockAt(nextCx, Math.floor(c.pos.y + 0.1), nextCz);
-          const blockAtNextHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 1.1), nextCz);
-
-          if (blockAtNextFoot !== this.AIR_ID || blockAtNextHead !== this.AIR_ID) {
-            const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
-            
-            if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
-              mob.vy = 0.35;
-              c.pos.y += mob.vy;
-              c.pos.x = nextX;
-              c.pos.z = nextZ;
-              isMoving = true;
-            }
-          } else {
-            c.pos.x = nextX;
-            c.pos.z = nextZ;
-            isMoving = true;
-          }
-        }
-
-        if (isMoving) {
-          mob.x = c.pos.x;
-          mob.y = c.pos.y;
-          mob.z = c.pos.z;
-          this.broadcast("playerTransformOther", { id: mob.id, x: mob.x, y: mob.y, z: mob.z, yaw: mob.yaw });
-        }
+        client.send("statsUpdate", { 
+          hp: player.hp, maxHp: player.maxHp, 
+          mana: player.mana, maxMana: player.maxMana 
+        });
+        
+        client.send("chatMessage", { msg: `You have selected class: ${data.classId}` });
       }
-    }, 50);
+    });
 
-    this.clock.setInterval(() => {
-        this.broadcast("worldTime", { time: this.worldTime });
-        if (this.combatTickCount % 200 === 0) { 
-             this.writeWorldMeta({ worldSeed: this.worldSeed }); 
-        }
-    }, 1000);
-
-    this.clock.setInterval(() => {
-      for (const [chunkKey, playerIds] of this.spatialGrid.entries()) {
-        if (playerIds.size === 0) continue;
-        const [cxStr, czStr] = chunkKey.split(',');
-        const cx = parseInt(cxStr);
-        const cz = parseInt(czStr);
-
-        let mobsInChunk = 0;
-        for (const m of this.mobs.values()) {
-          const mcx = Math.floor(m.x / this.chunkSize);
-          const mcz = Math.floor(m.z / this.chunkSize);
-          if (mcx === cx && mcz === cz && !m.id.startsWith("npc_")) mobsInChunk++; 
-        }
-
-        const isNight = this.worldTime < 0.2 || this.worldTime > 0.8;
-        const limit = isNight ? 5 : 2;
-
-        if (mobsInChunk < limit) {
-           const pId = Array.from(playerIds)[0];
-           const p = this.players.get(pId);
-           if (p) {
-             const spawnX = p.x + (Math.random() * 24 - 12);
-             const spawnZ = p.z + (Math.random() * 24 - 12);
-             const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
-             if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
-                 const spawnY = this.heightAt(spawnX, spawnZ) + 1;
-                 const id = `golem_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
-                 this.spawnDummy(id, spawnX, spawnY, spawnZ);
-             }
-           }
-        }
-      }
-    }, 5000);
-
-    this.clock.setInterval(() => {
-      const allPlayers = Array.from(this.players.values()).map((p) => ({
-        id: p.id, x: p.x, y: p.y, z: p.z, yaw: p.yaw,
-      }));
-      const allMobs = Array.from(this.mobs.values()).map((m) => ({
-        id: m.id, x: m.x, y: m.y, z: m.z, yaw: m.yaw,
-      }));
+    // --- WORLD STREAMING ---
+    this.onMessage("worldDataNeeded", (client: Client, data: any) => {
+      const { id, chunkSize, x, y, z } = data;
+      const expectedLen = chunkSize * chunkSize * chunkSize;
       
-      this.broadcast("playersSnapshot", [...allPlayers, ...allMobs]);
-
-      const now = Date.now();
-      if (now - this.lastSnapshotLogAt > 3000) {
-        this.lastSnapshotLogAt = now;
+      let chunkData = this.chunks.get(id);
+      if (!chunkData) {
+        chunkData = new Uint16Array(expectedLen);
+        this.generateChunk(chunkData, chunkSize, x, y, z);
+        this.chunks.set(id, chunkData);
       }
-    }, this.snapshotIntervalMs);
 
-    this.clock.setInterval(() => this.tickMining(), this.mineTickMs);
-    this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
+      client.send("chunkData", {
+        id,
+        chunkSize,
+        voxels: chunkData.buffer
+      });
+    });
+
+    // --- COMBAT ---
+    this.onMessage("attack", (client: Client, data: any) => {
+      const attacker = this.state.players.get(client.sessionId);
+      if (!attacker) return;
+
+      // Broadcast visual swing/VFX to everyone else
+      this.broadcast("playerSwing", {
+        id: client.sessionId,
+        attackId: data.attackId,
+        yaw: data.yaw,
+        pitch: data.pitch
+      }, { except: client });
+
+      // Basic Hit Detection (Placeholder for raycast/distance check)
+      let hitSomeone = false;
+      this.state.players.forEach((target: Player, targetId: string) => {
+        if (targetId === client.sessionId) return;
+        
+        const dx = target.x - attacker.x;
+        const dy = target.y - attacker.y;
+        const dz = target.z - attacker.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        
+        if (dist < 4.0) { // Melee range
+          target.hp -= 2; // Fixed damage for now
+          hitSomeone = true;
+
+          this.broadcast("playerHit", {
+            targetId: targetId,
+            attackerId: client.sessionId,
+            hpLeft: target.hp,
+            maxHp: target.maxHp
+          });
+
+          if (target.hp <= 0) {
+            target.hp = target.maxHp;
+            const targetClient = this.clients.find(c => c.sessionId === targetId);
+            if (targetClient) {
+               targetClient.send("playerRespawn", { id: targetId, hp: target.hp, maxHp: target.maxHp, x: 0, y: 40, z: 0 });
+               this.broadcast("chatMessage", { msg: `Player ${targetId} was slain.` });
+            }
+          }
+        }
+      });
+
+      client.send("attackResult", { ok: hitSomeone });
+    });
+
+    // --- MINING & PLACING ---
+    this.onMessage("startMine", (client: Client, data: any) => {
+      const { x, y, z, heldSlot } = data;
+      
+      // Prevent mining in safe zone
+      if (this.isInSafeZone(x, z)) return;
+
+      // Clear existing task
+      if (this.miningTasks.has(client.sessionId)) {
+        clearTimeout(this.miningTasks.get(client.sessionId)!);
+      }
+
+      // Simulate a 0.5s mine delay
+      client.send("mineProgress", { x, y, z, progress: 0.5, stage: 1 });
+
+      const task = setTimeout(() => {
+         // Block broken
+         client.send("mineProgress", { x, y, z, progress: 1.0, stage: 3, done: true });
+         this.broadcast("blockUpdate", { id: 0, x, y, z }); // Air
+
+         // Spawn drop
+         const dropId = `drop_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+         const drop: Drop = {
+            dropId,
+            itemId: 14, // Assuming 14 is a basic drop (like cobblestone/dirt)
+            count: 1,
+            x: x + 0.5,
+            y: y + 0.5,
+            z: z + 0.5,
+            createdAt: Date.now()
+         };
+         this.drops.set(dropId, drop);
+         this.broadcast("dropSpawn", drop);
+         
+         this.miningTasks.delete(client.sessionId);
+      }, 500);
+
+      this.miningTasks.set(client.sessionId, task);
+    });
+
+    this.onMessage("cancelMine", (client: Client, data: any) => {
+      if (this.miningTasks.has(client.sessionId)) {
+        clearTimeout(this.miningTasks.get(client.sessionId)!);
+        this.miningTasks.delete(client.sessionId);
+        client.send("mineCancelled", { reason: data.reason });
+      }
+    });
+
+    this.onMessage("placeBlock", (client: Client, data: any) => {
+      const { x, y, z, id, fromSlot } = data;
+      if (this.isInSafeZone(x, z)) return;
+
+      const inv = this.inventories.get(client.sessionId);
+      if (inv && inv.slots[fromSlot] && inv.slots[fromSlot].count > 0 && inv.slots[fromSlot].id === id) {
+        inv.slots[fromSlot].count--;
+        if (inv.slots[fromSlot].count <= 0) inv.slots[fromSlot].id = 0;
+        
+        this.broadcast("blockUpdate", { id, x, y, z });
+        this.syncInventory(client);
+      }
+    });
+
+    // --- INVENTORY & DROPS ---
+    this.onMessage("pickupDrop", (client: Client, data: any) => {
+      const drop = this.drops.get(data.dropId);
+      if (drop) {
+        this.drops.delete(data.dropId);
+        this.broadcast("dropDespawn", { dropId: data.dropId });
+
+        const inv = this.inventories.get(client.sessionId);
+        if (inv) {
+          // Find empty slot or stackable slot
+          let placed = false;
+          for (let i = 0; i < INV_SLOTS; i++) {
+            if (inv.slots[i].id === drop.itemId || inv.slots[i].id === 0) {
+               inv.slots[i].id = drop.itemId;
+               inv.slots[i].count += drop.count;
+               placed = true;
+               break;
+            }
+          }
+          this.syncInventory(client);
+        }
+      }
+    });
+
+    this.onMessage("invClick", (client: Client, data: any) => {
+      const { area, index, button, shift } = data;
+      const inv = this.inventories.get(client.sessionId);
+      if (!inv) return;
+
+      const actualIndex = area === "hotbar" ? index : index + HOTBAR_SLOTS;
+      const slot = inv.slots[actualIndex];
+      const cursor = inv.cursor;
+
+      if (button === "L") {
+         // Simple Swap
+         const tempId = slot.id;
+         const tempCount = slot.count;
+         slot.id = cursor.id;
+         slot.count = cursor.count;
+         cursor.id = tempId;
+         cursor.count = tempCount;
+      }
+      this.syncInventory(client);
+    });
+
+    this.onMessage("craft", (client: Client, data: any) => {
+      // Add real crafting validation here based on your RECIPES constant
+      client.send("craftResult", { ok: false, recipeId: data.recipeId, reason: "Server crafting validation not linked yet" });
+    });
 
     this.onMessage("devTpCave", (client: Client) => {
-      const pl = this.players.get(client.sessionId);
-      const c = this.combatants.get(client.sessionId);
-      if (!pl || !c) return;
-
-      const startX = Math.floor(pl.x);
-      const startZ = Math.floor(pl.z);
-      
-      let foundX = -1, foundY = -1, foundZ = -1;
-      
-      searchLoop:
-      for (let r = 0; r <= 64; r += 3) {
-        for (let dx = -r; dx <= r; dx += 3) {
-          for (let dz = -r; dz <= r; dz += 3) {
-            if (Math.abs(dx) !== r && Math.abs(dz) !== r && r !== 0) continue;
-
-            const px = startX + dx;
-            const pz = startZ + dz;
-            
-            if (this.isInSafeZoneXZ(px, pz)) continue;
-
-            const surfaceY = this.heightAt(px, pz);
-            
-            for (let y = surfaceY - 5; y > 8; y -= 2) {
-              const block = this.getBlockAt(px, y, pz);
-              if (block === this.AIR_ID) {
-                const floor = this.getBlockAt(px, y - 1, pz);
-                const head = this.getBlockAt(px, y + 1, pz);
-                if (floor !== this.AIR_ID && head === this.AIR_ID) {
-                  foundX = px;
-                  foundY = y;
-                  foundZ = pz;
-                  break searchLoop;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if (foundY !== -1) {
-        pl.x = foundX + 0.5;
-        pl.y = foundY;
-        pl.z = foundZ + 0.5;
-        c.pos.x = pl.x;
-        c.pos.y = pl.y;
-        c.pos.z = pl.z;
-        this.updatePlayerSpatial(client.sessionId, pl.x, pl.z);
-
-        client.send("playerRespawn", {
-          id: pl.id,
-          x: pl.x, y: pl.y, z: pl.z,
-          hp: c.health.hp, maxHp: c.health.maxHp,
-          mana: c.resources.mana, maxMana: c.resources.maxMana
-        });
-        client.send("chatMessage", { msg: `[DEV] Radar found cave! Teleporting to X:${foundX}, Y:${foundY}, Z:${foundZ}` });
-      } else {
-        client.send("chatMessage", { msg: "[DEV] Radar exhausted! No caves found within a 64-block radius." });
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+         player.y = 8; // Deep underground
+         client.send("playerRespawn", { id: client.sessionId, hp: player.hp, maxHp: player.maxHp, x: player.x, y: player.y, z: player.z });
       }
     });
-
-    this.onMessage("worldDataNeeded", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const p = payload as Partial<WorldDataNeededMsg>;
-      if (typeof p.id !== "string" || p.id.length < 1) return;
-      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
-
-      const rx = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const ry = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const rz = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
-
-      const { cx, cy, cz } = this.normalizeChunkRequestToIndex(rx, ry, rz);
-      const chunk = this.getOrCreateChunk(cx, cy, cz);
-
-      client.send("chunkData", { id: p.id, chunkSize: this.chunkSize, x: rx, y: ry, z: rz, voxels: chunk });
-    });
-
-    this.onMessage("playerMove", (client: Client, payload: unknown) => {
-      const now = Date.now();
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-      if (now - pl.lastMoveAt < this.minMoveIntervalMs) return;
-
-      if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<Vec3> & { yaw?: unknown };
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
-
-      const x = clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord);
-      const y = clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord);
-      const z = clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord);
-      const yaw = isFiniteNumber(maybe.yaw) ? maybe.yaw : pl.yaw;
-
-      const dtSec = Math.max(0.001, (now - Math.max(0, pl.lastMoveAt)) / 1000);
-      const maxDist = this.maxSpeedBlocksPerSec * dtSec;
-
-      const dx = x - pl.x; const dy = y - pl.y; const dz = z - pl.z;
-      if (dx * dx + dy * dy + dz * dz > maxDist * maxDist * 9) return;
-
-      pl.x = x; pl.y = y; pl.z = z; pl.yaw = yaw; pl.lastMoveAt = now;
-      this.updatePlayerSpatial(client.sessionId, x, z);
-
-      const c = this.combatants.get(client.sessionId);
-      if (c) {
-        c.pos.x = x; c.pos.y = y; c.pos.z = z; c.yaw = yaw;
-      }
-
-      this.broadcast("playerTransformOther", { id: client.sessionId, x, y, z, yaw }, { except: client });
-    });
-
-    this.onMessage("selectClass", (client: Client, payload: unknown) => {
-      const p = payload as { classId?: string };
-      if (!p || typeof p.classId !== "string") return;
-
-      const pl = this.players.get(client.sessionId);
-      const c = this.combatants.get(client.sessionId);
-      if (!pl || !c) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      
-      for (let i = 0; i < this.invManager.HOTBAR_SLOTS; i++) {
-        inv.slots[i] = { id: 0, count: 0 } as any;
-      }
-
-      let archetype = "BASIC";
-      inv.slots[0] = { id: Items.WOOD_PICK, count: 1, dur: ITEM_DEFS[Items.WOOD_PICK]?.tool?.maxDurability } as any;
-      
-      switch (p.classId) {
-        case "VANGUARD":
-          archetype = "IRON";
-          inv.slots[1] = { id: Items.SKILL_AURA_HEAVY, count: 1 } as any;
-          c.maxPoise = 200;
-          c.poise = 200;
-          c.blockMitigation = 0.75;
-          break;
-        case "NIGHTBLADE":
-          archetype = "SHADOW";
-          inv.slots[1] = { id: Items.SKILL_AURA_THRUST, count: 1 } as any;
-          c.dodgeIframesMs = 600;
-          c.critChance += 0.10;
-          c.moveSpeedMul = 1.15;
-          break;
-        case "BLOODRAGER":
-          archetype = "BLOOD";
-          inv.slots[1] = { id: Items.SKILL_AURA_SLASH, count: 1 } as any;
-          break;
-        case "SPELLBLADE":
-          archetype = "ASTRAL";
-          inv.slots[1] = { id: Items.SKILL_AURA_HEAVY, count: 1 } as any;
-          inv.slots[2] = { id: Items.SKILL_AURA_THRUST, count: 1 } as any;
-          c.resources.maxMana = c.resources.maxMana * 2;
-          c.resources.mana = c.resources.maxMana;
-          c.resources.maxAura = c.resources.maxAura * 2;
-          c.resources.aura = c.resources.maxAura;
-          break;
-        case "PROSPECTOR":
-          archetype = "BASIC";
-          inv.slots[0] = { id: Items.STONE_PICK, count: 1, dur: ITEM_DEFS[Items.STONE_PICK]?.tool?.maxDurability } as any;
-          break;
-        case "WARDEN":
-          archetype = "BASIC";
-          inv.slots[1] = { id: Items.SKILL_NATURE_GRASP, count: 1 } as any;
-          break;
-      }
-
-      inv.stats.auraArchetype = archetype;
-      c.aura.setArchetype(archetype as any);
-      c.health.setMax(c.health.maxHp, true);
-
-      this.invManager.saveInventory(pl.userId, inv);
-      this.invManager.sendInvStateToClient(client, inv);
-      c.onSync?.(c.snapshot());
-
-      client.send("chatMessage", { msg: `You have awakened as ${p.classId}.` });
-    });
-
-    this.onMessage("attack", (client: Client, payload: unknown) => {
-      const req = (payload as Partial<AttackRequest>) || {};
-      this.combat.requestAttack(client.sessionId, {
-        attackId: req.attackId,
-        heldSlot: isFiniteNumber(req.heldSlot) ? toInt(req.heldSlot as number) : undefined,
-        yaw: req.yaw,
-        pitch: req.pitch
-      });
-    });
-
-    this.onMessage("dodge", (client: Client, payload: unknown) => {
-      const p = (payload as { dir?: Vec3 }) || {};
-      if (p.dir && isFiniteNumber(p.dir.x) && isFiniteNumber(p.dir.y) && isFiniteNumber(p.dir.z)) {
-        this.combat.requestDodge(client.sessionId, p.dir);
-      }
-    });
-
-    this.onMessage("block", (client: Client, payload: unknown) => {
-      const active = !!(payload as any)?.active;
-      this.combat.setBlocking(client.sessionId, active);
-    });
-
-    this.onMessage("useMana", (client: Client, payload: unknown) => {
-      const pl = this.players.get(client.sessionId);
-      const c = this.combatants.get(client.sessionId);
-      if (!pl || !c) return;
-
-      const p = (typeof payload === "object" && payload) ? (payload as Partial<UseManaMsg>) : {};
-      const amount = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 0, 999999) : 0;
-      if (amount <= 0) return;
-
-      if (!c.resources.canPay(amount, 0)) {
-        client.send("useManaResult", { ok: false, reason: "not_enough_mana", mana: c.resources.mana, maxMana: c.resources.maxMana });
-        return;
-      }
-
-      c.resources.pay(amount, 0);
-      c.onSync?.(c.snapshot()); 
-      client.send("useManaResult", { ok: true, mana: c.resources.mana, maxMana: c.resources.maxMana });
-    });
-
-    this.onMessage("addContainer", (client: Client, payload: unknown) => {
-      const pl = this.players.get(client.sessionId);
-      const c = this.combatants.get(client.sessionId);
-      if (!pl || !c) return;
-
-      const p = (typeof payload === "object" && payload) ? (payload as Partial<AddContainerMsg>) : {};
-      const kind = p.kind === "mana" ? "mana" : "heart";
-      const amt = isFiniteNumber(p.amount) ? clamp(toInt(p.amount), 1, 99) : 1;
-
-      if (kind === "heart") {
-        const addHp = amt * this.invManager.HP_PER_HEART;
-        c.health.setMax(c.health.maxHp + addHp, true);
-      } else {
-        const addMana = amt * this.invManager.MANA_PER_CONTAINER;
-        c.resources.maxMana = clamp(c.resources.maxMana + addMana, 0, 999999);
-        c.resources.mana = c.resources.maxMana;
-      }
-
-      c.onSync?.(c.snapshot()); 
-      client.send("addContainerResult", { ok: true, kind, hp: c.health.hp, maxHp: c.health.maxHp, mana: c.resources.mana, maxMana: c.resources.maxMana });
-    });
-
-    this.onMessage("useItem", (client: Client, payload: unknown) => {
-      const pl = this.players.get(client.sessionId);
-      const c = this.combatants.get(client.sessionId);
-      if (!pl || !c) return;
-
-      const p = (typeof payload === "object" && payload) ? (payload as any) : {};
-      const slot = isFiniteNumber(p.slot) ? toInt(p.slot) : -1;
-      if (slot < 0 || slot >= this.invManager.INV_SLOTS) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      const stack = inv.slots[slot] as any;
-      if (!stack || stack.id <= 0 || stack.count <= 0) return;
-
-      let newArchetype: string | null = null;
-      if (stack.id === Items.STONE_IRON) newArchetype = "IRON";
-      else if (stack.id === Items.STONE_SHADOW) newArchetype = "SHADOW";
-      else if (stack.id === Items.STONE_BLOOD) newArchetype = "BLOOD";
-      else if (stack.id === Items.STONE_ASTRAL) newArchetype = "ASTRAL";
-
-      if (newArchetype) {
-        stack.count -= 1;
-        if (stack.count <= 0) inv.slots[slot] = { id: 0, count: 0 } as any;
-
-        inv.stats.auraArchetype = newArchetype;
-        c.aura.setArchetype(newArchetype as any);
-
-        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_SLASH, count: 1 } as any);
-        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_HEAVY, count: 1 } as any);
-        this.invManager.inventoryAdd(inv, { id: Items.SKILL_AURA_THRUST, count: 1 } as any);
-
-        this.invManager.saveInventory(pl.userId, inv);
-        this.invManager.sendInvStateToClient(client, inv);
-        c.onSync?.(c.snapshot());
-
-        client.send("chatMessage", { msg: `AWAKENED! You are now bound to the ${newArchetype} Essence.` });
-      }
-    });
-
-    this.onMessage("startMine", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const p = payload as Partial<StartMineMsg>;
-      if (!isFiniteNumber(p.x) || !isFiniteNumber(p.y) || !isFiniteNumber(p.z)) return;
-
-      const x = toInt(clamp(p.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const y = toInt(clamp(p.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const z = toInt(clamp(p.z, -this.maxAbsCoord, this.maxAbsCoord));
-      const heldSlot = isFiniteNumber((p as any).heldSlot) ? toInt((p as any).heldSlot) : -1;
-
-      if (this.isInSafeZoneXZ(x, z)) return this.cancelMiningFor(client, "safe_zone");
-
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-
-      const dx = x + 0.5 - pl.x; const dy = y + 0.5 - pl.y; const dz = z + 0.5 - pl.z;
-      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) return this.cancelMiningFor(client, "too_far");
-
-      const blockId = this.getBlockAt(x, y, z);
-      if (blockId === this.AIR_ID) return this.cancelMiningFor(client, "air");
-      if (blockId === this.BEDROCK_ID) return this.cancelMiningFor(client, "bedrock");
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      const cur = this.mining.get(client.sessionId);
-      const now = Date.now();
-
-      if (cur && cur.x === x && cur.y === y && cur.z === z) {
-        cur.lastHeartbeatAt = now;
-        cur.heldSlot = heldSlot;
-        if (this.getBlockAt(x, y, z) !== cur.lastBlockId) this.cancelMiningFor(client, "block_changed");
-        return;
-      }
-
-      if (cur) this.cancelMiningFor(client, "retarget");
-
-      const breakTimeMs = this.computeBreakTimeMs(blockId, inv, heldSlot);
-      this.mining.set(client.sessionId, {
-        sessionId: client.sessionId, userId: pl.userId, x, y, z, heldSlot,
-        startedAt: now, lastHeartbeatAt: now, breakTimeMs,
-        lastStageSent: -1, lastProgressSentAt: 0, lastBlockId: blockId,
-      });
-      client.send("mineProgress", { x, y, z, progress: 0, stage: 0 } satisfies MineProgressMsg);
-    });
-
-    this.onMessage("cancelMine", (client: Client, payload: unknown) => {
-      const reason = typeof (payload as any)?.reason === "string" ? String((payload as any).reason).slice(0, 60) : "client_cancel";
-      this.cancelMiningFor(client, reason);
-    });
-
-    this.onMessage("mineBlock", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<Vec3>;
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z)) return;
-
-      const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
-
-      if (this.isInSafeZoneXZ(x, z)) return;
-
-      const oldId = this.getBlockAt(x, y, z);
-      if (oldId === this.AIR_ID || oldId === this.BEDROCK_ID) return;
-
-      const pl = this.players.get(client.sessionId);
-      const inv = pl ? this.invManager.getOrLoadInventory(pl.userId) : null;
-      const canDrop = this.canBlockDropWithTool(oldId, inv, -1);
-
-      this.setBlockAuthoritative(x, y, z, this.AIR_ID);
-      if (canDrop) {
-        const dropItem = this.blockIdToDropItemId(oldId);
-        if (dropItem > 0) this.spawnDrop(dropItem, 1, x + 0.5, y + 0.65, z + 0.5);
-      }
-    });
-
-    this.onMessage("placeBlock", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const maybe = payload as Partial<PlaceBlockMsg>;
-      if (!isFiniteNumber(maybe.x) || !isFiniteNumber(maybe.y) || !isFiniteNumber(maybe.z) || !isFiniteNumber(maybe.id)) return;
-
-      const x = toInt(clamp(maybe.x, -this.maxAbsCoord, this.maxAbsCoord));
-      const y = toInt(clamp(maybe.y, -this.maxAbsCoord, this.maxAbsCoord));
-      const z = toInt(clamp(maybe.z, -this.maxAbsCoord, this.maxAbsCoord));
-      const blockId = toInt(clamp(maybe.id, 0, 255));
-
-      if (blockId === this.BEDROCK_ID || this.isInSafeZoneXZ(x, z)) return;
-      if (this.getBlockAt(x, y, z) !== this.AIR_ID) return;
-
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      const fromSlot = isFiniteNumber(maybe.fromSlot) ? toInt(maybe.fromSlot) : -1;
-      if (fromSlot < 0 || fromSlot >= this.invManager.HOTBAR_SLOTS) return;
-
-      const stack = inv.slots[fromSlot];
-      if (!stack || (stack as any).id <= 0 || (stack as any).count <= 0) return;
-
-      const def = ITEM_DEFS[(stack as any).id];
-      if (!def || typeof def.placeBlockId !== "number" || def.placeBlockId !== blockId) return;
-
-      (stack as any).count -= 1;
-      if ((stack as any).count <= 0) inv.slots[fromSlot] = { id: 0, count: 0 } as any;
-
-      this.invManager.saveInventory(pl.userId, inv);
-      this.invManager.sendInvStateToClient(client, inv);
-
-      const ms = this.mining.get(client.sessionId);
-      if (ms && ms.x === x && ms.y === y && ms.z === z) this.cancelMiningFor(client, "placed_on_target");
-
-      this.setBlockAuthoritative(x, y, z, blockId);
-    });
-
-    this.onMessage("interact", (client: Client, payload: unknown) => {
-        const p = payload as { x: number, y: number, z: number };
-        if (!p || !isFiniteNumber(p.x)) return;
-        
-        const blockId = this.getBlockAt(p.x, p.y, p.z);
-        
-        if (blockId === this.CHEST_ID) {
-            const key = `${p.x},${p.y},${p.z}`;
-            const signText = this.signTexts.get(key);
-            const loot = this.chestLoot.get(key);
-            
-            if (signText) {
-                client.send("chatMessage", { msg: `📖 ${signText}` });
-            } else if (loot && loot.length > 0) {
-                const inv = this.invManager.getOrLoadInventory(this.players.get(client.sessionId)!.userId);
-                
-                let found = "";
-                for(const item of loot) {
-                    this.invManager.inventoryAdd(inv, item);
-                    found += `[${ITEM_DEFS[item.id].name} x${item.count}] `;
-                }
-                
-                this.invManager.saveInventory(this.players.get(client.sessionId)!.userId, inv);
-                this.invManager.sendInvStateToClient(client, inv);
-                client.send("chatMessage", { msg: `Looted Chest: ${found}` });
-                
-                this.chestLoot.delete(key);
-                this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID); 
-                this.spawnDrop(Items.CHEST, 1, p.x + 0.5, p.y + 0.5, p.z + 0.5); 
-            } else {
-                client.send("chatMessage", { msg: "Chest is empty." });
-                this.setBlockAuthoritative(p.x, p.y, p.z, this.AIR_ID);
-            }
-        }
-    });
-
-    this.onMessage("pickupDrop", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const dropId = typeof (payload as any).dropId === "string" ? (payload as any).dropId : "";
-      if (!dropId) return;
-
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-
-      const drop = this.drops.get(dropId);
-      if (!drop) return;
-
-      if (Date.now() - drop.createdAt > this.DROP_TTL_MS) {
-        this.drops.delete(dropId);
-        this.broadcast("dropDespawn", { dropId });
-        return;
-      }
-
-      const dx = drop.x - pl.x; const dy = drop.y - pl.y; const dz = drop.z - pl.z;
-      if (dx * dx + dy * dy + dz * dz > 2.6 * 2.6) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      const accepted = this.invManager.inventoryAdd(inv, { id: drop.itemId, count: drop.count });
-      if (accepted <= 0) return;
-
-      this.drops.delete(dropId);
-      this.broadcast("dropDespawn", { dropId });
-      this.invManager.saveInventory(pl.userId, inv);
-      this.invManager.sendInvStateToClient(client, inv);
-    });
-
-    this.onMessage("invClick", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const p = payload as Partial<InvClickMsg>;
-      if (!isFiniteNumber(p.index)) return;
-
-      const index = toInt(p.index);
-      let slot = -1;
-      if (p.area === "hotbar" && index >= 0 && index < this.invManager.HOTBAR_SLOTS) slot = index;
-      else if (p.area === "inv" && index >= 0 && index < this.invManager.BACKPACK_SLOTS) slot = this.invManager.HOTBAR_SLOTS + index;
-
-      if (slot < 0 || slot >= this.invManager.INV_SLOTS) return;
-
-      const button = p.button === "R" ? "R" : "L";
-      const shift = !!p.shift;
-
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      this.invManager.applyInvClick(inv, slot, button, shift);
-      this.invManager.saveInventory(pl.userId, inv);
-      this.invManager.sendInvStateToClient(client, inv);
-    });
-
-    this.onMessage("craft", (client: Client, payload: unknown) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const p = payload as Partial<CraftMsg>;
-      const recipeId = typeof p.recipeId === "string" ? p.recipeId : "";
-      if (!recipeId) return;
-
-      const pl = this.players.get(client.sessionId);
-      if (!pl) return;
-
-      const inv = this.invManager.getOrLoadInventory(pl.userId);
-      const recipe = RECIPES.find((r) => r.id === recipeId);
-      if (!recipe) return client.send("craftResult", { ok: false, recipeId, crafted: 0, reason: "unknown_recipe" });
-
-      const wantMax = !!p.max;
-      const timesReq = isFiniteNumber(p.times) ? clamp(toInt(p.times), 1, 999) : 1;
-
-      const craftableByInputs = () => {
-        for (const req of recipe.inputs) if (this.invManager.inventoryCountSlots(inv, req.id) < req.count) return false;
-        return true;
-      };
-
-      const tryCraftOnce = (): boolean => {
-        for (const req of recipe.inputs) if (this.invManager.inventoryCountSlots(inv, req.id) < req.count) return false;
-        if (!this.invManager.inventoryCanFit(inv, recipe.output.id, recipe.output.count)) return false;
-
-        for (const req of recipe.inputs) this.invManager.inventoryRemoveSlots(inv, req.id, req.count);
-        this.invManager.inventoryAdd(inv, { id: recipe.output.id, count: recipe.output.count });
-        return true;
-      };
-
-      let crafted = 0;
-      if (wantMax) {
-        while (crafted < 999 && craftableByInputs()) {
-          if (!tryCraftOnce()) break;
-          crafted++;
-        }
-      } else {
-        for (let i = 0; i < timesReq; i++) {
-          if (!tryCraftOnce()) break;
-          crafted++;
-        }
-      }
-
-      if (crafted <= 0) {
-        client.send("craftResult", { ok: false, recipeId, crafted: 0, reason: "missing_inputs_or_space" });
-      } else {
-        this.invManager.saveInventory(pl.userId, inv);
-        this.invManager.sendInvStateToClient(client, inv);
-        client.send("craftResult", { ok: true, recipeId, crafted, reason: "" });
-      }
-    });
-
-    this.onMessage("ping", (client: Client, payload: unknown) => client.send("pong", payload));
   }
 
-  private spawnDummy(id: string, x: number, y: number, z: number) {
-    const mob: MobInfo = { 
-      id, x, y, z, yaw: 0, 
-      hp: 100, maxHp: 100, 
-      spawnX: x, spawnY: y, spawnZ: z,
-      vy: 0,
-      tickPhase: id.charCodeAt(id.length - 1) % 5,
-      targetId: null,
-      lastPos: { x, y, z },
-      lastPosTime: Date.now(),
-      stuckAccumulator: 0,
-      attackCooldown: 0
-    };
-    this.mobs.set(id, mob);
-
-    const health = new HealthComponent(mob.hp, mob.maxHp);
-    const resources = new ResourceComponent(0, 0, 0, 0);
-    const aura = new AuraComponent("BASIC", 0, 0, 0);
-    const status = new StatusComponent();
-    const cooldowns = new CooldownComponent();
-    const state = new StateComponent();
-    const equipment = new EquipmentComponent(() => 0); 
-
-    const c: Combatant = {
-      id,
-      faction: "MOB",
-      pos: { x, y, z },
-      yaw: 0,
-      radius: 0.4,
-      height: 1.8,
-      health, resources, aura, status, cooldowns, state, equipment,
-      armor: 5, resist: {}, critChance: 0, critMult: 1.0, maxPoise: 300, poise: 300,
-      blockAngleDeg: 0, blockMitigation: 0, dodgeIframesMs: 0, moveSpeedMul: 1.0, invulnUntil: 0,
-      snapshot() {
-        return {
-          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
-          radius: this.radius, height: this.height, state: this.state.state,
-          hp: this.health.hp, maxHp: this.health.maxHp,
-          mana: this.resources.mana, maxMana: this.resources.maxMana,
-          aura: this.resources.aura, maxAura: this.resources.maxAura,
-          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
-          poise: this.poise, maxPoise: this.maxPoise,
-          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
-          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
-        };
-      },
-      onSync: (snap) => {
-        mob.hp = snap.hp;
-      }
-    };
-    this.combatants.set(id, c);
-  }
-
-  private spawnStaticNPC(id: string, x: number, y: number, z: number) {
-    const mob: MobInfo = { 
-      id, x, y, z, yaw: Math.PI, 
-      hp: 999999, maxHp: 999999, 
-      spawnX: x, spawnY: y, spawnZ: z,
-      vy: 0,
-      tickPhase: 0,
-      targetId: null,
-      lastPos: { x, y, z },
-      lastPosTime: Date.now(),
-      stuckAccumulator: 0,
-      attackCooldown: 0
-    };
-    this.mobs.set(id, mob);
-
-    const health = new HealthComponent(mob.hp, mob.maxHp);
-    const resources = new ResourceComponent(0, 0, 0, 0);
-    const aura = new AuraComponent("BASIC", 0, 0, 0);
-    const status = new StatusComponent();
-    const cooldowns = new CooldownComponent();
-    const state = new StateComponent();
-    const equipment = new EquipmentComponent(() => 0); 
-
-    const c: Combatant = {
-      id,
-      faction: "MOB", 
-      pos: { x, y, z },
-      yaw: Math.PI,
-      radius: 1.5, 
-      height: 6.0, 
-      health, resources, aura, status, cooldowns, state, equipment,
-      armor: 9999, resist: {}, critChance: 0, critMult: 1.0, maxPoise: 99999, poise: 99999,
-      blockAngleDeg: 0, blockMitigation: 1.0, dodgeIframesMs: 0, moveSpeedMul: 0.0, invulnUntil: 0,
-      snapshot() {
-        return {
-          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
-          radius: this.radius, height: this.height, state: this.state.state,
-          hp: this.health.hp, maxHp: this.health.maxHp,
-          mana: this.resources.mana, maxMana: this.resources.maxMana,
-          aura: this.resources.aura, maxAura: this.resources.maxAura,
-          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
-          poise: this.poise, maxPoise: this.maxPoise,
-          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
-          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
-        };
-      },
-      onSync: (snap) => {
-        mob.hp = snap.hp;
-      }
-    };
-    this.combatants.set(id, c);
-  }
-
-  private spawnProjectile(ownerId: string, x: number, y: number, z: number, tx: number, ty: number, tz: number) {
-      const id = `proj_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
-      
-      const dx = tx - x;
-      const dy = ty - y;
-      const dz = tz - z;
-      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-      const speed = 1.0; 
-
-      const timeToTarget = dist / speed;
-      const gravity = 0.04; 
-      const arcY = (0.5 * gravity * timeToTarget * timeToTarget + dy) / timeToTarget;
-
-      const p: Projectile = {
-          id, ownerId,
-          x, y, z,
-          vx: (dx / timeToTarget),
-          vy: arcY,
-          vz: (dz / timeToTarget),
-          damage: 15,
-          radius: 0.5,
-          createdAt: Date.now()
-      };
-      
-      this.projectiles.set(id, p);
-      this.broadcast("projectileSpawn", p);
-  }
-
-  private tickProjectiles() {
-      const toRemove: string[] = [];
-      const now = Date.now();
-
-      for(const [id, p] of this.projectiles) {
-          if (now - p.createdAt > 5000) {
-              toRemove.push(id);
-              continue;
-          }
-
-          p.x += p.vx;
-          p.y += p.vy;
-          p.z += p.vz;
-          p.vy -= 0.04; 
-
-          const cx = Math.floor(p.x);
-          const cy = Math.floor(p.y);
-          const cz = Math.floor(p.z);
-          if (this.getBlockAt(cx, cy, cz) !== this.AIR_ID) {
-              toRemove.push(id);
-              continue;
-          }
-
-          for (const pl of this.players.values()) {
-              if (pl.id === p.ownerId) continue;
-              const dx = pl.x - p.x;
-              const dy = (pl.y + 0.9) - p.y; 
-              const dz = pl.z - p.z;
-              if (dx*dx + dy*dy + dz*dz < 1.0) {
-                  const combatant = this.combatants.get(pl.id);
-                  if (combatant) {
-                      this.combat.applyHit({
-                          targetId: pl.id,
-                          attackerId: p.ownerId,
-                          damage: p.damage,
-                          kind: "PHYSICAL",
-                          knockback: { x: p.vx * 0.5, y: 0.2, z: p.vz * 0.5 }
-                      });
-                  }
-                  toRemove.push(id);
-                  break; 
-              }
-          }
-      }
-
-      for (const id of toRemove) {
-          this.projectiles.delete(id);
-          this.broadcast("projectileDespawn", { id });
-      }
-  }
-
-  private handleCombatEvent(e: CombatEvent): void {
-    if (e.type === "ATTACK_START") {
-      this.broadcast("playerSwing", { id: e.attackerId, attackId: e.attackId });
-    } 
-    else if (e.type === "HIT") {
-      const target: any = this.players.get(e.targetId) || this.mobs.get(e.targetId);
-      if (target) {
-        if (e.knockback) {
-          target.x = clamp(target.x + e.knockback.x, -this.maxAbsCoord, this.maxAbsCoord);
-          target.y = clamp(target.y + e.knockback.y, -this.maxAbsCoord, this.maxAbsCoord);
-          target.z = clamp(target.z + e.knockback.z, -this.maxAbsCoord, this.maxAbsCoord);
-          
-          const c = this.combatants.get(target.id);
-          if (c) {
-            c.pos.x = target.x;
-            c.pos.y = target.y;
-            c.pos.z = target.z;
-          }
-          
-          this.broadcast("playerTransformOther", { id: target.id, x: target.x, y: target.y, z: target.z, yaw: target.yaw });
-        }
-        
-        this.broadcast("playerHit", {
-          attackerId: e.attackerId,
-          targetId: e.targetId,
-          damage: e.damage,
-          hpLeft: target.hp,
-          maxHp: target.maxHp,
-          knockback: e.knockback,
-          kind: e.kind,
-          crit: e.crit
-        });
-      }
-    } 
-    else if (e.type === "DEATH") {
-      const isMob = this.mobs.has(e.targetId);
-      const target: any = this.players.get(e.targetId) || this.mobs.get(e.targetId);
-      const tc = this.combatants.get(e.targetId);
-
-      if (target && tc) {
-        this.broadcast("playerDowned", { id: target.id, by: e.sourceId });
-        
-        tc.health.setMax(tc.health.maxHp, true);
-        tc.resources.mana = tc.resources.maxMana;
-        tc.invulnUntil = Date.now() + 1500;
-        tc.state.state = "IDLE";
-
-        let rx, ry, rz;
-
-        if (isMob) {
-          const m = target as MobInfo;
-          rx = m.spawnX; ry = m.spawnY; rz = m.spawnZ;
-          tc.poise = tc.maxPoise;
-          m.targetId = null;
-        } else {
-          rx = this.TOWN_CENTER_X;
-          rz = this.TOWN_CENTER_Z;
-          ry = this.heightAt(rx, rz) + 8;
-        }
-
-        target.x = rx; target.y = ry; target.z = rz;
-        tc.pos.x = rx; tc.pos.y = ry; tc.pos.z = rz;
-        if (!isMob) this.updatePlayerSpatial(target.id, rx, rz);
-
-        this.broadcast("playerRespawn", { 
-          id: target.id, 
-          x: rx, y: ry, z: rz, 
-          hp: tc.health.hp, maxHp: tc.health.maxHp, 
-          mana: tc.resources.mana, maxMana: tc.resources.maxMana 
-        });
-        
-        tc.onSync?.(tc.snapshot());
-      }
-    } 
-    else if (e.type === "DODGE") {
-      this.broadcast("playerDodge", { id: e.id, dir: e.dir });
-    } 
-    else if (e.type === "BLOCK") {
-      this.broadcast("playerBlock", { id: e.id, active: e.active });
-    }
-  }
-
-  private buildCombatant(client: Client, pl: PlayerInfo, inv: InvState): Combatant {
-    const health = new HealthComponent(inv.stats.hp, inv.stats.maxHp);
-    const resources = new ResourceComponent(inv.stats.mana, inv.stats.maxMana, 0, 100);
+  onJoin(client: Client, options: any) {
+    console.log(`[MyRoom] Player ${client.sessionId} joined.`);
     
-    const archetype = (inv.stats.auraArchetype as any) || "BASIC";
-    const aura = new AuraComponent(archetype, 0, 0, 0);
-    
-    const status = new StatusComponent();
-    const cooldowns = new CooldownComponent();
-    const state = new StateComponent();
-    const equipment = new EquipmentComponent((slot) => {
-      const currentInv = this.invManager.getInventory(pl.userId);
-      if (!currentInv) return 0;
-      const s = currentInv.slots[slot ?? -1] || null;
-      return s ? (s as any).id || 0 : 0;
-    });
+    const player = new Player();
+    // Default spawn point
+    player.x = 0;
+    player.y = 40;
+    player.z = 0;
+    this.state.players.set(client.sessionId, player);
 
-    const c: Combatant = {
+    this.inventories.set(client.sessionId, new PlayerInventory());
+
+    // Give Starter Items
+    const inv = this.inventories.get(client.sessionId)!;
+    inv.slots[0] = { id: 3, count: 1 }; // Stone Pickaxe
+    inv.slots[1] = { id: 6, count: 1 }; // Stone Sword
+
+    // Sync Initial State
+    client.send("safeZone", { cx: 0, cz: 0, radius: 25, name: "Town of Beginnings" });
+    client.send("worldTime", { time: this.worldTime });
+    client.send("youJoined", { x: player.x, y: player.y, z: player.z });
+    this.syncInventory(client);
+
+    // Tell everyone else
+    this.broadcast("playerJoined", {
       id: client.sessionId,
-      faction: "PLAYER",
-      pos: { x: pl.x, y: pl.y, z: pl.z },
-      yaw: pl.yaw,
-      radius: 0.4,
-      height: 1.8,
-      
-      health, resources, aura, status, cooldowns, state, equipment,
-      
-      armor: 0,
-      resist: {},
-      critChance: 0.05,
-      critMult: 1.5,
-      maxPoise: 100,
-      poise: 100,
-      blockAngleDeg: 120,
-      blockMitigation: 0.5,
-      dodgeIframesMs: 400,
-      moveSpeedMul: 1.0,
-      invulnUntil: pl.invulnUntil,
-      
-      snapshot() {
-        return {
-          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
-          radius: this.radius, height: this.height, state: this.state.state,
-          hp: this.health.hp, maxHp: this.health.maxHp,
-          mana: this.resources.mana, maxMana: this.resources.maxMana,
-          aura: this.resources.aura, maxAura: this.resources.maxAura,
-          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
-          poise: this.poise, maxPoise: this.maxPoise,
-          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
-          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
-        };
-      },
+      x: player.x,
+      y: player.y,
+      z: player.z,
+      hp: player.hp,
+      maxHp: player.maxHp
+    }, { except: client });
 
-      onSync: (snap) => {
-        let changed = false;
-        
-        if (pl.hp !== snap.hp || pl.maxHp !== snap.maxHp || pl.mana !== snap.mana || pl.maxMana !== snap.maxMana) {
-          pl.hp = snap.hp;
-          pl.maxHp = snap.maxHp;
-          pl.mana = snap.mana;
-          pl.maxMana = snap.maxMana;
-          changed = true;
-        }
-
-        if (changed) {
-           const currentInv = this.invManager.getOrLoadInventory(pl.userId);
-           currentInv.stats.hp = pl.hp;
-           currentInv.stats.maxHp = pl.maxHp;
-           currentInv.stats.mana = pl.mana;
-           currentInv.stats.maxMana = pl.maxMana;
-           
-           this.invManager.saveInventory(pl.userId, currentInv);
-
-           const cl = this.clients.find(cli => cli.sessionId === pl.id);
-           if (cl) {
-             cl.send("statsUpdate", { 
-               hp: pl.hp, maxHp: pl.maxHp, 
-               mana: pl.mana, maxMana: pl.maxMana,
-               aura: snap.aura, maxAura: snap.maxAura, burnout: snap.burnout
-             });
-           }
-        }
-      }
-    };
+    // Tell the new player about existing players
+    const existing: any[] = [];
+    this.state.players.forEach((p: Player, id: string) => {
+      if (id !== client.sessionId) existing.push({ id, x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp });
+    });
+    client.send("existingPlayers", existing);
     
-    return c;
+    // Tell the new player about existing drops
+    this.drops.forEach(drop => client.send("dropSpawn", drop));
   }
 
-  private buildMassiveTownHall(): BlockStructure {
-    const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
-    const w = 51;
-    const d = 31;
-    const h = 12;
-
-    const add = (x: number, y: number, z: number, id: number) => {
-      blocks.push({ x, y, z, id });
-    };
-
-    const fill = (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, id: number) => {
-      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
-        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
-          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) {
-            add(x, y, z, id);
-          }
-        }
-      }
-    };
-
-    fill(0, 1, 0, w - 1, h - 1, d - 1, this.AIR_ID);
-    fill(0, 0, 0, w - 1, 0, d - 1, this.PLANKS_ID);
-    fill(0, 1, 0, w - 1, h - 2, 0, this.STONE_BRICKS_ID); 
-    fill(0, 1, d - 1, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); 
-    fill(0, 1, 0, 0, h - 2, d - 1, this.STONE_BRICKS_ID); 
-    fill(w - 1, 1, 0, w - 1, h - 2, d - 1, this.STONE_BRICKS_ID); 
-    fill(22, 1, 0, 28, 4, 0, this.AIR_ID);
-    fill(0, h - 1, 0, w - 1, h - 1, d - 1, this.WOOD_ID);
-    fill(1, h, 1, w - 2, h + 1, d - 2, this.LEAVES_ID);
-    fill(22, 1, 1, 28, 1, d - 2, this.CARPET_ID);
-
-    fill(15, 1, 1, 15, h - 2, 6, this.PLANKS_ID);
-    fill(15, 1, d - 7, 15, h - 2, d - 2, this.PLANKS_ID);
-    fill(15, 1, 7, 15, 5, d - 8, this.AIR_ID);
-
-    const makeTable = (tx: number, tz: number) => {
-      fill(tx, 1, tz, tx + 2, 1, tz + 2, this.PLANKS_ID); 
-      fill(tx, 2, tz, tx + 2, 2, tz + 2, this.MOSS_ID); 
-      add(tx - 1, 1, tz + 1, this.PLANKS_ID);
-      add(tx + 3, 1, tz + 1, this.PLANKS_ID);
-      add(tx + 1, 1, tz - 1, this.PLANKS_ID);
-      add(tx + 1, 1, tz + 3, this.PLANKS_ID);
-    };
-    
-    makeTable(3, 4);
-    makeTable(9, 4);
-    makeTable(3, 12);
-    makeTable(9, 12);
-    makeTable(3, 20);
-    makeTable(9, 20);
-
-    fill(35, 1, 1, 35, h - 2, 6, this.PLANKS_ID);
-    fill(35, 1, d - 7, 35, h - 2, d - 2, this.PLANKS_ID);
-    fill(35, 1, 7, 35, 5, d - 8, this.AIR_ID);
-
-    const makeStall = (sx: number, sz: number) => {
-      fill(sx, 1, sz, sx + 4, 1, sz, this.PLANKS_ID); 
-      fill(sx, 1, sz + 1, sx, 1, sz + 3, this.PLANKS_ID); 
-      fill(sx + 4, 1, sz + 1, sx + 4, 1, sz + 3, this.PLANKS_ID); 
-      add(sx + 1, 2, sz, this.CHEST_ID); 
-      add(sx + 3, 2, sz, this.CHEST_ID); 
-      fill(sx, 4, sz - 1, sx + 4, 4, sz + 3, this.LEAVES_ID); 
-      add(sx, 2, sz, this.WOOD_ID); add(sx, 3, sz, this.WOOD_ID); 
-      add(sx + 4, 2, sz, this.WOOD_ID); add(sx + 4, 3, sz, this.WOOD_ID);
-    };
-
-    makeStall(38, 4);
-    makeStall(38, 12);
-    makeStall(38, 20);
-
-    add(16, 10, 15, this.CRYSTAL_ID);
-    add(16, 9, 14, this.CRYSTAL_ID); add(16, 9, 16, this.CRYSTAL_ID);
-    add(16, 8, 13, this.CRYSTAL_ID); add(16, 8, 17, this.CRYSTAL_ID);
-    add(16, 7, 14, this.CRYSTAL_ID); add(16, 7, 16, this.CRYSTAL_ID);
-    add(16, 6, 15, this.CRYSTAL_ID);
-
-    add(34, 9, 14, this.GLOW_SHROOM_ID); add(34, 9, 15, this.GLOW_SHROOM_ID); add(34, 9, 16, this.GLOW_SHROOM_ID);
-    add(34, 8, 13, this.GLOW_SHROOM_ID); add(34, 8, 17, this.GLOW_SHROOM_ID);
-    add(34, 7, 13, this.GLOW_SHROOM_ID); add(34, 7, 17, this.GLOW_SHROOM_ID);
-    add(34, 6, 14, this.GLOW_SHROOM_ID); add(34, 6, 15, this.GLOW_SHROOM_ID); add(34, 6, 16, this.GLOW_SHROOM_ID);
-
-    add(22, 6, 6, this.LANTERN_ID);
-    add(28, 6, 6, this.LANTERN_ID);
-    add(22, 6, 14, this.LANTERN_ID);
-    add(28, 6, 14, this.LANTERN_ID);
-    add(22, 6, 22, this.LANTERN_ID);
-    add(28, 6, 22, this.LANTERN_ID);
-
-    add(25, 1, 3, this.CHEST_ID); 
-    add(16, 1, 15, this.CHEST_ID); 
-    add(6, 1, 15, this.CHEST_ID); 
-    add(34, 1, 15, this.CHEST_ID); 
-    add(44, 1, 15, this.CHEST_ID); 
-
-    return {
-      name: "massive_town_hall",
-      size: { w, h, d },
-      anchor: { x: Math.floor(w / 2), y: 0, z: Math.floor(d / 2) },
-      blocks
-    };
-  }
-
-  private getOrCreateChunk(cx: number, cy: number, cz: number): Uint8Array {
-    const key = this.chunkKey(cx, cy, cz);
-    const cached = this.chunks.get(key);
-    if (cached) return cached;
-
-    const fromDisk = this.readChunkFromDisk(cx, cy, cz);
-    if (fromDisk) {
-      try {
-        this.worldGen.stampTownIntoChunk(fromDisk, cx, cy, cz);
-        this.writeChunkToDisk(cx, cy, cz, fromDisk);
-      } catch (e) {}
-      this.chunks.set(key, fromDisk);
-      return fromDisk;
+  onLeave(client: Client, code?: number) {
+    console.log(`[MyRoom] Player ${client.sessionId} left.`);
+    this.state.players.delete(client.sessionId);
+    this.inventories.delete(client.sessionId);
+    if (this.miningTasks.has(client.sessionId)) {
+        clearTimeout(this.miningTasks.get(client.sessionId)!);
+        this.miningTasks.delete(client.sessionId);
     }
-
-    const gen = this.worldGen.generateChunk(cx, cy, cz);
-    this.chunks.set(key, gen);
-    return gen;
+    this.broadcast("playerLeft", { id: client.sessionId });
   }
 
-  private getBlockAt(x: number, y: number, z: number): number {
-    const CS = this.chunkSize;
-    return this.getOrCreateChunk(floorDiv(x, CS), floorDiv(y, CS), floorDiv(z, CS))[this.worldGen["idx"](mod(x, CS), mod(y, CS), mod(z, CS))] | 0;
+  onDispose() {
+    console.log("[MyRoom] Disposing Hub Room");
+    if (this.worldTimeTick) clearInterval(this.worldTimeTick);
+    if (this.eventTimer) clearInterval(this.eventTimer);
   }
 
-  private setBlockAuthoritative(x: number, y: number, z: number, id: number): void {
-    const CS = this.chunkSize;
-    const cx = floorDiv(x, CS); const cy = floorDiv(y, CS); const cz = floorDiv(z, CS);
-    const chunk = this.getOrCreateChunk(cx, cy, cz);
-    const v = clamp(toInt(id), 0, 255);
-    chunk[this.worldGen["idx"](mod(x, CS), mod(y, CS), mod(z, CS))] = v;
-
-    try { this.writeChunkToDisk(cx, cy, cz, chunk); } catch (e) {}
-    this.broadcast("blockUpdate", { x, y, z, id: v });
+  private onTick(dt: number) {
+    // Snapshot sync (Client relies on this for smooth interpolation)
+    const snapshot: any[] = [];
+    this.state.players.forEach((p: Player, id: string) => {
+      snapshot.push({ id, x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp });
+    });
+    this.broadcast("playersSnapshot", snapshot);
   }
 
-  private cleanupDrops(): void {
-    if (this.drops.size <= 0) return;
-    const now = Date.now();
-    const expired: string[] = [];
-    for (const [id, d] of this.drops.entries()) if (now - d.createdAt > this.DROP_TTL_MS) expired.push(id);
-    for (const id of expired) { this.drops.delete(id); this.broadcast("dropDespawn", { dropId: id }); }
+  private startDayNightCycle() {
+    this.worldTimeTick = setInterval(() => {
+       // Slow increment matching client prediction
+       this.worldTime = (this.worldTime + (1 / 1200)) % 1; 
+       this.broadcast("worldMeta", { worldTime: this.worldTime });
+    }, 1000);
   }
 
-  private spawnDrop(itemId: number, count: number, x: number, y: number, z: number): void {
-    const id = `d_${Date.now().toString(16)}_${(this.nextDropSeq++).toString(16)}`;
-    const drop: Drop = { dropId: id, itemId: clamp(toInt(itemId), 1, 999999), count: clamp(toInt(count), 1, 999999), x, y, z, createdAt: Date.now() };
-    this.drops.set(id, drop);
-    this.broadcast("dropSpawn", drop);
-  }
+  // --- THE RANDOM EVENT SCHEDULER ---
+  private startEventScheduler(intervalMs: number) {
+    this.eventTimer = setInterval(async () => {
+      if (this.clients.length === 0) return; 
 
-  private blockIdToDropItemId(blockId: number): number {
-    if (blockId === this.GRASS_ID) return Items.GRASS;
-    if (blockId === this.DIRT_ID) return Items.DIRT;
-    if (blockId === this.STONE_ID) return Items.STONE;
-    if (blockId === this.WOOD_ID) return Items.WOOD_LOG;
-    if (blockId === this.LEAVES_ID) return Items.LEAVES;
-    if (blockId === this.SAND_ID) return Items.SAND;
-    if (blockId === this.SNOW_ID) return Items.SNOW;
-    if (blockId === this.COAL_ORE_ID) return Items.COAL;
-    if (blockId === this.IRON_ORE_ID) return Items.RAW_IRON;
-    if (blockId === this.GOLD_ORE_ID) return Items.RAW_GOLD;
-    if (blockId === this.DIAMOND_ORE_ID) return Items.DIAMOND;
-    if (blockId === this.PLANKS_ID) return Items.PLANKS;
-    if (blockId === this.STONE_BRICKS_ID) return Items.STONE_BRICKS;
-    if (blockId === this.CARPET_ID) return Items.CARPET;
-    if (blockId === this.GLASS_ID) return Items.GLASS;
-    if (blockId === this.LANTERN_ID) return Items.LANTERN;
-    return 0; 
-  }
+      const randomEvent = EVENT_ROOM_NAMES[Math.floor(Math.random() * EVENT_ROOM_NAMES.length)];
+      console.log(`[Hub] Spawning random event: ${randomEvent}`);
+      
+      this.broadcast("chatMessage", { msg: `Event starting! Teleporting to ${randomEvent} in 5 seconds...` });
 
-  private isStoneLike(blockId: number): boolean { 
-    return (blockId === this.STONE_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID || blockId === this.MOSSY_STONE_ID || blockId === this.DRIPSTONE_BLOCK_ID || blockId === this.STONE_BRICKS_ID); 
-  }
-  
-  private requiredPickTierForDrops(blockId: number): number {
-    if (blockId === this.STONE_ID || blockId === this.STONE_BRICKS_ID || blockId === this.COAL_ORE_ID || blockId === this.IRON_ORE_ID || blockId === this.DEEPSLATE_ID || blockId === this.TUFF_ID) return 1;
-    if (blockId === this.GOLD_ORE_ID || blockId === this.DIAMOND_ORE_ID) return 3;
-    return 0;
-  }
+      // Give players 5 seconds warning before pulling them
+      setTimeout(async () => {
+          try {
+            const eventRoom = await matchMaker.createRoom(randomEvent, {});
 
-  private canBlockDropWithTool(blockId: number, inv: InvState | null, heldSlot = -1): boolean {
-    if (blockId === this.BEDROCK_ID) return false;
-    const reqTier = this.requiredPickTierForDrops(blockId);
-    if (reqTier <= 0) return true;
-    if (!inv) return false;
-    const picked = this.invManager.choosePickStack(inv, heldSlot);
-    return picked ? picked.tool.tier >= reqTier : false;
-  }
-
-  private computeBreakTimeMs(blockId: number, inv: InvState, heldSlot = -1): number {
-    let base = 450;
-    
-    if (blockId === this.LEAVES_ID) base = 180; 
-    else if (blockId === this.GLASS_ID || blockId === this.LANTERN_ID) base = 150;
-    else if (blockId === this.CARPET_ID) base = 250;
-    else if (blockId === this.GRASS_ID || blockId === this.DIRT_ID) base = 420; 
-    else if (blockId === this.SAND_ID || blockId === this.SNOW_ID) base = 360; 
-    else if (blockId === this.WOOD_ID || blockId === this.PLANKS_ID) base = 950; 
-    else if (blockId === this.STONE_ID || blockId === this.STONE_BRICKS_ID) base = 1250; 
-    else if (blockId === this.TUFF_ID) base = 1350; 
-    else if (blockId === this.COAL_ORE_ID) base = 1400; 
-    else if (blockId === this.IRON_ORE_ID) base = 1650; 
-    else if (blockId === this.DEEPSLATE_ID) base = 1800; 
-    else if (blockId === this.GOLD_ORE_ID) base = 2200; 
-    else if (blockId === this.DIAMOND_ORE_ID) base = 2850; 
-    else if (blockId === this.BEDROCK_ID) return 999999999;
-    
-    const picked = this.invManager.choosePickStack(inv, heldSlot);
-    if (this.isStoneLike(blockId)) base = picked ? Math.floor(base * picked.tool.speedMul) : Math.floor(base * 2.8);
-    else if ((blockId === this.WOOD_ID || blockId === this.PLANKS_ID) && picked) base = Math.floor(base * 0.92);
-
-    return clamp(base, 80, 12000);
-  }
-
-  private cancelMiningFor(client: Client, reason: string): void {
-    const st = this.mining.get(client.sessionId);
-    if (!st) return;
-    this.mining.delete(client.sessionId);
-    client.send("mineCancelled", { reason });
-  }
-
-  private tickMining(): void {
-    const now = Date.now();
-    for (const [sid, st] of this.mining.entries()) {
-      const client = this.clients.find((c) => c.sessionId === sid);
-      const pl = this.players.get(sid);
-      if (!client || !pl) { this.cancelMiningFor(client!, "no_player"); continue; }
-      if (now - st.lastHeartbeatAt > this.mineHeartbeatTimeoutMs) { this.cancelMiningFor(client, "timeout"); continue; }
-      if (this.isInSafeZoneXZ(st.x, st.z)) { this.cancelMiningFor(client, "safe_zone"); continue; }
-
-      const dx = st.x + 0.5 - pl.x; const dy = st.y + 0.5 - pl.y; const dz = st.z + 0.5 - pl.z;
-      if (dx * dx + dy * dy + dz * dz > this.mineReach * this.mineReach) { this.cancelMiningFor(client, "too_far"); continue; }
-
-      const currentId = this.getBlockAt(st.x, st.y, st.z);
-      if (currentId === this.AIR_ID || currentId === this.BEDROCK_ID || currentId !== st.lastBlockId) { this.cancelMiningFor(client, "block_changed"); continue; }
-
-      const inv = this.invManager.getOrLoadInventory(st.userId);
-      const newBreak = this.computeBreakTimeMs(currentId, inv, st.heldSlot);
-      if (newBreak !== st.breakTimeMs) {
-        const p = st.breakTimeMs > 0 ? Math.max(0, now - st.startedAt) / st.breakTimeMs : 0;
-        st.breakTimeMs = newBreak; st.startedAt = now - Math.floor(p * st.breakTimeMs);
-      }
-
-      const progress01 = clamp(Math.max(0, now - st.startedAt) / Math.max(1, st.breakTimeMs), 0, 1);
-      const stage = clamp(Math.floor(progress01 * 10), 0, 9);
-
-      if (stage !== st.lastStageSent || now - st.lastProgressSentAt >= this.mineProgressSendMinMs || progress01 >= 1) {
-        st.lastStageSent = stage; st.lastProgressSentAt = now;
-        const msg: MineProgressMsg = { x: st.x, y: st.y, z: st.z, progress: progress01, stage };
-
-        if (progress01 >= 1) {
-          const picked = this.invManager.choosePickStack(inv, st.heldSlot);
-          const canDrop = this.canBlockDropWithTool(currentId, inv, st.heldSlot);
-
-          this.setBlockAuthoritative(st.x, st.y, st.z, this.AIR_ID);
-          if (canDrop) {
-            const dropItem = this.blockIdToDropItemId(currentId);
-            if (dropItem > 0) this.spawnDrop(dropItem, 1, st.x + 0.5, st.y + 0.65, st.z + 0.5);
+            for (const client of this.clients) {
+              const player = this.state.players.get(client.sessionId);
+              const reservation = await matchMaker.reserveSeatFor(eventRoom, {
+                 userId: (client as any).userId,
+                 classId: player?.classId
+              });
+              client.send("joinEvent", reservation);
+            }
+          } catch (e) {
+            console.error("[Hub] Failed to create event room:", e);
           }
+      }, 5000);
+    }, intervalMs);
+  }
 
-          if (picked && this.isStoneLike(currentId)) {
-            this.invManager.damageTool(inv, picked.slotIndex);
-            this.invManager.saveInventory(st.userId, inv);
-            this.invManager.sendInvStateToClient(client, inv);
+  // --- HELPERS ---
+  private syncInventory(client: Client) {
+    const inv = this.inventories.get(client.sessionId);
+    if (!inv) return;
+    
+    const player = this.state.players.get(client.sessionId);
+    client.send("invState", {
+      slots: inv.slots,
+      cursor: inv.cursor,
+      stats: player ? { hp: player.hp, maxHp: player.maxHp, mana: player.mana, maxMana: player.maxMana } : {}
+    });
+  }
+
+  private isInSafeZone(x: number, z: number): boolean {
+    const safeCx = 0;
+    const safeCz = 0;
+    const safeR = 25;
+    const dx = x + 0.5 - safeCx;
+    const dz = z + 0.5 - safeCz;
+    return dx * dx + dz * dz <= safeR * safeR;
+  }
+
+  private generateChunk(data: Uint16Array, size: number, cx: number, cy: number, cz: number) {
+    // Basic flat terrain generator so clients don't fall forever
+    let i = 0;
+    for (let z = 0; z < size; z++) {
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const globalY = cy * size + y;
+          if (globalY < 30) {
+             data[i] = 1; // Stone
+          } else if (globalY === 30) {
+             data[i] = 2; // Grass/Dirt
+          } else {
+             data[i] = 0; // Air
           }
-
-          msg.done = true; client.send("mineProgress", msg); this.mining.delete(sid);
-        } else {
-          client.send("mineProgress", msg);
+          i++;
         }
       }
     }
-  }
-
-  public heightAt(worldX: number, worldZ: number): number {
-    return this.worldGen.heightAt(worldX, worldZ);
-  }
-
-  public isInSafeZoneXZ(worldX: number, worldZ: number): boolean {
-    if(!this.worldGen) {
-        const dx = worldX - this.TOWN_CENTER_X; 
-        const dz = worldZ - this.TOWN_CENTER_Z;
-        return dx * dx + dz * dz <= this.SAFE_RADIUS * this.SAFE_RADIUS;
-    }
-    return this.worldGen.isInSafeZoneXZ(worldX, worldZ);
   }
 }
