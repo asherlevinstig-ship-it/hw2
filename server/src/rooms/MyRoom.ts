@@ -3,6 +3,8 @@
 
 import { Room, Client, matchMaker } from "@colyseus/core";
 import { Schema, MapSchema, type } from "@colyseus/schema";
+import fs from "fs";
+import path from "path";
 
 // --- SCHEMAS ---
 export class Player extends Schema {
@@ -46,11 +48,13 @@ class PlayerInventory {
 
 const EVENT_ROOM_NAMES = [
   "event_arena"
-  // Add "event_maze", "event_dungeon", etc. as you build them
 ] as const;
 
+interface StructureDef {
+  blocks: { x: number; y: number; z: number; id: number }[];
+}
+
 export class MyRoom extends Room<any> {
-  // Explicitly type the state to maintain autocomplete and safety
   state!: MyRoomState;
 
   private chunks = new Map<string, Uint16Array>();
@@ -58,21 +62,23 @@ export class MyRoom extends Room<any> {
   private inventories = new Map<string, PlayerInventory>();
   private miningTasks = new Map<string, NodeJS.Timeout>();
   
-  private worldTime: number = 0.26; // Start at Dawn
+  private worldTime: number = 0.26; 
   private worldTimeTick: NodeJS.Timeout | null = null;
   private eventTimer: NodeJS.Timeout | null = null;
+
+  private townStructure: StructureDef | null = null;
 
   onCreate(options: any) {
     console.log("[MyRoom] Hub Room Created");
     this.maxClients = 50;
     this.setState(new MyRoomState());
     
-    // Server Tick Rate (20 tick)
+    this.loadTownStructure();
+
     this.setSimulationInterval((dt) => this.onTick(dt), 50);
 
-    // Initialize Global Timers
     this.startDayNightCycle();
-    this.startEventScheduler(180_000); // Trigger an event every 3 minutes
+    this.startEventScheduler(180_000); 
 
     // --- MOVEMENT & SYNC ---
     this.onMessage("playerMove", (client: Client, data: any) => {
@@ -125,7 +131,6 @@ export class MyRoom extends Room<any> {
       const attacker = this.state.players.get(client.sessionId);
       if (!attacker) return;
 
-      // Broadcast visual swing/VFX to everyone else
       this.broadcast("playerSwing", {
         id: client.sessionId,
         attackId: data.attackId,
@@ -133,7 +138,6 @@ export class MyRoom extends Room<any> {
         pitch: data.pitch
       }, { except: client });
 
-      // Basic Hit Detection (Placeholder for raycast/distance check)
       let hitSomeone = false;
       this.state.players.forEach((target: Player, targetId: string) => {
         if (targetId === client.sessionId) return;
@@ -143,8 +147,8 @@ export class MyRoom extends Room<any> {
         const dz = target.z - attacker.z;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         
-        if (dist < 4.0) { // Melee range
-          target.hp -= 2; // Fixed damage for now
+        if (dist < 4.0) { 
+          target.hp -= 2; 
           hitSomeone = true;
 
           this.broadcast("playerHit", {
@@ -172,27 +176,22 @@ export class MyRoom extends Room<any> {
     this.onMessage("startMine", (client: Client, data: any) => {
       const { x, y, z, heldSlot } = data;
       
-      // Prevent mining in safe zone
       if (this.isInSafeZone(x, z)) return;
 
-      // Clear existing task
       if (this.miningTasks.has(client.sessionId)) {
         clearTimeout(this.miningTasks.get(client.sessionId)!);
       }
 
-      // Simulate a 0.5s mine delay
       client.send("mineProgress", { x, y, z, progress: 0.5, stage: 1 });
 
       const task = setTimeout(() => {
-         // Block broken
          client.send("mineProgress", { x, y, z, progress: 1.0, stage: 3, done: true });
-         this.broadcast("blockUpdate", { id: 0, x, y, z }); // Air
+         this.broadcast("blockUpdate", { id: 0, x, y, z }); 
 
-         // Spawn drop
          const dropId = `drop_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
          const drop: Drop = {
             dropId,
-            itemId: 14, // Assuming 14 is a basic drop (like cobblestone/dirt)
+            itemId: 14, 
             count: 1,
             x: x + 0.5,
             y: y + 0.5,
@@ -239,7 +238,6 @@ export class MyRoom extends Room<any> {
 
         const inv = this.inventories.get(client.sessionId);
         if (inv) {
-          // Find empty slot or stackable slot
           let placed = false;
           for (let i = 0; i < INV_SLOTS; i++) {
             if (inv.slots[i].id === drop.itemId || inv.slots[i].id === 0) {
@@ -264,7 +262,6 @@ export class MyRoom extends Room<any> {
       const cursor = inv.cursor;
 
       if (button === "L") {
-         // Simple Swap
          const tempId = slot.id;
          const tempCount = slot.count;
          slot.id = cursor.id;
@@ -276,14 +273,13 @@ export class MyRoom extends Room<any> {
     });
 
     this.onMessage("craft", (client: Client, data: any) => {
-      // Add real crafting validation here based on your RECIPES constant
       client.send("craftResult", { ok: false, recipeId: data.recipeId, reason: "Server crafting validation not linked yet" });
     });
 
     this.onMessage("devTpCave", (client: Client) => {
       const player = this.state.players.get(client.sessionId);
       if (player) {
-         player.y = 8; // Deep underground
+         player.y = 8; 
          client.send("playerRespawn", { id: client.sessionId, hp: player.hp, maxHp: player.maxHp, x: player.x, y: player.y, z: player.z });
       }
     });
@@ -293,7 +289,6 @@ export class MyRoom extends Room<any> {
     console.log(`[MyRoom] Player ${client.sessionId} joined.`);
     
     const player = new Player();
-    // Default spawn point
     player.x = 0;
     player.y = 40;
     player.z = 0;
@@ -301,18 +296,15 @@ export class MyRoom extends Room<any> {
 
     this.inventories.set(client.sessionId, new PlayerInventory());
 
-    // Give Starter Items
     const inv = this.inventories.get(client.sessionId)!;
-    inv.slots[0] = { id: 3, count: 1 }; // Stone Pickaxe
-    inv.slots[1] = { id: 6, count: 1 }; // Stone Sword
+    inv.slots[0] = { id: 3, count: 1 }; 
+    inv.slots[1] = { id: 6, count: 1 }; 
 
-    // Sync Initial State
     client.send("safeZone", { cx: 0, cz: 0, radius: 25, name: "Town of Beginnings" });
     client.send("worldTime", { time: this.worldTime });
     client.send("youJoined", { x: player.x, y: player.y, z: player.z });
     this.syncInventory(client);
 
-    // Tell everyone else
     this.broadcast("playerJoined", {
       id: client.sessionId,
       x: player.x,
@@ -322,14 +314,12 @@ export class MyRoom extends Room<any> {
       maxHp: player.maxHp
     }, { except: client });
 
-    // Tell the new player about existing players
     const existing: any[] = [];
     this.state.players.forEach((p: Player, id: string) => {
       if (id !== client.sessionId) existing.push({ id, x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp });
     });
     client.send("existingPlayers", existing);
     
-    // Tell the new player about existing drops
     this.drops.forEach(drop => client.send("dropSpawn", drop));
   }
 
@@ -351,7 +341,6 @@ export class MyRoom extends Room<any> {
   }
 
   private onTick(dt: number) {
-    // Snapshot sync (Client relies on this for smooth interpolation)
     const snapshot: any[] = [];
     this.state.players.forEach((p: Player, id: string) => {
       snapshot.push({ id, x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp });
@@ -361,13 +350,11 @@ export class MyRoom extends Room<any> {
 
   private startDayNightCycle() {
     this.worldTimeTick = setInterval(() => {
-       // Slow increment matching client prediction
        this.worldTime = (this.worldTime + (1 / 1200)) % 1; 
        this.broadcast("worldMeta", { worldTime: this.worldTime });
     }, 1000);
   }
 
-  // --- THE RANDOM EVENT SCHEDULER ---
   private startEventScheduler(intervalMs: number) {
     this.eventTimer = setInterval(async () => {
       if (this.clients.length === 0) return; 
@@ -377,7 +364,9 @@ export class MyRoom extends Room<any> {
       
       this.broadcast("chatMessage", { msg: `Event starting! Teleporting to ${randomEvent} in 5 seconds...` });
 
-      // Give players 5 seconds warning before pulling them
+      const nextEventAt = Date.now() + 5000;
+      this.broadcast("nextEventTime", { time: nextEventAt });
+
       setTimeout(async () => {
           try {
             const eventRoom = await matchMaker.createRoom(randomEvent, {});
@@ -397,7 +386,6 @@ export class MyRoom extends Room<any> {
     }, intervalMs);
   }
 
-  // --- HELPERS ---
   private syncInventory(client: Client) {
     const inv = this.inventories.get(client.sessionId);
     if (!inv) return;
@@ -419,23 +407,60 @@ export class MyRoom extends Room<any> {
     return dx * dx + dz * dz <= safeR * safeR;
   }
 
+  private loadTownStructure() {
+    try {
+      const townPath = path.resolve(process.cwd(), "town_of_beginnings.json");
+      if (fs.existsSync(townPath)) {
+        const raw = fs.readFileSync(townPath, "utf-8");
+        this.townStructure = JSON.parse(raw);
+        console.log(`[MyRoom] Loaded town_of_beginnings.json with ${this.townStructure?.blocks?.length || 0} blocks.`);
+      } else {
+        console.warn(`[MyRoom] Warning: town_of_beginnings.json not found at ${townPath}`);
+      }
+    } catch (e) {
+      console.error("[MyRoom] Error parsing town_of_beginnings.json:", e);
+    }
+  }
+
   private generateChunk(data: Uint16Array, size: number, cx: number, cy: number, cz: number) {
-    // Basic flat terrain generator so clients don't fall forever
     let i = 0;
     for (let z = 0; z < size; z++) {
       for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
+          const globalX = cx * size + x;
           const globalY = cy * size + y;
-          if (globalY < 30) {
-             data[i] = 1; // Stone
-          } else if (globalY === 30) {
-             data[i] = 2; // Grass/Dirt
+          const globalZ = cz * size + z;
+
+          const surfaceY = Math.floor(30 + Math.sin(globalX / 15) * 3 + Math.cos(globalZ / 15) * 3);
+
+          if (globalY < surfaceY) {
+             data[i] = 1; 
+          } else if (globalY === surfaceY) {
+             data[i] = 2; 
           } else {
-             data[i] = 0; // Air
+             data[i] = 0; 
           }
           i++;
         }
       }
+    }
+
+    if (this.townStructure && this.townStructure.blocks) {
+       for (const b of this.townStructure.blocks) {
+         if (b.x >= cx * size && b.x < (cx + 1) * size &&
+             b.y >= cy * size && b.y < (cy + 1) * size &&
+             b.z >= cz * size && b.z < (cz + 1) * size) {
+             
+             const localX = b.x - cx * size;
+             const localY = b.y - cy * size;
+             const localZ = b.z - cz * size;
+             
+             const idx = localX + localY * size + localZ * size * size;
+             if (idx >= 0 && idx < data.length) {
+                 data[idx] = b.id;
+             }
+         }
+       }
     }
   }
 }
