@@ -637,6 +637,10 @@ function updateStatsHUD() {
   }
 }
 
+// Global UI timers for the overlay
+let nextEventAt = 0;
+let currentEventTimer = 0;
+
 function updateOverlay(extraLine = "") {
   updateStatsHUD();
 
@@ -668,8 +672,23 @@ function updateOverlay(extraLine = "") {
 
   const safeLine = getSafeZoneLine();
 
+  const now = Date.now();
+  let eventLine = "";
+  if (currentEventTimer > now) {
+      const s = Math.ceil((currentEventTimer - now) / 1000);
+      eventLine = `<span style="color: #ff4444; font-weight: bold; text-shadow: 1px 1px 2px #000;">EVENT ENDS IN: ${s}s</span><br>`;
+  } else if (nextEventAt > now) {
+      const diff = Math.floor((nextEventAt - now) / 1000);
+      const m = Math.floor(diff / 60);
+      const s = (diff % 60).toString().padStart(2, "0");
+      eventLine = `<span style="color: #ffff00; font-weight: bold; text-shadow: 1px 1px 2px #000;">Next Event In: ${m}:${s}</span><br>`;
+  } else if (nextEventAt > 0) {
+      eventLine = `<span style="color: #00ff00; font-weight: bold; text-shadow: 1px 1px 2px #000;">Event Starting...</span><br>`;
+  }
+
   overlay.innerHTML = `
     <u>Status:</u> ${status}<br>
+    ${eventLine}
     <u>Holding:</u> [${selectedHotbar + 1}] ${heldName}<br>
     <u>Inventory:</u> ${invOpen ? "OPEN" : "CLOSED"}<br>
     <u>Viewmodel:</u> ${viewModelEnabled ? "ON" : "OFF"}<br>
@@ -2096,7 +2115,7 @@ function ensureUserId(): string {
 let canSendMoves = false;
 let clientWorldTime = 0.26; 
 
-async function connect() {
+async function connectToHub() {
   try {
     updateOverlay();
 
@@ -2114,40 +2133,49 @@ async function connect() {
       room.send("selectClass", { classId: savedClass });
     }
 
-    updateOverlay();
-
     for (const req of queuedRequests.values()) {
       room.send("worldDataNeeded", req);
     }
 
-    room.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
+    bindRoomHandlers(room);
+    updateOverlay();
 
-    room.onMessage("worldTime", (msg: any) => {
+  } catch (e) {
+    console.error("Connection Error:", e);
+    overlay.innerHTML += "<br><span style='color:red'>Connection Failed!</span>";
+  }
+}
+
+// Binds all dynamic hooks to the currently active room
+function bindRoomHandlers(r: Room) {
+    r.onMessage("chunkData", (msg: any) => applyChunkFromServer(msg));
+
+    r.onMessage("worldTime", (msg: any) => {
         if (Number.isFinite(msg.time)) {
              clientWorldTime = msg.time; 
         }
     });
 
-    room.onMessage("worldMeta", (msg: any) => {
+    r.onMessage("worldMeta", (msg: any) => {
         if (Number.isFinite(msg.worldTime)) {
             clientWorldTime = msg.worldTime;
         }
     });
 
-    room.onMessage("safeZone", (m: any) => {
+    r.onMessage("safeZone", (m: any) => {
       if (!m || typeof m !== "object") return;
       const x = Number((m as any).cx ?? (m as any).x); 
       const z = Number((m as any).cz ?? (m as any).z);
-      const r = Number((m as any).radius ?? (m as any).r);
+      const rad = Number((m as any).radius ?? (m as any).r);
       const name = typeof (m as any).name === "string" ? (m as any).name : undefined;
       
-      if (!isFiniteNum(x) || !isFiniteNum(z) || !isFiniteNum(r)) return;
+      if (!isFiniteNum(x) || !isFiniteNum(z) || !isFiniteNum(rad)) return;
       
-      safeZone = { x, z, r, name };
+      safeZone = { x, z, r: rad, name };
       updateOverlay("Safe Zone received");
     });
 
-    room.onMessage("statsUpdate", (msg: any) => {
+    r.onMessage("statsUpdate", (msg: any) => {
       myHp = Number(msg.hp ?? myHp);
       myMaxHp = Number(msg.maxHp ?? myMaxHp);
       myMana = Number(msg.mana ?? myMana);
@@ -2155,17 +2183,17 @@ async function connect() {
       updateOverlay();
     });
 
-    room.onMessage("useManaResult", (msg: any) => {
+    r.onMessage("useManaResult", (msg: any) => {
       if (!msg.ok) return;
     });
 
-    room.onMessage("playerHit", (msg: any) => {
+    r.onMessage("playerHit", (msg: any) => {
       const targetId = msg.targetId;
       const attackerId = msg.attackerId;
       
       remoteSwings.set(attackerId, performance.now());
 
-      if (targetId === room?.sessionId) {
+      if (targetId === r.sessionId) {
         myHp = msg.hpLeft;
         myMaxHp = msg.maxHp ?? myMaxHp;
         
@@ -2193,13 +2221,13 @@ async function connect() {
       updateOverlay();
     });
 
-    room.onMessage("playerSwing", (msg: any) => {
+    r.onMessage("playerSwing", (msg: any) => {
       let x = 0;
       let y = 0;
       let z = 0;
       let yaw = 0;
 
-      if (msg.id === room?.sessionId) {
+      if (msg.id === r.sessionId) {
         const pos = noa.ents.getPosition(noa.playerEntity);
         if (pos) {
           x = pos[0];
@@ -2225,14 +2253,14 @@ async function connect() {
       }
     });
 
-    room.onMessage("attackResult", (msg: any) => {
+    r.onMessage("attackResult", (msg: any) => {
       if (!msg.ok) {
         // Silent fail for normal gameplay
       }
     });
 
-    room.onMessage("playerRespawn", (msg: any) => {
-      if (msg.id === room?.sessionId) {
+    r.onMessage("playerRespawn", (msg: any) => {
+      if (msg.id === r.sessionId) {
         myHp = msg.hp;
         myMaxHp = msg.maxHp ?? myMaxHp;
         myMana = msg.mana ?? myMana;
@@ -2243,7 +2271,7 @@ async function connect() {
       }
     });
 
-    room.onMessage("blockUpdate", (msg: any) => {
+    r.onMessage("blockUpdate", (msg: any) => {
       if (msg && typeof msg.id === "number") {
         noa.world.setBlockID(msg.id, msg.x, msg.y, msg.z);
         if (miningProgress && msg.x === miningProgress.x && msg.y === miningProgress.y && msg.z === miningProgress.z) {
@@ -2252,7 +2280,7 @@ async function connect() {
       }
     });
 
-    room.onMessage("mineProgress", (m: any) => {
+    r.onMessage("mineProgress", (m: any) => {
       if (!m || typeof m !== "object") return;
       const x = Number((m as any).x);
       const y = Number((m as any).y);
@@ -2283,7 +2311,7 @@ async function connect() {
       }
     });
 
-    room.onMessage("mineCancelled", (_m: any) => {
+    r.onMessage("mineCancelled", (_m: any) => {
       miningProgress = null;
       miningHeld = false;
       miningActive = false;
@@ -2292,7 +2320,7 @@ async function connect() {
       lastMineSendAt = 0;
     });
 
-    room.onMessage("invState", (msg: any) => {
+    r.onMessage("invState", (msg: any) => {
       if (!msg || typeof msg !== "object") return;
       const slots = Array.isArray((msg as any).slots) ? (msg as any).slots : null;
       const cursor = (msg as any).cursor ?? null;
@@ -2340,13 +2368,13 @@ async function connect() {
       updateOverlay();
     });
 
-    room.onMessage("chatMessage", (msg: any) => {
+    r.onMessage("chatMessage", (msg: any) => {
       if (msg && typeof msg.msg === "string") {
         updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** ${msg.msg} ***</span>`);
       }
     });
 
-    room.onMessage("dropSpawn", (d: any) => {
+    r.onMessage("dropSpawn", (d: any) => {
       if (!d || typeof d.dropId !== "string") return;
       const dd: Drop = {
         dropId: d.dropId,
@@ -2362,7 +2390,7 @@ async function connect() {
       updateOverlay();
     });
 
-    room.onMessage("dropDespawn", (m: any) => {
+    r.onMessage("dropDespawn", (m: any) => {
       const id = typeof (m as any)?.dropId === "string" ? (m as any).dropId : "";
       if (!id) return;
       drops.delete(id);
@@ -2374,7 +2402,7 @@ async function connect() {
       updateOverlay();
     });
 
-    room.onMessage("craftResult", (m: any) => {
+    r.onMessage("craftResult", (m: any) => {
       const ok = !!(m as any)?.ok;
       const recipeId = typeof (m as any)?.recipeId === "string" ? (m as any).recipeId : "";
       const crafted = Number((m as any)?.crafted ?? 0);
@@ -2388,11 +2416,11 @@ async function connect() {
       }, 2000);
     });
 
-    room.onMessage("existingPlayers", (players: any) => {
+    r.onMessage("existingPlayers", (players: any) => {
       if (!Array.isArray(players)) return;
       for (const p of players ?? []) {
         const id = normId(p);
-        if (!id || (room && id === room.sessionId)) continue;
+        if (!id || (r && id === r.sessionId)) continue;
 
         const x = Number((p as any).x ?? 0);
         const y = Number((p as any).y ?? 0);
@@ -2410,9 +2438,9 @@ async function connect() {
       updateOverlay("existingPlayers received");
     });
 
-    room.onMessage("playerJoined", (p: any) => {
+    r.onMessage("playerJoined", (p: any) => {
       const id = normId(p);
-      if (!id || (room && id === room.sessionId)) return;
+      if (!id || (r && id === r.sessionId)) return;
 
       const x = Number((p as any).x ?? 0);
       const y = Number((p as any).y ?? 0);
@@ -2428,7 +2456,7 @@ async function connect() {
       lastTransformAt = performance.now();
     });
 
-    room.onMessage("playerLeft", (p: any) => {
+    r.onMessage("playerLeft", (p: any) => {
       const id = normId(p);
       if (!id) return;
       netTransforms.delete(id);
@@ -2436,9 +2464,9 @@ async function connect() {
       lastTransformAt = performance.now();
     });
 
-    room.onMessage("playerTransformOther", (p: any) => {
+    r.onMessage("playerTransformOther", (p: any) => {
       const id = normId(p);
-      if (!id || (room && id === room.sessionId)) return;
+      if (!id || (r && id === r.sessionId)) return;
 
       const x = Number((p as any).x);
       const y = Number((p as any).y);
@@ -2460,12 +2488,12 @@ async function connect() {
       lastTransformAt = performance.now();
     });
 
-    room.onMessage("playersSnapshot", (players: any) => {
+    r.onMessage("playersSnapshot", (players: any) => {
       if (!Array.isArray(players)) return;
       const ids: string[] = [];
       for (const p of players) {
         const id = normId(p);
-        if (!id || (room && id === room.sessionId)) continue;
+        if (!id || (r && id === r.sessionId)) continue;
 
         const x = Number((p as any).x);
         const y = Number((p as any).y);
@@ -2494,7 +2522,7 @@ async function connect() {
       lastSnapshotAt = performance.now();
     });
 
-    room.onMessage("youJoined", (p: any) => {
+    r.onMessage("youJoined", (p: any) => {
       const x = Number((p as any).x);
       const y = Number((p as any).y);
       const z = Number((p as any).z);
@@ -2507,14 +2535,65 @@ async function connect() {
       canSendMoves = true;
       updateOverlay("Spawn synced.");
     });
-  } catch (e) {
-    console.error("Connection Error:", e);
-    overlay.innerHTML += "<br><span style='color:red'>Connection Failed!</span>";
-  }
+
+    // --- EVENT SCHEDULER SYNC HOOKS ---
+    r.onMessage("nextEventTime", (msg: any) => {
+        nextEventAt = Number(msg.time) || 0;
+        updateOverlay();
+    });
+
+    r.onMessage("eventStart", (msg: any) => {
+        currentEventTimer = Date.now() + msg.timer;
+        nextEventAt = 0; // Clear the hub countdown
+        updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** EVENT STARTED: ${msg.rules} ***</span>`);
+    });
+
+    r.onMessage("eventEnd", (msg: any) => {
+        currentEventTimer = 0;
+        updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** EVENT OVER: ${msg.reason} ***</span>`);
+    });
+
+    r.onMessage("joinEvent", async (reservation: any) => {
+        try {
+            if (room) room.leave();
+            room = await colyseus.consumeSeatReservation(reservation);
+            (globalThis as any).room = room;
+            
+            pendingChunks.clear();
+            queuedRequests.clear();
+            
+            bindRoomHandlers(room);
+            updateOverlay("Joined Event Arena!");
+        } catch (e) {
+            console.error("Failed to join event", e);
+        }
+    });
+
+    r.onMessage("returnToHub", async () => {
+        try {
+            if (room) room.leave();
+            
+            pendingChunks.clear();
+            queuedRequests.clear();
+            currentEventTimer = 0;
+            
+            const userId = ensureUserId();
+            room = await colyseus.joinOrCreate("my_room", { userId });
+            (globalThis as any).room = room;
+            
+            const savedClass = localStorage.getItem("noa_player_class");
+            if (savedClass) room.send("selectClass", { classId: savedClass });
+            
+            bindRoomHandlers(room);
+            updateOverlay("Returned to Hub.");
+        } catch(e) {
+            console.error("Failed to return to hub", e);
+        }
+    });
 }
 
 initUI();
-connect();
+connectToHub();
 
 /* ===============================
    13. Tick loop
@@ -2645,7 +2724,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
      const y = r * Math.cos(phi);
      const z = r * Math.sin(phi) * Math.sin(theta);
 
-     // Shrunk the triangle size significantly down to 0.12 to simulate tiny pinpricks of light
+     // Shrunk the triangle size significantly down to simulate tiny pinpricks of light
      const s = 0.12; 
      positions.push(
          x, y + s, z,
@@ -2666,7 +2745,6 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   const starMat = new BABYLON.StandardMaterial("starMat", skyScene);
   starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   starMat.disableLighting = true;
-  // Enable alpha blending on the star material so it can fade out
   starMat.alpha = 1.0;
   starMat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
   (starMat as any).fogEnabled = false;
@@ -2767,22 +2845,18 @@ function updateDayNightCycle(dt: number) {
            starAlpha = 1.0;
        } else if (clientWorldTime < 0.3) { 
            r = 0.8; g = 0.5; b = 0.4;
-           // Fade stars out dynamically at Dawn
            starAlpha = 1.0 - ((clientWorldTime - 0.2) / 0.1);
        } else if (clientWorldTime < 0.7) { 
            r = 0.5; g = 0.7; b = 1.0;
-           // Hide stars completely during the Day
            starAlpha = 0.0;
        } else if (clientWorldTime < 0.8) { 
            r = 0.7; g = 0.4; b = 0.6;
-           // Fade stars in dynamically at Dusk
            starAlpha = (clientWorldTime - 0.7) / 0.1;
        } else { 
            r = 0.05; g = 0.05; b = 0.15;
            starAlpha = 1.0;
        }
 
-       // Apply dynamic fading to the stars
        if (starsMesh && starsMesh.material) {
            (starsMesh.material as BABYLON.StandardMaterial).alpha = Math.max(0, Math.min(1, starAlpha));
        }
