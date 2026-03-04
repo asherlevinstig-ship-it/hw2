@@ -2094,7 +2094,7 @@ function ensureUserId(): string {
 }
 
 let canSendMoves = false;
-let clientWorldTime = 0.26; // HARD START AT DAWN: Sun will spawn huge and low directly in front of you.
+let clientWorldTime = 0.26; 
 
 async function connect() {
   try {
@@ -2559,24 +2559,37 @@ function updateZoneCheck() {
 }
 
 // 13.2 Day/Night Cycle + Skybox Logic
+let skyReady = false;
+let skyScene: BABYLON.Scene | null = null;
+let skyCam: BABYLON.FreeCamera | null = null;
 let skyRoot: BABYLON.TransformNode | null = null;
 let skySceneUid: string | number | null = null;
 let sunMesh: BABYLON.Mesh | null = null;
 let moonMesh: BABYLON.Mesh | null = null;
 let skyMaterial: BABYLON.StandardMaterial | null = null;
+let skyEngineHooked = false;
 
-function ensureSkybox(scene: BABYLON.Scene) {
-  const uid = (scene as any).uid as string | number | undefined;
+function ensureSkyScene(noaScene: BABYLON.Scene) {
+  const uid = (noaScene as any).uid as string | number | undefined;
 
-  // Rebuild if the NOA engine destroyed and recreated the WebGL scene underneath us
-  if (skyRoot && skySceneUid === (uid ?? null)) return;
+  if (skyReady && skyScene && skyCam && skySceneUid === (uid ?? null)) return;
+  
   if (skyRoot) {
       skyRoot.dispose();
       skyRoot = null;
   }
   skySceneUid = uid ?? null;
 
-  skyRoot = new BABYLON.TransformNode("skyRoot", scene);
+  const engine = noaScene.getEngine();
+  
+  skyScene = new BABYLON.Scene(engine);
+  skyScene.autoClear = true; 
+  
+  skyCam = new BABYLON.FreeCamera("skyCam", BABYLON.Vector3.Zero(), skyScene);
+  skyCam.maxZ = 2500;
+  skyScene.activeCamera = skyCam;
+
+  skyRoot = new BABYLON.TransformNode("skyRoot", skyScene);
 
   const createSkyMesh = (name: string, m: BABYLON.Mesh) => {
       m.name = name;
@@ -2586,52 +2599,51 @@ function ensureSkybox(scene: BABYLON.Scene) {
       return m;
   };
 
-  skyMaterial = new BABYLON.StandardMaterial("skyMat", scene);
+  skyMaterial = new BABYLON.StandardMaterial("skyMat", skyScene);
   skyMaterial.disableLighting = true;
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 45, segments: 16 }, scene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 45, segments: 16 }, skyScene);
   createSkyMesh("sun", sunMesh);
   
-  const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
+  const sunMat = new BABYLON.StandardMaterial("sunMat", skyScene);
   sunMat.emissiveColor = new BABYLON.Color3(1, 0.9, 0.5);
   sunMat.disableLighting = true;
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 30, segments: 16 }, scene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 30, segments: 16 }, skyScene);
   createSkyMesh("moon", moonMesh);
   
-  const moonMat = new BABYLON.StandardMaterial("moonMat", scene);
+  const moonMat = new BABYLON.StandardMaterial("moonMat", skyScene);
   moonMat.emissiveColor = new BABYLON.Color3(0.9, 0.9, 1);
   moonMat.disableLighting = true;
   (moonMat as any).fogEnabled = false;
   
-  const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, scene);
+  const noiseTex = new BABYLON.NoiseProceduralTexture("moonNoise", 256, skyScene);
   noiseTex.octaves = 4;
   noiseTex.persistence = 0.8;
   moonMat.diffuseTexture = noiseTex;
   moonMesh.material = moonMat;
 
-  // Stars - Merge small physical planes to mathematically guarantee triangle rendering
   const starMeshes: BABYLON.Mesh[] = [];
-  const starBase = BABYLON.MeshBuilder.CreatePlane("starBase", { size: 2.5 }, scene);
+  const starBase = BABYLON.MeshBuilder.CreatePlane("starBase", { size: 3.0 }, skyScene);
   for (let i = 0; i < 800; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      const r = 380 + Math.random() * 20;
-      
-      const s = starBase.clone("star" + i);
-      s.position.set(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
-      s.lookAt(BABYLON.Vector3.Zero());
-      starMeshes.push(s);
+     const theta = Math.random() * Math.PI * 2;
+     const phi = Math.acos(2 * Math.random() - 1);
+     const r = 750 + Math.random() * 20;
+
+     const s = starBase.clone("star" + i);
+     s.position.set(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
+     s.lookAt(BABYLON.Vector3.Zero());
+     starMeshes.push(s);
   }
   
   const starsMesh = BABYLON.Mesh.MergeMeshes(starMeshes, true, true, undefined, false, true);
   if (starsMesh) {
       createSkyMesh("stars", starsMesh as BABYLON.Mesh);
-      const starMat = new BABYLON.StandardMaterial("starMat", scene);
+      const starMat = new BABYLON.StandardMaterial("starMat", skyScene);
       starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
       starMat.disableLighting = true;
       (starMat as any).fogEnabled = false;
@@ -2640,10 +2652,10 @@ function ensureSkybox(scene: BABYLON.Scene) {
   starBase.dispose();
 
   for (let i=0; i<15; i++) {
-     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 40 + Math.random()*20, segments: 4 }, scene);
+     const c = BABYLON.MeshBuilder.CreateSphere("cloud"+i, { diameter: 50 + Math.random()*30, segments: 4 }, skyScene);
      createSkyMesh("cloud"+i, c);
-
-     const cMat = new BABYLON.StandardMaterial("cloudMat", scene);
+     
+     const cMat = new BABYLON.StandardMaterial("cloudMat", skyScene);
      cMat.emissiveColor = new BABYLON.Color3(0.95, 0.95, 0.95);
      cMat.alpha = 0.4;
      cMat.disableLighting = true;
@@ -2652,7 +2664,7 @@ function ensureSkybox(scene: BABYLON.Scene) {
      
      const theta = Math.random() * Math.PI * 2;
      const phi = Math.random() * Math.PI * 0.35; 
-     const r = 350;
+     const r = 600;
      c.position.set(
        r * Math.sin(phi) * Math.cos(theta),
        Math.abs(r * Math.cos(phi)), 
@@ -2661,6 +2673,28 @@ function ensureSkybox(scene: BABYLON.Scene) {
      c.scaling.y = 0.3; 
      (c as any).rotationSpeed = (Math.random() - 0.5) * 0.001;
   }
+
+  if (!skyEngineHooked) {
+    skyEngineHooked = true;
+    
+    engine.onBeginFrameObservable.add(() => {
+        const noaCam = noaScene.activeCamera;
+        if (noaCam && skyCam && skyScene) {
+            const camAny = noaCam as any;
+            
+            if (camAny.rotationQuaternion) {
+                if (!skyCam.rotationQuaternion) skyCam.rotationQuaternion = new BABYLON.Quaternion();
+                skyCam.rotationQuaternion.copyFrom(camAny.rotationQuaternion);
+            } else if (camAny.rotation) {
+                skyCam.rotation.copyFrom(camAny.rotation);
+            }
+            
+            skyScene.render();
+        }
+    });
+  }
+
+  skyReady = true;
 }
 
 function updateDayNightCycle(dt: number) {
@@ -2669,17 +2703,20 @@ function updateDayNightCycle(dt: number) {
     const scene = getStableScene();
     if (!scene) return;
 
-    // Aggressive Camera Clipping Defense
     if (scene.activeCamera && scene.activeCamera.maxZ < 1000) {
         scene.activeCamera.maxZ = 1000;
     }
 
-    ensureSkybox(scene);
+    ensureSkyScene(scene);
 
-    if (skyRoot) {
+    if (scene.autoClear) {
+        scene.autoClear = false; 
+        scene.autoClearDepthAndStencil = true;
+    }
+
+    if (skyRoot && skyScene && skyCam) {
        const cam = scene.activeCamera;
        if (cam) {
-          // Perfect Layer Mask Synchronization
           const mask = cam.layerMask;
           for (const child of skyRoot.getChildMeshes()) {
             child.layerMask = mask;
@@ -2691,7 +2728,6 @@ function updateDayNightCycle(dt: number) {
 
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
-       // ORBIT IN Z-Y PLANE: Sun rises and sets directly in front/behind standard spawn orientation
        if (sunMesh) {
            sunMesh.position.set(0, Math.sin(angle) * 400, Math.cos(angle) * 400);
            if (cam) sunMesh.lookAt(cam.globalPosition); 
@@ -2708,26 +2744,27 @@ function updateDayNightCycle(dt: number) {
                }
            }
        }
-    }
 
-    let r=0, g=0, b=0;
-    
-    if (clientWorldTime < 0.2) { 
-        r = 0.05; g = 0.05; b = 0.15;
-    } else if (clientWorldTime < 0.3) { 
-        r = 0.8; g = 0.5; b = 0.4;
-    } else if (clientWorldTime < 0.7) { 
-        r = 0.5; g = 0.7; b = 1.0;
-    } else if (clientWorldTime < 0.8) { 
-        r = 0.7; g = 0.4; b = 0.6;
-    } else { 
-        r = 0.05; g = 0.05; b = 0.15;
-    }
+       let r=0, g=0, b=0;
+       
+       if (clientWorldTime < 0.2) { 
+           r = 0.05; g = 0.05; b = 0.15;
+       } else if (clientWorldTime < 0.3) { 
+           r = 0.8; g = 0.5; b = 0.4;
+       } else if (clientWorldTime < 0.7) { 
+           r = 0.5; g = 0.7; b = 1.0;
+       } else if (clientWorldTime < 0.8) { 
+           r = 0.7; g = 0.4; b = 0.6;
+       } else { 
+           r = 0.05; g = 0.05; b = 0.15;
+       }
 
-    scene.clearColor = new BABYLON.Color4(r, g, b, 1);
-    scene.ambientColor = new BABYLON.Color3(r, g, b);
-    if (scene.fogColor) {
-        scene.fogColor = new BABYLON.Color3(r*0.8, g*0.8, b*0.9);
+       skyScene.clearColor = new BABYLON.Color4(r, g, b, 1);
+       skyScene.ambientColor = new BABYLON.Color3(r, g, b);
+       scene.ambientColor = new BABYLON.Color3(r, g, b);
+       if (scene.fogColor) {
+           scene.fogColor = new BABYLON.Color3(r*0.8, g*0.8, b*0.9);
+       }
     }
 }
 
