@@ -2094,7 +2094,7 @@ function ensureUserId(): string {
 }
 
 let canSendMoves = false;
-let clientWorldTime = 0.26; // HARD START AT DAWN: Sun will spawn huge and low directly in front of you.
+let clientWorldTime = 0.26; 
 
 async function connect() {
   try {
@@ -2566,6 +2566,7 @@ let skyRoot: BABYLON.TransformNode | null = null;
 let skySceneUid: string | number | null = null;
 let sunMesh: BABYLON.Mesh | null = null;
 let moonMesh: BABYLON.Mesh | null = null;
+let starsMesh: BABYLON.Mesh | null = null;
 let skyMaterial: BABYLON.StandardMaterial | null = null;
 let skyEngineHooked = false;
 
@@ -2577,6 +2578,9 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   if (skyRoot) {
       skyRoot.dispose();
       skyRoot = null;
+      sunMesh = null;
+      moonMesh = null;
+      starsMesh = null;
   }
   skySceneUid = uid ?? null;
 
@@ -2586,7 +2590,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   skyScene.autoClear = true; 
   
   skyCam = new BABYLON.FreeCamera("skyCam", BABYLON.Vector3.Zero(), skyScene);
-  skyCam.maxZ = 1000;
+  skyCam.maxZ = 2500;
   skyScene.activeCamera = skyCam;
 
   skyRoot = new BABYLON.TransformNode("skyRoot", skyScene);
@@ -2604,7 +2608,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   skyMaterial.emissiveColor = new BABYLON.Color3(1, 1, 1);
   skyMaterial.backFaceCulling = false;
 
-  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 14, segments: 16 }, skyScene);
+  sunMesh = BABYLON.MeshBuilder.CreateSphere("sun", { diameter: 45, segments: 16 }, skyScene);
   createSkyMesh("sun", sunMesh);
   
   const sunMat = new BABYLON.StandardMaterial("sunMat", skyScene);
@@ -2613,7 +2617,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   (sunMat as any).fogEnabled = false;
   sunMesh.material = sunMat;
 
-  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 10, segments: 16 }, skyScene);
+  moonMesh = BABYLON.MeshBuilder.CreateSphere("moon", { diameter: 30, segments: 16 }, skyScene);
   createSkyMesh("moon", moonMesh);
   
   const moonMat = new BABYLON.StandardMaterial("moonMat", skyScene);
@@ -2641,7 +2645,8 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
      const y = r * Math.cos(phi);
      const z = r * Math.sin(phi) * Math.sin(theta);
 
-     const s = 0.5; 
+     // Shrunk the triangle size significantly down to 0.12 to simulate tiny pinpricks of light
+     const s = 0.12; 
      positions.push(
          x, y + s, z,
          x - s, y - s, z,
@@ -2651,7 +2656,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
      idx += 3;
   }
 
-  const starsMesh = new BABYLON.Mesh("stars", skyScene);
+  starsMesh = new BABYLON.Mesh("stars", skyScene);
   createSkyMesh("stars", starsMesh);
   const vd = new BABYLON.VertexData();
   vd.positions = positions;
@@ -2661,6 +2666,9 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   const starMat = new BABYLON.StandardMaterial("starMat", skyScene);
   starMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
   starMat.disableLighting = true;
+  // Enable alpha blending on the star material so it can fade out
+  starMat.alpha = 1.0;
+  starMat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
   (starMat as any).fogEnabled = false;
   starsMesh.material = starMat;
 
@@ -2713,6 +2721,10 @@ function updateDayNightCycle(dt: number) {
     const scene = getStableScene();
     if (!scene) return;
 
+    if (scene.activeCamera && scene.activeCamera.maxZ < 1000) {
+        scene.activeCamera.maxZ = 1000;
+    }
+
     ensureSkyScene(scene);
 
     if (scene.autoClear) {
@@ -2721,6 +2733,17 @@ function updateDayNightCycle(dt: number) {
     }
 
     if (skyRoot && skyScene && skyCam) {
+       const cam = scene.activeCamera;
+       if (cam) {
+          const mask = cam.layerMask;
+          for (const child of skyRoot.getChildMeshes()) {
+            child.layerMask = mask;
+          }
+       } 
+
+       const p = noa.ents.getPosition(noa.playerEntity);
+       if (p) skyRoot.position.set(p[0], p[1], p[2]);
+
        const angle = (clientWorldTime - 0.25) * Math.PI * 2; 
        
        if (sunMesh) {
@@ -2737,17 +2760,31 @@ function updateDayNightCycle(dt: number) {
        }
 
        let r=0, g=0, b=0;
+       let starAlpha = 1.0;
        
        if (clientWorldTime < 0.2) { 
            r = 0.05; g = 0.05; b = 0.15;
+           starAlpha = 1.0;
        } else if (clientWorldTime < 0.3) { 
            r = 0.8; g = 0.5; b = 0.4;
+           // Fade stars out dynamically at Dawn
+           starAlpha = 1.0 - ((clientWorldTime - 0.2) / 0.1);
        } else if (clientWorldTime < 0.7) { 
            r = 0.5; g = 0.7; b = 1.0;
+           // Hide stars completely during the Day
+           starAlpha = 0.0;
        } else if (clientWorldTime < 0.8) { 
            r = 0.7; g = 0.4; b = 0.6;
+           // Fade stars in dynamically at Dusk
+           starAlpha = (clientWorldTime - 0.7) / 0.1;
        } else { 
            r = 0.05; g = 0.05; b = 0.15;
+           starAlpha = 1.0;
+       }
+
+       // Apply dynamic fading to the stars
+       if (starsMesh && starsMesh.material) {
+           (starsMesh.material as BABYLON.StandardMaterial).alpha = Math.max(0, Math.min(1, starAlpha));
        }
 
        skyScene.clearColor = new BABYLON.Color4(r, g, b, 1);
