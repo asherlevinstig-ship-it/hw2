@@ -911,9 +911,11 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
   }
 
   if (ArrayBuffer.isView(msgVoxels)) {
-    const view = msgVoxels as any;
+    const view = msgVoxels as ArrayBufferView;
     if (view.byteLength === expectedLen * 2) {
-      const u16 = new Uint16Array(view.buffer, view.byteOffset, expectedLen);
+      // Memory Alignment Fix: Slice buffer to guarantee a mod-2 byteOffset for Uint16Array mapping
+      const aligned = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+      const u16 = new Uint16Array(aligned);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
         out[i] = u16[i] | 0;
@@ -921,17 +923,18 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
       return out;
     }
     if (view.byteLength === expectedLen) {
-      const u8 = new Uint8Array(view.buffer, view.byteOffset, expectedLen);
+      const aligned = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+      const u8 = new Uint8Array(aligned);
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
         out[i] = u8[i] | 0;
       }
       return out;
     }
-    if (typeof view.length === "number" && view.length === expectedLen) {
+    if (typeof (view as any).length === "number" && (view as any).length === expectedLen) {
       const out = new Array<number>(expectedLen);
       for (let i = 0; i < expectedLen; i++) {
-        out[i] = view[i] | 0;
+        out[i] = (view as any)[i] | 0;
       }
       return out;
     }
@@ -2710,7 +2713,6 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   moonMat.diffuseTexture = noiseTex;
   moonMesh.material = moonMat;
 
-  // Explicit geometry for stars to guarantee WebGL rendering
   const starCount = 800;
   const positions: number[] = [];
   const indices: number[] = [];
@@ -2724,7 +2726,6 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
      const y = r * Math.cos(phi);
      const z = r * Math.sin(phi) * Math.sin(theta);
 
-     // Shrunk the triangle size significantly down to simulate tiny pinpricks of light
      const s = 0.12; 
      positions.push(
          x, y + s, z,
@@ -2776,7 +2777,6 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   if (!skyEngineHooked) {
     skyEngineHooked = true;
     
-    // Perfectly decouple sky camera from player position and sync the forward direction
     (noa as any).on("beforeRender", () => {
         const noaCam = getStableScene()?.activeCamera;
         if (noaCam && skyCam && skyScene) {
