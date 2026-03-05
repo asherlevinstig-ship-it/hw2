@@ -5,10 +5,10 @@ import { BaseEventRoom } from "./BaseEventRoom.js";
 import { Client } from "colyseus";
 
 export class EventArenaRoom extends BaseEventRoom {
-  // 30 seconds for quick testing
-  protected durationMs = 30_000; 
+  // 60 seconds for testing
+  protected durationMs = 60_000; 
 
-  // Offset the arena 10,000 blocks away so it never overlaps with the Hub terrain in the client's memory
+  // Offset the arena 10,000 blocks away so it never overlaps with the Hub terrain
   private ARENA_OFFSET = 10000;
 
   protected setupEvent() {
@@ -49,8 +49,8 @@ export class EventArenaRoom extends BaseEventRoom {
   }
 
   protected checkWinLose() {
-    // End early if only 1 person is left standing (5s grace period)
-    if (this.clients.length <= 1 && Date.now() - this.startedAt > 5000) {
+    // End early if only 1 person is left standing (Increased grace period to 15s so you can look around!)
+    if (this.clients.length <= 1 && Date.now() - this.startedAt > 15000) {
       return { done: true, reason: "last_man_standing" };
     }
     return { done: false };
@@ -59,7 +59,6 @@ export class EventArenaRoom extends BaseEventRoom {
   onJoin(client: Client, options: any) {
     console.log(`[Arena] Player ${client.sessionId} joined the bloodbath.`);
     
-    // CRITICAL: Feed the client the initialization packets it expects, centered on the offset!
     client.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
     client.send("worldTime", { time: 0.5 }); // High noon visibility
     client.send("statsUpdate", { hp: 20, maxHp: 20, mana: 50, maxMana: 50 });
@@ -69,8 +68,7 @@ export class EventArenaRoom extends BaseEventRoom {
 
     client.send("eventStart", { 
         mode: "arena", 
-        rules: "Survive the arena! Last player standing wins.", 
-        timer: this.durationMs 
+        rules: "Survive the arena! Last player standing wins."
     });
   }
 }

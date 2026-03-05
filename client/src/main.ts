@@ -2544,9 +2544,14 @@ function bindRoomHandlers(r: Room) {
         updateOverlay();
     });
 
-    r.onMessage("eventStart", (msg: any) => {
-        currentEventTimer = Date.now() + msg.timer;
+    // CRITICAL FIX: Continuously sync the remaining event time to fix race conditions
+    r.onMessage("syncEventTimer", (msg: any) => {
+        currentEventTimer = Date.now() + msg.remainingMs;
         nextEventAt = 0; 
+        updateOverlay();
+    });
+
+    r.onMessage("eventStart", (msg: any) => {
         updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** EVENT STARTED: ${msg.rules} ***</span>`);
     });
 
@@ -2568,7 +2573,6 @@ function bindRoomHandlers(r: Room) {
             pendingChunks.clear();
             queuedRequests.clear();
             
-            // CRITICAL: Flush the voxel cache so old terrain disappears!
             if (typeof (noa as any).world?.invalidateAllChunks === "function") {
                 (noa as any).world.invalidateAllChunks();
             }
@@ -2600,7 +2604,6 @@ function bindRoomHandlers(r: Room) {
             queuedRequests.clear();
             currentEventTimer = 0;
 
-            // CRITICAL: Flush the voxel cache so Arena terrain disappears!
             if (typeof (noa as any).world?.invalidateAllChunks === "function") {
                 (noa as any).world.invalidateAllChunks();
             }
