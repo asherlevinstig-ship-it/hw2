@@ -2544,7 +2544,7 @@ function bindRoomHandlers(r: Room) {
         updateOverlay();
     });
 
-    // CRITICAL FIX: Continuously sync the remaining event time to fix race conditions
+    // CRITICAL FIX: The listener that was completely missing!
     r.onMessage("syncEventTimer", (msg: any) => {
         currentEventTimer = Date.now() + msg.remainingMs;
         nextEventAt = 0; 
@@ -2552,6 +2552,10 @@ function bindRoomHandlers(r: Room) {
     });
 
     r.onMessage("eventStart", (msg: any) => {
+        if (msg.timer) {
+             currentEventTimer = Date.now() + msg.timer;
+        }
+        nextEventAt = 0; 
         updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** EVENT STARTED: ${msg.rules} ***</span>`);
     });
 
@@ -2570,8 +2574,13 @@ function bindRoomHandlers(r: Room) {
                 await room.leave();
             }
             
+            // CRITICAL FIX: Clear the old room's state completely so Hub ghosts don't haunt the Arena!
             pendingChunks.clear();
             queuedRequests.clear();
+            netTransforms.clear();
+            drops.clear();
+            dropMeshes.forEach(m => { try { m.dispose(); } catch{} });
+            dropMeshes.clear();
             
             if (typeof (noa as any).world?.invalidateAllChunks === "function") {
                 (noa as any).world.invalidateAllChunks();
@@ -2600,8 +2609,13 @@ function bindRoomHandlers(r: Room) {
                 await room.leave();
             }
             
+            // CRITICAL FIX: Clear the old room's state completely so Arena ghosts don't haunt the Hub!
             pendingChunks.clear();
             queuedRequests.clear();
+            netTransforms.clear();
+            drops.clear();
+            dropMeshes.forEach(m => { try { m.dispose(); } catch{} });
+            dropMeshes.clear();
             currentEventTimer = 0;
 
             if (typeof (noa as any).world?.invalidateAllChunks === "function") {
