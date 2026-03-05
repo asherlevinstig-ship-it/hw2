@@ -4,24 +4,56 @@
 import { BaseEventRoom } from "./BaseEventRoom.js";
 import { Client } from "colyseus";
 
+type ArenaPlayer = { 
+    id: string, 
+    x: number, 
+    y: number, 
+    z: number, 
+    yaw: number, 
+    hp: number, 
+    maxHp: number 
+};
+
 export class EventArenaRoom extends BaseEventRoom {
   // 60 seconds for testing
   protected durationMs = 60_000; 
 
   // Offset the arena 10,000 blocks away so it never overlaps with the Hub terrain
   private ARENA_OFFSET = 10000;
+  
+  // Track players specifically for the Arena so we can send snapshots
+  private arenaPlayers = new Map<string, ArenaPlayer>();
 
   protected setupEvent() {
     console.log("[Arena] Setting up flat platform...");
     
+    // Broadcast snapshots so clients can see each other and the HUD unfreezes!
+    this.clock.setInterval(() => {
+        const snapshot: any[] = [];
+        this.arenaPlayers.forEach(p => snapshot.push(p));
+        this.broadcast("playersSnapshot", snapshot);
+    }, 50);
+
     this.onMessage("attack", (client: Client, message: any) => {
         // Handle arena combat
+    });
+
+    this.onMessage("playerMove", (client: Client, data: any) => {
+        const p = this.arenaPlayers.get(client.sessionId);
+        if (p) {
+            p.x = data.x; 
+            p.y = data.y; 
+            p.z = data.z; 
+            p.yaw = data.yaw;
+        }
     });
 
     this.onMessage("worldDataNeeded", (client: Client, data: any) => {
         const { id, chunkSize, x, y, z } = data;
         const expectedLen = chunkSize * chunkSize * chunkSize;
-        const chunkData = new Uint16Array(expectedLen);
+        
+        // CRITICAL FIX: Use Uint8Array to perfectly match the Hub memory mapping
+        const chunkData = new Uint8Array(expectedLen);
         
         let i = 0;
         for (let lz = 0; lz < chunkSize; lz++) {
@@ -31,8 +63,8 @@ export class EventArenaRoom extends BaseEventRoom {
                     const globalY = y + ly;
                     const globalZ = z + lz;
                     
-                    // Generate a 128x128 Stone platform centered perfectly on the Offset at Y=8
-                    if (globalY === 8 && 
+                    // Generate a 128x128 Stone platform centered perfectly on the Offset at Y=30
+                    if (globalY === 30 && 
                         globalX >= this.ARENA_OFFSET - 64 && globalX <= this.ARENA_OFFSET + 64 && 
                         globalZ >= this.ARENA_OFFSET - 64 && globalZ <= this.ARENA_OFFSET + 64) {
                         chunkData[i] = 3; // Stone ID
@@ -59,13 +91,22 @@ export class EventArenaRoom extends BaseEventRoom {
   onJoin(client: Client, options: any) {
     console.log(`[Arena] Player ${client.sessionId} joined the bloodbath.`);
     
-    // CRITICAL: Feed the client the initialization packets it expects, centered on the offset!
-    client.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
+    const spawnX = this.ARENA_OFFSET;
+    // CRITICAL FIX: Spawn high in the sky so the chunk floor loads before you land on it!
+    const spawnY = 40; 
+    const spawnZ = this.ARENA_OFFSET;
+
+    this.arenaPlayers.set(client.sessionId, {
+        id: client.sessionId, x: spawnX, y: spawnY, z: spawnZ, yaw: 0, hp: 20, maxHp: 20
+    });
+
+    // Feed the client the initialization packets it expects, centered on the offset!
+    client.send("safeZone", { cx: spawnX, cz: spawnZ, r: 0, name: "The Arena" }); 
     client.send("worldTime", { time: 0.5 }); // High noon visibility
     client.send("statsUpdate", { hp: 20, maxHp: 20, mana: 50, maxMana: 50 });
     
     // Spawn them exactly in the middle of the new offset platform
-    client.send("youJoined", { x: this.ARENA_OFFSET, y: 10, z: this.ARENA_OFFSET });
+    client.send("youJoined", { x: spawnX, y: spawnY, z: spawnZ });
 
     // Calculate the exact remaining time so the client doesn't get a NaN UI glitch!
     const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
@@ -75,5 +116,10 @@ export class EventArenaRoom extends BaseEventRoom {
         rules: "Survive the arena! Last player standing wins.", 
         timer: remaining 
     });
+  }
+
+  onLeave(client: Client) {
+    this.arenaPlayers.delete(client.sessionId);
+    this.broadcast("playerLeft", { id: client.sessionId });
   }
 }
