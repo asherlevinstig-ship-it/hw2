@@ -913,7 +913,6 @@ function decodeVoxelsToNumberArray(msgVoxels: any, expectedLen: number): number[
   if (ArrayBuffer.isView(msgVoxels)) {
     const view = msgVoxels as ArrayBufferView;
     if (view.byteLength === expectedLen * 2) {
-      // Memory Alignment Fix: Slice buffer to guarantee a mod-2 byteOffset for Uint16Array mapping
       const aligned = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
       const u16 = new Uint16Array(aligned);
       const out = new Array<number>(expectedLen);
@@ -2547,7 +2546,7 @@ function bindRoomHandlers(r: Room) {
 
     r.onMessage("eventStart", (msg: any) => {
         currentEventTimer = Date.now() + msg.timer;
-        nextEventAt = 0; // Clear the hub countdown
+        nextEventAt = 0; 
         updateOverlay(`<span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">*** EVENT STARTED: ${msg.rules} ***</span>`);
     });
 
@@ -2557,29 +2556,46 @@ function bindRoomHandlers(r: Room) {
     });
 
     r.onMessage("joinEvent", async (reservation: any) => {
+        console.log("[Client] Consuming seat reservation for event:", reservation);
         try {
-            if (room) room.leave();
-            room = await colyseus.consumeSeatReservation(reservation);
-            (globalThis as any).room = room;
+            updateOverlay(`<span style="color: #ffff00;">Teleporting to Arena...</span>`);
+            if (room) {
+                console.log("[Client] Leaving old room...");
+                room.removeAllListeners();
+                await room.leave();
+            }
             
             pendingChunks.clear();
             queuedRequests.clear();
             
+            console.log("[Client] Connecting to new room...");
+            room = await colyseus.consumeSeatReservation(reservation);
+            (globalThis as any).room = room;
+            
             bindRoomHandlers(room);
-            updateOverlay("Joined Event Arena!");
+            updateOverlay(`<span style="color: #00ff00;">Joined Event Arena!</span>`);
+            console.log("[Client] Successfully joined Event Room!");
         } catch (e) {
-            console.error("Failed to join event", e);
+            console.error("[Client] Failed to join event", e);
+            updateOverlay(`<span style="color: #ff0000;">Failed to join event!</span>`);
         }
     });
 
     r.onMessage("returnToHub", async () => {
+        console.log("[Client] Event over. Returning to Hub...");
         try {
-            if (room) room.leave();
+            updateOverlay(`<span style="color: #ffff00;">Returning to Hub...</span>`);
+            if (room) {
+                console.log("[Client] Leaving event room...");
+                room.removeAllListeners();
+                await room.leave();
+            }
             
             pendingChunks.clear();
             queuedRequests.clear();
             currentEventTimer = 0;
             
+            console.log("[Client] Reconnecting to Hub...");
             const userId = ensureUserId();
             room = await colyseus.joinOrCreate("my_room", { userId });
             (globalThis as any).room = room;
@@ -2588,9 +2604,11 @@ function bindRoomHandlers(r: Room) {
             if (savedClass) room.send("selectClass", { classId: savedClass });
             
             bindRoomHandlers(room);
-            updateOverlay("Returned to Hub.");
+            updateOverlay(`<span style="color: #00ff00;">Returned to Hub.</span>`);
+            console.log("[Client] Successfully returned to Hub!");
         } catch(e) {
-            console.error("Failed to return to hub", e);
+            console.error("[Client] Failed to return to hub", e);
+            updateOverlay(`<span style="color: #ff0000;">Failed to return to Hub!</span>`);
         }
     });
 }
