@@ -302,6 +302,7 @@ export class MyRoom extends Room<any> {
 
   private townHall: BlockStructure | null = null;
   private eventTimer: any = null;
+  private nextEventAt: number = 0;
 
   // =========================
   // Helper Methods Restored
@@ -798,7 +799,7 @@ export class MyRoom extends Room<any> {
     this.clock.setInterval(() => this.tickMining(), this.mineTickMs);
     this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
 
-    // Initialize Event Scheduler via Clock
+    // Initialize Event Scheduler
     this.startEventScheduler(180_000);
 
     this.onMessage("devTpCave", (client: Client) => {
@@ -1361,6 +1362,7 @@ export class MyRoom extends Room<any> {
 
     client.send("safeZone", { cx: this.TOWN_CENTER_X, cz: this.TOWN_CENTER_Z, r: this.SAFE_RADIUS, name: "Town of Beginnings" });
     client.send("worldTime", { time: this.worldTime });
+    client.send("nextEventTime", { time: this.nextEventAt });
     client.send("youJoined", { x: pl.x, y: pl.y, z: pl.z });
     this.invManager.sendInvStateToClient(client, inv);
 
@@ -1389,16 +1391,22 @@ export class MyRoom extends Room<any> {
   }
 
   private startEventScheduler(intervalMs: number) {
+    this.nextEventAt = Date.now() + intervalMs;
+    this.broadcast("nextEventTime", { time: this.nextEventAt });
+
     this.eventTimer = this.clock.setInterval(async () => {
-      if (this.clients.length === 0) return; 
+      this.nextEventAt = Date.now() + intervalMs;
+      
+      if (this.clients.length === 0) {
+          return; 
+      }
 
       const randomEvent = EVENT_ROOM_NAMES[Math.floor(Math.random() * EVENT_ROOM_NAMES.length)];
       console.log(`[Hub] Spawning random event: ${randomEvent}`);
       
       this.broadcast("chatMessage", { msg: `Event starting! Teleporting to ${randomEvent} in 5 seconds...` });
 
-      const nextEventAt = Date.now() + 5000;
-      this.broadcast("nextEventTime", { time: nextEventAt });
+      this.broadcast("nextEventTime", { time: 0 });
 
       this.clock.setTimeout(async () => {
           try {
@@ -1414,6 +1422,9 @@ export class MyRoom extends Room<any> {
           } catch (e) {
             console.error("[Hub] Failed to create event room:", e);
           }
+          
+          this.broadcast("nextEventTime", { time: this.nextEventAt });
+
       }, 5000);
     }, intervalMs);
   }
