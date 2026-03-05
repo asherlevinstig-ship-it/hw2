@@ -17,7 +17,7 @@ export abstract class BaseEventRoom extends Room<any> {
     
     this.setupEvent();
 
-    // The universal event tick loop
+    // Universal event logic tick
     this.setSimulationInterval(() => {
       const elapsed = Date.now() - this.startedAt;
       const state = this.checkWinLose();
@@ -27,7 +27,7 @@ export abstract class BaseEventRoom extends Room<any> {
       }
     }, 100);
 
-    // CRITICAL FIX: Continuously sync the timer to all clients every 1 second
+    // CRITICAL: Continuously sync the timer to all clients every 1 second to prevent UI desyncs
     this.clock.setInterval(() => {
       const elapsed = Date.now() - this.startedAt;
       const remaining = Math.max(0, this.durationMs - elapsed);

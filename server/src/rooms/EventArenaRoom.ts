@@ -49,7 +49,7 @@ export class EventArenaRoom extends BaseEventRoom {
   }
 
   protected checkWinLose() {
-    // End early if only 1 person is left standing (Increased grace period to 15s so you can look around!)
+    // End early if only 1 person is left standing (15s grace period so you can look around!)
     if (this.clients.length <= 1 && Date.now() - this.startedAt > 15000) {
       return { done: true, reason: "last_man_standing" };
     }
@@ -59,6 +59,7 @@ export class EventArenaRoom extends BaseEventRoom {
   onJoin(client: Client, options: any) {
     console.log(`[Arena] Player ${client.sessionId} joined the bloodbath.`);
     
+    // CRITICAL: Feed the client the initialization packets it expects, centered on the offset!
     client.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
     client.send("worldTime", { time: 0.5 }); // High noon visibility
     client.send("statsUpdate", { hp: 20, maxHp: 20, mana: 50, maxMana: 50 });
@@ -66,9 +67,13 @@ export class EventArenaRoom extends BaseEventRoom {
     // Spawn them exactly in the middle of the new offset platform
     client.send("youJoined", { x: this.ARENA_OFFSET, y: 10, z: this.ARENA_OFFSET });
 
+    // Calculate the exact remaining time so the client doesn't get a NaN UI glitch!
+    const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
+
     client.send("eventStart", { 
         mode: "arena", 
-        rules: "Survive the arena! Last player standing wins."
+        rules: "Survive the arena! Last player standing wins.", 
+        timer: remaining 
     });
   }
 }
