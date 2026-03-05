@@ -2568,6 +2568,11 @@ function bindRoomHandlers(r: Room) {
             pendingChunks.clear();
             queuedRequests.clear();
             
+            // CRITICAL: Flush the voxel cache so old terrain disappears!
+            if (typeof (noa as any).world?.invalidateAllChunks === "function") {
+                (noa as any).world.invalidateAllChunks();
+            }
+
             console.log("[Client] Connecting to new room...");
             room = await colyseus.consumeSeatReservation(reservation);
             (globalThis as any).room = room;
@@ -2594,6 +2599,11 @@ function bindRoomHandlers(r: Room) {
             pendingChunks.clear();
             queuedRequests.clear();
             currentEventTimer = 0;
+
+            // CRITICAL: Flush the voxel cache so Arena terrain disappears!
+            if (typeof (noa as any).world?.invalidateAllChunks === "function") {
+                (noa as any).world.invalidateAllChunks();
+            }
             
             console.log("[Client] Reconnecting to Hub...");
             const userId = ensureUserId();
@@ -2731,6 +2741,7 @@ function ensureSkyScene(noaScene: BABYLON.Scene) {
   moonMat.diffuseTexture = noiseTex;
   moonMesh.material = moonMat;
 
+  // Explicit geometry for stars to guarantee WebGL rendering
   const starCount = 800;
   const positions: number[] = [];
   const indices: number[] = [];
