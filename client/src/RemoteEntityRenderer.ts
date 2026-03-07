@@ -257,6 +257,7 @@ export class RemoteEntityRenderer {
 
         result.meshes.forEach(m => {
             m.isPickable = false;
+            m.alwaysSelectAsActiveMesh = true; // Prevents Babylon from incorrectly culling the scaled mesh
         });
 
         // Force strictly IDLE animation
@@ -326,10 +327,19 @@ export class RemoteEntityRenderer {
       target.set(t.x + this.renderOffset.x, t.y + this.renderOffset.y + targetYOffset, t.z + this.renderOffset.z);
       this.targetPos.set(id, target);
 
+      // Define lerp here so both the position and rotation logic can use it
       const lerp = 1 - Math.pow(0.001, dtSec);
-      root.position.x += (target.x - root.position.x) * lerp;
-      root.position.y += (target.y - root.position.y) * lerp;
-      root.position.z += (target.z - root.position.z) * lerp;
+
+      // Check if the distance is too large (e.g., origin shifted due to crossing chunks)
+      const distSq = BABYLON.Vector3.DistanceSquared(target, root.position);
+      
+      if (distSq > 100) { // If it's more than 10 units away, snap immediately
+          root.position.copyFrom(target);
+      } else { // Otherwise, lerp smoothly for normal walking
+          root.position.x += (target.x - root.position.x) * lerp;
+          root.position.y += (target.y - root.position.y) * lerp;
+          root.position.z += (target.z - root.position.z) * lerp;
+      }
 
       if (typeof t.yaw === "number") {
         let dyaw = t.yaw - root.rotation.y;
