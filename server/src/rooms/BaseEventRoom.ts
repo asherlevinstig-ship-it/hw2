@@ -1,5 +1,4 @@
 // server/src/rooms/BaseEventRoom.ts
-// FULL FILE - No Omits, All Logic
 
 import { Room } from "colyseus";
 
@@ -7,6 +6,9 @@ export abstract class BaseEventRoom extends Room<any> {
   protected durationMs = 60_000;
   protected startedAt = 0;
   protected hubRoomName = "my_room"; // Name of your main world room
+  
+  // NEW: Flag to prevent reconnections during shutdown
+  public isEventOver = false; 
 
   protected abstract setupEvent(): void;
   protected abstract checkWinLose(): { done: boolean; reason?: string };
@@ -36,6 +38,7 @@ export abstract class BaseEventRoom extends Room<any> {
   }
 
   protected endEvent(reason: string) {
+    this.isEventOver = true; // Lockout new reconnections
     console.log(`[Event] ${this.roomName} ended. Reason: ${reason}`);
     
     // Announce the end to the players
@@ -44,7 +47,9 @@ export abstract class BaseEventRoom extends Room<any> {
     // Tell clients to disconnect and join the Hub
     this.broadcast("returnToHub", { targetRoom: this.hubRoomName });
 
-    // Sever the connections and dispose of this temporary room instance
-    this.disconnect();
+    // Give clients 2 seconds to gracefully process the returnToHub message before forcing them out
+    this.clock.setTimeout(() => {
+        this.disconnect();
+    }, 2000);
   }
 }

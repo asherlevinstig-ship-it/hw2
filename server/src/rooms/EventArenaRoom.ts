@@ -119,6 +119,9 @@ export class EventArenaRoom extends BaseEventRoom {
   }
 
   async onLeave(client: Client, code?: number) {
+    // --- NEW: If the event is over, ignore reconnections completely ---
+    if (this.isEventOver) return;
+
     // Code 1000 means standard expected disconnect (i.e. we called room.leave())
     const consented = (code === 1000);
 
