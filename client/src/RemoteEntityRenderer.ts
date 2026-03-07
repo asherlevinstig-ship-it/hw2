@@ -150,11 +150,11 @@ export class RemoteEntityRenderer {
 
       const isGiant = (root as any).__isGiant;
       const isPlayer = !(root as any).__isMob && !isGiant;
+      const mobType = (root as any).__mobType;
       
       const nameplateWidth = isGiant ? 16.0 : (isPlayer ? 2.0 : 1.5);
       const nameplateHeight = isGiant ? 4.0 : 0.4;
       
-      // TWEAKED: Significantly lowered to sit closely to the top of the scaled model's head
       const nameplateYOffset = isGiant ? 16.0 : 2.0; 
 
       if (!plate) {
@@ -209,9 +209,12 @@ export class RemoteEntityRenderer {
           ctx.shadowColor = "black";
           ctx.shadowBlur = 4;
           
-          let name = id.slice(0, 8);
+          let name = id.slice(0, 8); // Fallback for players
+          
           if (isGiant) name = "The Ancient Warden";
-          else if (id.includes("golem")) name = "Deepslate Golem";
+          else if (mobType === "zombie") name = "Infected Miner";
+          else if (mobType === "skeleton") name = "Skeletal Archer";
+          else if (mobType === "golem") name = "Deepslate Golem";
           else if (id.includes("dummy")) name = "Training Dummy";
           
           ctx.fillText(name, 256, 50);
@@ -225,14 +228,23 @@ export class RemoteEntityRenderer {
     const existing = this.meshes.get(id);
     if (existing) return existing;
 
-    const isMob = id.includes("dummy") || id.includes("mob") || id.includes("golem") || id.includes("npc_");
+    const isMob = id.includes("mob_") || id.includes("dummy") || id.includes("npc_") || id.includes("golem");
     const isGiant = id.includes("npc_giant");
-    const isPlayer = !isMob && !isGiant;
+    
+    // Parse the specific mob type from the ID
+    let mobType = "player";
+    if (isGiant) mobType = "giant";
+    else if (id.includes("zombie")) mobType = "zombie";
+    else if (id.includes("skeleton")) mobType = "skeleton";
+    else if (id.includes("golem")) mobType = "golem";
+
+    const isPlayer = !isMob;
 
     const root = new BABYLON.TransformNode(`remoteRoot:${id}`, this.scene);
     (root as any).__isGiant = isGiant;
     (root as any).__isMob = isMob;
     (root as any).__isPlayer = isPlayer;
+    (root as any).__mobType = mobType; 
 
     let parts: any = {};
     this.mats.set(id, []);
@@ -251,13 +263,32 @@ export class RemoteEntityRenderer {
         const rootMesh = result.meshes[0];
         rootMesh.parent = root;
 
-        const baseScale = isGiant ? 0.25 : 0.012;
+        // Adjust scale based on mob type
+        let baseScale = 0.012; 
+        if (isGiant) baseScale = 0.25;
+        else if (mobType === "golem") baseScale = 0.016; 
+        else if (mobType === "skeleton") baseScale = 0.011; 
+
         rootMesh.scaling.setAll(baseScale);
         rootMesh.rotation.y = Math.PI;
 
         result.meshes.forEach(m => {
             m.isPickable = false;
-            m.alwaysSelectAsActiveMesh = true; // Prevents Babylon from incorrectly culling the scaled mesh
+            m.alwaysSelectAsActiveMesh = true;
+            
+            // Tint the material color slightly based on mob type
+            if (m.material && m.material.getClassName() === "PBRMaterial") {
+                const pbr = m.material as BABYLON.PBRMaterial;
+                pbr.albedoColor = new BABYLON.Color3(1, 1, 1); 
+                
+                if (mobType === "zombie") {
+                    pbr.albedoColor = new BABYLON.Color3(0.5, 1.0, 0.5); 
+                } else if (mobType === "skeleton") {
+                    pbr.albedoColor = new BABYLON.Color3(0.8, 0.8, 0.8); 
+                } else if (mobType === "golem") {
+                    pbr.albedoColor = new BABYLON.Color3(0.4, 0.4, 0.5); 
+                }
+            }
         });
 
         // Force strictly IDLE animation
@@ -327,15 +358,13 @@ export class RemoteEntityRenderer {
       target.set(t.x + this.renderOffset.x, t.y + this.renderOffset.y + targetYOffset, t.z + this.renderOffset.z);
       this.targetPos.set(id, target);
 
-      // Define lerp here so both the position and rotation logic can use it
       const lerp = 1 - Math.pow(0.001, dtSec);
 
-      // Check if the distance is too large (e.g., origin shifted due to crossing chunks)
       const distSq = BABYLON.Vector3.DistanceSquared(target, root.position);
       
-      if (distSq > 100) { // If it's more than 10 units away, snap immediately
+      if (distSq > 100) { 
           root.position.copyFrom(target);
-      } else { // Otherwise, lerp smoothly for normal walking
+      } else { 
           root.position.x += (target.x - root.position.x) * lerp;
           root.position.y += (target.y - root.position.y) * lerp;
           root.position.z += (target.z - root.position.z) * lerp;
