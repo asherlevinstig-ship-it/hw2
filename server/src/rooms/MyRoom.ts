@@ -87,7 +87,6 @@ type PlayerInfo = {
   invulnUntil: number;
 };
 
-// UPDATED: Added mob types and pathfinding states
 type MobType = "golem" | "zombie" | "skeleton" | "npc";
 
 type MobInfo = {
@@ -934,22 +933,31 @@ export class MyRoom extends Room<any> {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
-             const spawnX = p.x + (Math.random() * 32 - 16);
-             const spawnZ = p.z + (Math.random() * 32 - 16);
-             const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
-             
-             if (distToP > 12 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
-                 const spawnY = this.heightAt(spawnX, spawnZ) + 1;
-                 
-                 // Randomly select mob type
-                 const r = Math.random();
-                 let mobType: MobType = "zombie";
-                 if (r < 0.2) mobType = "golem";
-                 else if (r < 0.5) mobType = "skeleton";
+               // FIX: Give the spawner 3 attempts to find a valid spot in a radial ring
+               for (let attempt = 0; attempt < 3; attempt++) {
+                   // Spawn between 16 and 40 blocks away from the player
+                   const angle = Math.random() * Math.PI * 2;
+                   const dist = 16 + Math.random() * 24; 
+                   const spawnX = p.x + Math.cos(angle) * dist;
+                   const spawnZ = p.z + Math.sin(angle) * dist;
+                   
+                   // Ensure the spot isn't inside the Town Safe Zone
+                   if (!this.isInSafeZoneXZ(spawnX, spawnZ)) {
+                       const spawnY = this.heightAt(spawnX, spawnZ) + 1;
+                       
+                       const r = Math.random();
+                       let mobType: MobType = "zombie";
+                       if (r < 0.2) mobType = "golem";
+                       else if (r < 0.5) mobType = "skeleton";
 
-                 const id = `${mobType}_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
-                 this.spawnMob(mobType, id, spawnX, spawnY, spawnZ);
-             }
+                       // FIX: Prefix the ID with "mob_" so the client UI recognizes it!
+                       const id = `mob_${mobType}_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
+                       this.spawnMob(mobType, id, spawnX, spawnY, spawnZ);
+                       
+                       // Successfully spawned, stop looping attempts
+                       break; 
+                   }
+               }
            }
         }
       }
