@@ -52,7 +52,6 @@ export class EventArenaRoom extends BaseEventRoom {
         const { id, chunkSize, x, y, z } = data;
         const expectedLen = chunkSize * chunkSize * chunkSize;
         
-        // CRITICAL FIX: Use Uint8Array to perfectly match the Hub memory mapping
         const chunkData = new Uint8Array(expectedLen);
         
         let i = 0;
@@ -92,7 +91,6 @@ export class EventArenaRoom extends BaseEventRoom {
     console.log(`[Arena] Player ${client.sessionId} joined the bloodbath.`);
     
     const spawnX = this.ARENA_OFFSET;
-    // CRITICAL FIX: Spawn high in the sky so the chunk floor loads before you land on it!
     const spawnY = 40; 
     const spawnZ = this.ARENA_OFFSET;
 
@@ -100,15 +98,11 @@ export class EventArenaRoom extends BaseEventRoom {
         id: client.sessionId, x: spawnX, y: spawnY, z: spawnZ, yaw: 0, hp: 20, maxHp: 20
     });
 
-    // Feed the client the initialization packets it expects, centered on the offset!
     client.send("safeZone", { cx: spawnX, cz: spawnZ, r: 0, name: "The Arena" }); 
-    client.send("worldTime", { time: 0.5 }); // High noon visibility
+    client.send("worldTime", { time: 0.5 });
     client.send("statsUpdate", { hp: 20, maxHp: 20, mana: 50, maxMana: 50 });
-    
-    // Spawn them exactly in the middle of the new offset platform
     client.send("youJoined", { x: spawnX, y: spawnY, z: spawnZ });
 
-    // Calculate the exact remaining time so the client doesn't get a NaN UI glitch!
     const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
 
     client.send("eventStart", { 
@@ -119,47 +113,40 @@ export class EventArenaRoom extends BaseEventRoom {
   }
 
   async onLeave(client: Client, code?: number) {
-    // --- NEW: If the event is over, ignore reconnections completely ---
     if (this.isEventOver) return;
 
-    // Code 1000 means standard expected disconnect (i.e. we called room.leave())
     const consented = (code === 1000);
-
-    // Save their state before removing them from the active pool
     const playerState = this.arenaPlayers.get(client.sessionId);
     
-    // Temporarily remove them so their body disappears for other players
     this.arenaPlayers.delete(client.sessionId);
     this.broadcast("playerLeft", { id: client.sessionId });
 
-    // If the disconnect wasn't intentional (like a refresh or network drop)
     if (!consented) {
         try {
-            // Wait up to 30 seconds for the client to reconnect
             const reconnectedClient = await this.allowReconnection(client, 30);
-            
             console.log(`[Arena] Player ${reconnectedClient.sessionId} reconnected!`);
             
-            // Restore their state in the arena
             if (playerState) {
                 this.arenaPlayers.set(reconnectedClient.sessionId, playerState);
             }
             
-            // Resend the initialization packets so their client HUD updates
-            const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
-            reconnectedClient.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
-            reconnectedClient.send("worldTime", { time: 0.5 });
-            reconnectedClient.send("statsUpdate", { hp: playerState?.hp || 20, maxHp: 20, mana: 50, maxMana: 50 });
-            reconnectedClient.send("eventStart", { 
-                mode: "arena", 
-                rules: "Survive the arena! Last player standing wins.", 
-                timer: remaining 
-            });
-            reconnectedClient.send("youJoined", { 
-                x: playerState?.x || this.ARENA_OFFSET, 
-                y: playerState?.y || 40, 
-                z: playerState?.z || this.ARENA_OFFSET 
-            });
+            // FIX: Delay sending state so the client has time to attach 'onMessage' handlers!
+            setTimeout(() => {
+                const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
+                reconnectedClient.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
+                reconnectedClient.send("worldTime", { time: 0.5 });
+                reconnectedClient.send("statsUpdate", { hp: playerState?.hp || 20, maxHp: 20, mana: 50, maxMana: 50 });
+                reconnectedClient.send("eventStart", { 
+                    mode: "arena", 
+                    rules: "Survive the arena! Last player standing wins.", 
+                    timer: remaining 
+                });
+                reconnectedClient.send("youJoined", { 
+                    x: playerState?.x || this.ARENA_OFFSET, 
+                    y: playerState?.y || 40, 
+                    z: playerState?.z || this.ARENA_OFFSET 
+                });
+            }, 500);
 
         } catch (e) {
             console.log(`[Arena] Player ${client.sessionId} failed to reconnect in time.`);

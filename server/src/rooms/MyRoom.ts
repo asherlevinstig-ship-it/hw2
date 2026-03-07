@@ -87,8 +87,12 @@ type PlayerInfo = {
   invulnUntil: number;
 };
 
+// UPDATED: Added mob types and pathfinding states
+type MobType = "golem" | "zombie" | "skeleton" | "npc";
+
 type MobInfo = {
   id: string;
+  type: MobType;
   x: number;
   y: number;
   z: number;
@@ -105,6 +109,8 @@ type MobInfo = {
   lastPosTime: number;
   stuckAccumulator: number; 
   attackCooldown: number;   
+  waypoints: Vec3[];
+  lastPathCalcTime: number;
 };
 
 type Projectile = {
@@ -309,7 +315,7 @@ export class MyRoom extends Room<any> {
   private nextEventAt: number = 0;
 
   // =========================
-  // Helper Methods Restored
+  // Helper Methods
   // =========================
   private ensureDirs(): void {
     if (!fs.existsSync(this.worldDir)) fs.mkdirSync(this.worldDir, { recursive: true });
@@ -321,20 +327,17 @@ export class MyRoom extends Room<any> {
     if (typeof optSeedRaw === "number" && Number.isFinite(optSeedRaw)) {
       const s = (optSeedRaw | 0) >>> 0;
       this.writeWorldMeta({ worldSeed: s });
-      console.log("[WORLD] seed set from options:", s);
       return s;
     }
 
     const meta = this.readWorldMeta();
     if (meta && typeof meta.worldSeed === "number" && Number.isFinite(meta.worldSeed)) {
       const s = (meta.worldSeed | 0) >>> 0;
-      console.log("[WORLD] seed loaded from meta:", s);
       return s;
     }
 
     const gen = this.generateSeed();
     this.writeWorldMeta({ worldSeed: gen });
-    console.log("[WORLD] seed generated + saved:", gen);
     return gen;
   }
 
@@ -452,6 +455,100 @@ export class MyRoom extends Room<any> {
     this.playerChunks.delete(sessionId);
   }
 
+  // =========================
+  // Voxel A* Pathfinding
+  // =========================
+  private findPathAStar(sx: number, sy: number, sz: number, tx: number, ty: number, tz: number): Vec3[] {
+      const startNode = { x: Math.floor(sx), y: Math.floor(sy), z: Math.floor(sz), g: 0, f: 0, parent: null as any };
+      const targetNode = { x: Math.floor(tx), y: Math.floor(ty), z: Math.floor(tz) };
+
+      const open: any[] = [startNode];
+      const closed = new Set<string>();
+
+      let iter = 0;
+      const MAX_ITER = 80; // Limit to prevent server CPU spikes
+      
+      let bestNode = startNode;
+      let bestDist = Infinity;
+
+      while (open.length > 0 && iter < MAX_ITER) {
+          iter++;
+          // Sort to get lowest f (A simple array sort is fast enough for < 80 nodes)
+          open.sort((a, b) => a.f - b.f);
+          const current = open.shift();
+
+          const key = `${current.x},${current.y},${current.z}`;
+          if (closed.has(key)) continue;
+          closed.add(key);
+
+          const distToTarget = Math.abs(current.x - targetNode.x) + Math.abs(current.y - targetNode.y) + Math.abs(current.z - targetNode.z);
+          if (distToTarget < bestDist) {
+              bestDist = distToTarget;
+              bestNode = current;
+          }
+
+          if (distToTarget <= 1) { // Found it or close enough
+              bestNode = current;
+              break; 
+          }
+
+          // Check 4 horizontal neighbors
+          const dirs = [ [1,0], [-1,0], [0,1], [0,-1] ];
+          for (const d of dirs) {
+              const nx = current.x + d[0];
+              const nz = current.z + d[1];
+              let ny = current.y;
+
+              let canMove = false;
+
+              const footBlock = this.getBlockAt(nx, ny, nz);
+              const headBlock = this.getBlockAt(nx, ny + 1, nz);
+
+              if (footBlock === this.AIR_ID && headBlock === this.AIR_ID) {
+                  // Air ahead. Need to find a floor.
+                  const floorBlock = this.getBlockAt(nx, ny - 1, nz);
+                  if (floorBlock !== this.AIR_ID) {
+                      canMove = true; // Normal walk on flat ground
+                  } else {
+                      // Drop down (max 3 blocks safely)
+                      for(let drop = 2; drop <= 3; drop++) {
+                          if (this.getBlockAt(nx, ny - drop, nz) !== this.AIR_ID) {
+                              ny = ny - (drop - 1);
+                              canMove = true;
+                              break;
+                          }
+                      }
+                  }
+              } else if (footBlock !== this.AIR_ID && headBlock === this.AIR_ID) {
+                  // Try stepping up 1 block (like stairs)
+                  const aboveHeadBlock = this.getBlockAt(nx, ny + 2, nz);
+                  if (aboveHeadBlock === this.AIR_ID) {
+                      ny = ny + 1;
+                      canMove = true; 
+                  }
+              }
+
+              if (canMove) {
+                  const nKey = `${nx},${ny},${nz}`;
+                  if (!closed.has(nKey)) {
+                      const g = current.g + 1;
+                      const h = Math.abs(nx - targetNode.x) + Math.abs(ny - targetNode.y) + Math.abs(nz - targetNode.z);
+                      open.push({ x: nx, y: ny, z: nz, g, f: g + h, parent: current });
+                  }
+              }
+          }
+      }
+
+      const path: Vec3[] = [];
+      let curr = bestNode;
+      while (curr && curr.parent) {
+          // Push center of blocks for smooth walking
+          path.unshift({ x: curr.x + 0.5, y: curr.y, z: curr.z + 0.5 });
+          curr = curr.parent;
+      }
+      return path;
+  }
+
   onCreate(options: any) {
     console.log("MyRoom created", options);
     this.maxClients = 64;
@@ -552,13 +649,13 @@ export class MyRoom extends Room<any> {
       getAllCombatants: () => Array.from(this.combatants.values()),
       AIR_ID: this.AIR_ID
     });
-
-    this.spawnDummy("target_dummy_1", -77, 18, -2);
     
     const townY2 = this.baseHeight + 2;
-    this.spawnStaticNPC("npc_giant_warden", 0, townY2, -35);
+    this.spawnMob("npc", "npc_giant_warden", 0, townY2, -35);
 
     let lastCombatTick = Date.now();
+    
+    // AI LOOP
     this.clock.setInterval(() => {
       const now = Date.now();
       const dt = now - lastCombatTick;
@@ -574,7 +671,7 @@ export class MyRoom extends Room<any> {
         const c = this.combatants.get(mob.id);
         if (!c || c.health.isDead() || c.state.isStaggered()) continue;
 
-        if (mob.id.startsWith("npc_")) continue;
+        if (mob.type === "npc") continue;
 
         if (mob.attackCooldown > 0) mob.attackCooldown -= dt;
 
@@ -600,6 +697,7 @@ export class MyRoom extends Room<any> {
 
         if (!hasLocalPlayers) continue;
 
+        // 1. Aggro Check
         if (this.combatTickCount % 5 === mob.tickPhase) {
           if (now - mob.lastPosTime > 1000) {
             const dist = Math.sqrt((c.pos.x - mob.lastPos.x)**2 + (c.pos.z - mob.lastPos.z)**2);
@@ -613,7 +711,7 @@ export class MyRoom extends Room<any> {
           }
 
           let nearestPlayerId: string | null = null;
-          let closestDist = 16.0; 
+          let closestDist = 20.0; 
 
           for (const pl of nearbyPlayers) {
             const pdx = pl.x - c.pos.x;
@@ -621,7 +719,7 @@ export class MyRoom extends Room<any> {
             const pdz = pl.z - c.pos.z;
             const dist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
             
-            if (dist < closestDist) {
+            if (dist < closestDist && !this.isInSafeZoneXZ(pl.x, pl.z)) {
               closestDist = dist;
               nearestPlayerId = pl.id;
             }
@@ -629,6 +727,7 @@ export class MyRoom extends Room<any> {
           mob.targetId = nearestPlayerId;
         }
 
+        // 2. Gravity
         let grounded = false;
         const cx = Math.floor(c.pos.x);
         const cz = Math.floor(c.pos.z);
@@ -649,89 +748,127 @@ export class MyRoom extends Room<any> {
           }
         }
 
+        // 3. Movement Intent & Abilities
         let targetDx = 0;
         let targetDz = 0;
         let intentDist = 0;
 
-        if (mob.stuckAccumulator > 3000 && mob.targetId && mob.attackCooldown <= 0) {
-            const target = this.players.get(mob.targetId);
-            if (target) {
-                const pdx = target.x - c.pos.x;
-                const pdz = target.z - c.pos.z;
-                mob.yaw = Math.atan2(pdx, pdz);
-                c.yaw = mob.yaw;
+        const target = mob.targetId ? this.players.get(mob.targetId) : null;
 
-                this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
-                this.broadcast("playerSwing", { id: mob.id, attackId: "SLAM" });
+        // Golem special slam attack
+        if (mob.type === "golem" && mob.stuckAccumulator > 3000 && target && mob.attackCooldown <= 0) {
+            const pdx = target.x - c.pos.x;
+            const pdz = target.z - c.pos.z;
+            mob.yaw = Math.atan2(pdx, pdz);
+            c.yaw = mob.yaw;
 
-                mob.stuckAccumulator = 0;
-                mob.attackCooldown = 2500;
-                continue; 
-            }
+            this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
+            this.broadcast("playerSwing", { id: mob.id, attackId: "SLAM" });
+
+            mob.stuckAccumulator = 0;
+            mob.attackCooldown = 2500;
+            continue; 
         }
 
-        if (mob.targetId && mob.attackCooldown <= 0) {
-          const target = this.players.get(mob.targetId);
-          if (target) {
+        if (target) {
             targetDx = target.x - c.pos.x;
             targetDz = target.z - c.pos.z;
             intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
-
+            
             mob.yaw = Math.atan2(targetDx, targetDz);
             c.yaw = mob.yaw;
 
-            if (intentDist <= 1.8) {
+            // Skeleton Ranged Logic
+            if (mob.type === "skeleton" && intentDist <= 10.0) {
+                if (mob.attackCooldown <= 0) {
+                    this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
+                    this.broadcast("playerSwing", { id: mob.id, attackId: "SHOOT" });
+                    mob.attackCooldown = 2000;
+                }
+                // Don't move closer if already in range
+                if (intentDist > 3.0) intentDist = 0; 
+            } 
+            // Melee Logic
+            else if (intentDist <= 1.8 && mob.attackCooldown <= 0) {
                if (c.state.canStartAttack()) {
                  this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
+                 mob.attackCooldown = 1000;
                }
                intentDist = 0;
             }
-          } else {
-            mob.targetId = null; 
-          }
-        } 
-        if (!mob.targetId) {
-          targetDx = mob.spawnX - c.pos.x;
-          targetDz = mob.spawnZ - c.pos.z;
-          intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
+        } else {
+            // Return to spawn point if no target
+            targetDx = mob.spawnX - c.pos.x;
+            targetDz = mob.spawnZ - c.pos.z;
+            intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
 
-          if (intentDist > 1.0) {
-            mob.yaw = Math.atan2(targetDx, targetDz);
-            c.yaw = mob.yaw;
-          } else {
-            intentDist = 0;
-          }
+            if (intentDist > 1.0) {
+              mob.yaw = Math.atan2(targetDx, targetDz);
+              c.yaw = mob.yaw;
+            } else {
+              intentDist = 0;
+            }
         }
 
+        // 4. Pathfinding Execution
         if (intentDist > 0) {
-          const speed = mob.targetId ? (0.08 * c.moveSpeedMul) : Math.min(intentDist, 0.05);
-          const moveX = (targetDx / intentDist) * speed;
-          const moveZ = (targetDz / intentDist) * speed;
+            // Periodically refresh A* path
+            if (now - mob.lastPathCalcTime > 1000 || mob.waypoints.length === 0) {
+                let tx = c.pos.x + targetDx;
+                let ty = target ? target.y : mob.spawnY;
+                let tz = c.pos.z + targetDz;
 
-          const nextX = c.pos.x + moveX;
-          const nextZ = c.pos.z + moveZ;
+                mob.waypoints = this.findPathAStar(c.pos.x, c.pos.y, c.pos.z, tx, ty, tz);
+                mob.lastPathCalcTime = now;
+            }
 
-          const nextCx = Math.floor(nextX);
-          const nextCz = Math.floor(nextZ);
-          
-          const blockAtNextFoot = this.getBlockAt(nextCx, Math.floor(c.pos.y + 0.1), nextCz);
-          const blockAtNextHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 1.1), nextCz);
+            let moveX = 0;
+            let moveZ = 0;
 
-          if (blockAtNextFoot !== this.AIR_ID || blockAtNextHead !== this.AIR_ID) {
-            const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
+            if (mob.waypoints.length > 0) {
+                const nextWp = mob.waypoints[0];
+                const wdx = nextWp.x - c.pos.x;
+                const wdz = nextWp.z - c.pos.z;
+                const wDist = Math.sqrt(wdx * wdx + wdz * wdz);
+
+                if (wDist < 0.4) {
+                    mob.waypoints.shift(); // Reached waypoint
+                } else {
+                    const speed = 0.08 * c.moveSpeedMul;
+                    moveX = (wdx / wDist) * speed;
+                    moveZ = (wdz / wDist) * speed;
+                }
+            } else {
+                // Fallback direct steering if A* failed to find a path
+                const speed = 0.08 * c.moveSpeedMul;
+                moveX = (targetDx / intentDist) * speed;
+                moveZ = (targetDz / intentDist) * speed;
+            }
+
+            const nextX = c.pos.x + moveX;
+            const nextZ = c.pos.z + moveZ;
+
+            const nextCx = Math.floor(nextX);
+            const nextCz = Math.floor(nextZ);
             
-            if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
-              mob.vy = 0.35;
-              c.pos.y += mob.vy;
+            const blockAtNextFoot = this.getBlockAt(nextCx, Math.floor(c.pos.y + 0.1), nextCz);
+            const blockAtNextHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 1.1), nextCz);
+
+            if (blockAtNextFoot !== this.AIR_ID || blockAtNextHead !== this.AIR_ID) {
+              const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
+              
+              if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
+                mob.vy = 0.35; // Jump
+                c.pos.y += mob.vy;
+                c.pos.x = nextX;
+                c.pos.z = nextZ;
+                isMoving = true;
+              }
+            } else {
               c.pos.x = nextX;
               c.pos.z = nextZ;
               isMoving = true;
             }
-          } else {
-            c.pos.x = nextX;
-            c.pos.z = nextZ;
-            isMoving = true;
-          }
         }
 
         if (isMoving) {
@@ -750,11 +887,12 @@ export class MyRoom extends Room<any> {
         }
     }, 1000);
 
+    // SPAWNER LOOP
     this.clock.setInterval(() => {
       // 1. Despawn distant mobs (Memory Leak Fix)
       const toDespawn: string[] = [];
       for (const [mobId, m] of this.mobs.entries()) {
-        if (mobId.startsWith("npc_")) continue;
+        if (m.type === "npc") continue;
         
         let closestPlayerDistSq = Infinity;
         for (const p of this.players.values()) {
@@ -764,7 +902,6 @@ export class MyRoom extends Room<any> {
           if (distSq < closestPlayerDistSq) closestPlayerDistSq = distSq;
         }
         
-        // If further than ~100 blocks from any active player, despawn
         if (closestPlayerDistSq > 100 * 100) {
           toDespawn.push(mobId);
         }
@@ -787,23 +924,31 @@ export class MyRoom extends Room<any> {
         for (const m of this.mobs.values()) {
           const mcx = Math.floor(m.x / this.chunkSize);
           const mcz = Math.floor(m.z / this.chunkSize);
-          if (mcx === cx && mcz === cz && !m.id.startsWith("npc_")) mobsInChunk++; 
+          if (mcx === cx && mcz === cz && m.type !== "npc") mobsInChunk++; 
         }
 
         const isNight = this.worldTime < 0.2 || this.worldTime > 0.8;
-        const limit = isNight ? 5 : 2;
+        const limit = isNight ? 6 : 2;
 
         if (mobsInChunk < limit) {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
-             const spawnX = p.x + (Math.random() * 24 - 12);
-             const spawnZ = p.z + (Math.random() * 24 - 12);
+             const spawnX = p.x + (Math.random() * 32 - 16);
+             const spawnZ = p.z + (Math.random() * 32 - 16);
              const distToP = Math.sqrt((spawnX - p.x)**2 + (spawnZ - p.z)**2);
-             if (distToP > 8 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
+             
+             if (distToP > 12 && !this.isInSafeZoneXZ(spawnX, spawnZ)) {
                  const spawnY = this.heightAt(spawnX, spawnZ) + 1;
-                 const id = `golem_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
-                 this.spawnDummy(id, spawnX, spawnY, spawnZ);
+                 
+                 // Randomly select mob type
+                 const r = Math.random();
+                 let mobType: MobType = "zombie";
+                 if (r < 0.2) mobType = "golem";
+                 else if (r < 0.5) mobType = "skeleton";
+
+                 const id = `${mobType}_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
+                 this.spawnMob(mobType, id, spawnX, spawnY, spawnZ);
              }
            }
         }
@@ -829,7 +974,6 @@ export class MyRoom extends Room<any> {
     this.clock.setInterval(() => this.tickMining(), this.mineTickMs);
     this.clock.setInterval(() => this.cleanupDrops(), this.DROP_CLEANUP_EVERY_MS);
 
-    // Initialize Event Scheduler
     this.startEventScheduler(180_000);
 
     this.onMessage("devTpCave", (client: Client) => {
@@ -1413,7 +1557,7 @@ export class MyRoom extends Room<any> {
                 const reservation = await matchMaker.reserveSeatFor(rooms[0], { userId: pl.userId });
                 client.send("joinEvent", reservation);
             } else {
-                this.activeEventRoomId = null; // Event room was disposed
+                this.activeEventRoomId = null; 
             }
         }).catch(() => {
             this.activeEventRoomId = null;
@@ -1457,9 +1601,8 @@ export class MyRoom extends Room<any> {
           try {
             const eventRoom = await matchMaker.createRoom(randomEvent, {});
 
-            // NEW: Track the active event globally for late-joiners
             this.activeEventRoomId = eventRoom.roomId;
-            this.activeEventEndTime = Date.now() + 60_000; // 60 seconds
+            this.activeEventEndTime = Date.now() + 60_000; 
 
             for (const client of this.clients) {
               const pl = this.players.get(client.sessionId);
@@ -1478,10 +1621,31 @@ export class MyRoom extends Room<any> {
     }, intervalMs);
   }
 
-  private spawnDummy(id: string, x: number, y: number, z: number) {
+  // =========================
+  // Generic Mob Spawner
+  // =========================
+  private spawnMob(type: MobType, id: string, x: number, y: number, z: number) {
+    let hp = 100;
+    let moveSpeedMul = 1.0;
+    let attackDmg = 10;
+    
+    if (type === "zombie") {
+        hp = 60;
+        moveSpeedMul = 1.3;
+        attackDmg = 15;
+    } else if (type === "skeleton") {
+        hp = 40;
+        moveSpeedMul = 1.1;
+        attackDmg = 12;
+    } else if (type === "npc") {
+        hp = 999999;
+        moveSpeedMul = 0;
+        attackDmg = 0;
+    }
+
     const mob: MobInfo = { 
-      id, x, y, z, yaw: 0, 
-      hp: 100, maxHp: 100, 
+      id, type, x, y, z, yaw: 0, 
+      hp, maxHp: hp, 
       spawnX: x, spawnY: y, spawnZ: z,
       vy: 0,
       tickPhase: id.charCodeAt(id.length - 1) % 5,
@@ -1489,7 +1653,9 @@ export class MyRoom extends Room<any> {
       lastPos: { x, y, z },
       lastPosTime: Date.now(),
       stuckAccumulator: 0,
-      attackCooldown: 0
+      attackCooldown: 0,
+      waypoints: [],
+      lastPathCalcTime: 0
     };
     this.mobs.set(id, mob);
 
@@ -1506,11 +1672,20 @@ export class MyRoom extends Room<any> {
       faction: "MOB",
       pos: { x, y, z },
       yaw: 0,
-      radius: 0.4,
-      height: 1.8,
+      radius: type === "npc" ? 1.5 : 0.4,
+      height: type === "npc" ? 6.0 : 1.8,
       health, resources, aura, status, cooldowns, state, equipment,
-      armor: 5, resist: {}, critChance: 0, critMult: 1.0, maxPoise: 300, poise: 300,
-      blockAngleDeg: 0, blockMitigation: 0, dodgeIframesMs: 0, moveSpeedMul: 1.0, invulnUntil: 0,
+      armor: type === "npc" ? 9999 : 5, 
+      resist: {}, 
+      critChance: 0, 
+      critMult: 1.0, 
+      maxPoise: type === "npc" ? 99999 : 300, 
+      poise: type === "npc" ? 99999 : 300,
+      blockAngleDeg: 0, 
+      blockMitigation: type === "npc" ? 1.0 : 0, 
+      dodgeIframesMs: 0, 
+      moveSpeedMul, 
+      invulnUntil: 0,
       snapshot() {
         return {
           id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
@@ -1531,57 +1706,8 @@ export class MyRoom extends Room<any> {
     this.combatants.set(id, c);
   }
 
-  private spawnStaticNPC(id: string, x: number, y: number, z: number) {
-    const mob: MobInfo = { 
-      id, x, y, z, yaw: Math.PI, 
-      hp: 999999, maxHp: 999999, 
-      spawnX: x, spawnY: y, spawnZ: z,
-      vy: 0,
-      tickPhase: 0,
-      targetId: null,
-      lastPos: { x, y, z },
-      lastPosTime: Date.now(),
-      stuckAccumulator: 0,
-      attackCooldown: 0
-    };
-    this.mobs.set(id, mob);
-
-    const health = new HealthComponent(mob.hp, mob.maxHp);
-    const resources = new ResourceComponent(0, 0, 0, 0);
-    const aura = new AuraComponent("BASIC", 0, 0, 0);
-    const status = new StatusComponent();
-    const cooldowns = new CooldownComponent();
-    const state = new StateComponent();
-    const equipment = new EquipmentComponent(() => 0); 
-
-    const c: Combatant = {
-      id,
-      faction: "MOB", 
-      pos: { x, y, z },
-      yaw: Math.PI,
-      radius: 1.5, 
-      height: 6.0, 
-      health, resources, aura, status, cooldowns, state, equipment,
-      armor: 9999, resist: {}, critChance: 0, critMult: 1.0, maxPoise: 99999, poise: 99999,
-      blockAngleDeg: 0, blockMitigation: 1.0, dodgeIframesMs: 0, moveSpeedMul: 0.0, invulnUntil: 0,
-      snapshot() {
-        return {
-          id: this.id, faction: this.faction, pos: { ...this.pos }, yaw: this.yaw,
-          radius: this.radius, height: this.height, state: this.state.state,
-          hp: this.health.hp, maxHp: this.health.maxHp,
-          mana: this.resources.mana, maxMana: this.resources.maxMana,
-          aura: this.resources.aura, maxAura: this.resources.maxAura,
-          auraTier: this.aura.tier, auraIntensity: this.aura.intensity, burnout: this.aura.burnout,
-          poise: this.poise, maxPoise: this.maxPoise,
-          armor: this.armor, resist: this.resist, blockAngleDeg: this.blockAngleDeg, blockMitigation: this.blockMitigation, dodgeIframesMs: this.dodgeIframesMs,
-          critChance: this.critChance, critMult: this.critMult, moveSpeedMul: this.moveSpeedMul, invulnUntil: this.invulnUntil
-        };
-      },
-      onSync: (snap) => {
-        mob.hp = snap.hp;
-      }
-    };
-    this.combatants.set(id, c);
+  private spawnDummy(id: string, x: number, y: number, z: number) {
+      this.spawnMob("golem", id, x, y, z);
   }
 
   private spawnProjectile(ownerId: string, x: number, y: number, z: number, tx: number, ty: number, tz: number) {
