@@ -16,6 +16,11 @@ export interface WorldGenConfig {
   TOWN_CLEAR_HEIGHT: number;
   townHall: BlockStructure | null;
   
+  // NEW: Elven Kingdom Config
+  ELVEN_CENTER_X: number;
+  ELVEN_CENTER_Z: number;
+  elvenCastle: BlockStructure | null;
+
   AIR_ID: number;
   GRASS_ID: number;
   DIRT_ID: number;
@@ -89,6 +94,28 @@ function floorDiv(a: number, b: number): number {
   return Math.floor(a / b);
 }
 
+function simpleNoise(x: number, z: number, seed: number): number {
+    let n = Math.sin(x * 12.9898 + z * 78.233 + seed) * 43758.5453;
+    return n - Math.floor(n);
+}
+
+function smoothNoise(x: number, z: number, seed: number): number {
+    const ix = Math.floor(x);
+    const iz = Math.floor(z);
+    const fx = x - ix;
+    const fz = z - iz;
+
+    const v1 = simpleNoise(ix, iz, seed);
+    const v2 = simpleNoise(ix + 1, iz, seed);
+    const v3 = simpleNoise(ix, iz + 1, seed);
+    const v4 = simpleNoise(ix + 1, iz + 1, seed);
+
+    const i1 = v1 * (1 - fx) + v2 * fx;
+    const i2 = v3 * (1 - fx) + v4 * fx;
+
+    return i1 * (1 - fz) + i2 * fz;
+}
+
 export class WorldGenerator {
   private cfg: WorldGenConfig;
 
@@ -145,7 +172,7 @@ export class WorldGenerator {
     };
   }
 
-  private idx(i: number, j: number, k: number): number {
+  public idx(i: number, j: number, k: number): number {
     const CS = this.cfg.chunkSize;
     return i + CS * (j + CS * k);
   }
@@ -228,12 +255,25 @@ export class WorldGenerator {
     return this.BIOME_FOREST;
   }
 
-  public heightAt(worldX: number, worldZ: number): number {
-    const biome = this.getBiome(worldX, worldZ);
-    const macro = Math.sin(worldX / 15) * 6 + Math.cos(worldZ / 15) * 6;
-    if (biome === this.BIOME_DESERT) return this.cfg.baseHeight + Math.floor(macro * 0.45 + Math.sin(worldX / 34) * 2 + Math.cos(worldZ / 31) * 2);
-    if (biome === this.BIOME_SNOW) return this.cfg.baseHeight + 4 + Math.floor(macro * 0.85 + (Math.sin(worldX / 22) * 4 + Math.cos(worldZ / 19) * 4) * 0.75);
-    return this.cfg.baseHeight + Math.floor(macro * 0.9);
+  public heightAt(globalX: number, globalZ: number): number {
+      const dx = globalX - this.cfg.TOWN_CENTER_X;
+      const dz = globalZ - this.cfg.TOWN_CENTER_Z;
+      const distToTownCenterSq = dx * dx + dz * dz;
+
+      const n1 = smoothNoise(globalX * 0.02, globalZ * 0.02, this.cfg.worldSeed);
+      const n2 = smoothNoise(globalX * 0.05, globalZ * 0.05, this.cfg.worldSeed + 100);
+      let h = this.cfg.baseHeight + Math.floor((n1 * 12) + (n2 * 4));
+
+      if (distToTownCenterSq <= this.cfg.TOWN_PLAZA_RADIUS * this.cfg.TOWN_PLAZA_RADIUS) {
+          h = this.cfg.baseHeight + 2; 
+      } else if (distToTownCenterSq <= this.cfg.TOWN_RING_RADIUS * this.cfg.TOWN_RING_RADIUS) {
+          const dist = Math.sqrt(distToTownCenterSq);
+          const t = (dist - this.cfg.TOWN_PLAZA_RADIUS) / (this.cfg.TOWN_RING_RADIUS - this.cfg.TOWN_PLAZA_RADIUS);
+          const targetH = this.cfg.baseHeight + 2;
+          h = Math.floor(targetH * (1 - t) + h * t);
+      }
+
+      return h;
   }
 
   private shouldPlaceTreeAt(worldX: number, worldZ: number, biome: number): boolean {
@@ -535,8 +575,26 @@ export class WorldGenerator {
         const worldX = cx * CS + i; const worldZ = cz * CS + k;
         const biome = this.getBiome(worldX, worldZ);
         const height = this.heightAt(worldX, worldZ);
-        const surfaceId = biome === this.BIOME_DESERT ? this.cfg.SAND_ID : biome === this.BIOME_SNOW ? this.cfg.SNOW_ID : this.cfg.GRASS_ID;
-        const subsurfaceId = biome === this.BIOME_DESERT ? this.cfg.SAND_ID : this.cfg.DIRT_ID;
+        
+        // --- NEW: Biome Blending Logic ---
+        const edx = worldX - this.cfg.ELVEN_CENTER_X;
+        const edz = worldZ - this.cfg.ELVEN_CENTER_Z;
+        const distToElfSq = edx * edx + edz * edz;
+        const isElven = distToElfSq < 150 * 150;
+
+        let surfaceId = this.cfg.GRASS_ID;
+        let subsurfaceId = this.cfg.DIRT_ID;
+        
+        if (isElven) {
+            surfaceId = this.cfg.MOSS_ID;
+            subsurfaceId = this.cfg.MOSSY_STONE_ID;
+        } else if (biome === this.BIOME_DESERT) {
+            surfaceId = this.cfg.SAND_ID;
+            subsurfaceId = this.cfg.SAND_ID;
+        } else if (biome === this.BIOME_SNOW) {
+            surfaceId = this.cfg.SNOW_ID;
+            subsurfaceId = this.cfg.DIRT_ID;
+        }
 
         for (let j = 0; j < CS; j++) {
           const worldY = cy * CS + j;
@@ -619,23 +677,80 @@ export class WorldGenerator {
     for (let i = 0; i < CS; i++) {
       for (let k = 0; k < CS; k++) {
         const worldX = cx * CS + i; const worldZ = cz * CS + k;
+        
+        const dx = worldX - this.cfg.TOWN_CENTER_X;
+        const dz = worldZ - this.cfg.TOWN_CENTER_Z;
+        const distToTownCenterSq = dx * dx + dz * dz;
+        const isPath = distToTownCenterSq > this.cfg.TOWN_PLAZA_RADIUS * this.cfg.TOWN_PLAZA_RADIUS &&
+                       distToTownCenterSq <= this.cfg.TOWN_RING_RADIUS * this.cfg.TOWN_RING_RADIUS &&
+                       (Math.abs(dx) <= this.cfg.TOWN_PATH_HALF_W || Math.abs(dz) <= this.cfg.TOWN_PATH_HALF_W);
+
+        const edx = worldX - this.cfg.ELVEN_CENTER_X;
+        const edz = worldZ - this.cfg.ELVEN_CENTER_Z;
+        const distToElfSq = edx * edx + edz * edz;
+        const isElven = distToElfSq < 150 * 150;
+
         const biome = this.getBiome(worldX, worldZ);
-        if (this.shouldPlaceTreeAt(worldX, worldZ, biome) && biome !== this.BIOME_DESERT) {
-          const height = this.heightAt(worldX, worldZ);
-          const tH = this.treeHeight(worldX, worldZ, biome);
-          for (let j = 0; j < CS; j++) {
-            const worldY = cy * CS + j; const idx = this.idx(i, j, k);
-            if (worldY >= height + 1 && worldY <= height + tH) { vox[idx] = this.cfg.WOOD_ID; } 
-            else if (worldY >= height + tH - 1 && worldY <= height + tH + 2) {
-              if (this.hash3i(worldX, worldY, worldZ) > (biome === this.BIOME_SNOW ? 0.42 : 0.22) && vox[idx] === this.cfg.AIR_ID) vox[idx] = this.cfg.LEAVES_ID;
+        const height = this.heightAt(worldX, worldZ);
+
+        if (!isPath && height >= 0 && height < cy * CS + CS - 15) {
+            const r = simpleNoise(worldX * 0.1, worldZ * 0.1, this.cfg.worldSeed + 50);
+            
+            // Generate Giant Elven Crystal Trees
+            if (isElven && r > 0.95) {
+                const trunkHeight = 8 + Math.floor(r * 5);
+                for (let j = 0; j < CS; j++) {
+                    const worldY = cy * CS + j;
+                    const idx = this.idx(i, j, k);
+                    
+                    if (worldY > height && worldY <= height + trunkHeight) {
+                        vox[idx] = this.cfg.WOOD_ID;
+                    }
+                }
+                
+                for (let j = 0; j < CS; j++) {
+                    const worldY = cy * CS + j;
+                    if (worldY === height + trunkHeight + 1) {
+                        for (let dxTree = -2; dxTree <= 2; dxTree++) {
+                            for (let dzTree = -2; dzTree <= 2; dzTree++) {
+                                if (Math.abs(dxTree) === 2 && Math.abs(dzTree) === 2) continue;
+                                const nX = i + dxTree;
+                                const nZ = k + dzTree;
+                                if (nX >= 0 && nX < CS && nZ >= 0 && nZ < CS) {
+                                    const leafIdx = this.idx(nX, j, nZ);
+                                    vox[leafIdx] = Math.random() < 0.2 ? this.cfg.GLOW_SHROOM_ID : this.cfg.LEAVES_ID;
+                                }
+                            }
+                        }
+                    }
+                }
+            } 
+            // Generate Standard Trees
+            else if (!isElven && this.shouldPlaceTreeAt(worldX, worldZ, biome) && biome !== this.BIOME_DESERT) {
+                const tH = this.treeHeight(worldX, worldZ, biome);
+                for (let j = 0; j < CS; j++) {
+                    const worldY = cy * CS + j; 
+                    const idx = this.idx(i, j, k);
+                    if (worldY >= height + 1 && worldY <= height + tH) { vox[idx] = this.cfg.WOOD_ID; } 
+                    else if (worldY >= height + tH - 1 && worldY <= height + tH + 2) {
+                        if (this.hash3i(worldX, worldY, worldZ) > (biome === this.BIOME_SNOW ? 0.42 : 0.22) && vox[idx] === this.cfg.AIR_ID) vox[idx] = this.cfg.LEAVES_ID;
+                    }
+                }
             }
-          }
         }
       }
     }
 
     this.stampPoiIntoChunk(vox, cx, cy, cz);
     this.stampTownIntoChunk(vox, cx, cy, cz);
+
+    // NEW: Stamp the actual Elven Castle into the chunks
+    if (this.cfg.elvenCastle) {
+      const worldX = this.cfg.ELVEN_CENTER_X - this.cfg.elvenCastle.anchor.x;
+      const worldY = this.heightAt(this.cfg.ELVEN_CENTER_X, this.cfg.ELVEN_CENTER_Z); 
+      const worldZ = this.cfg.ELVEN_CENTER_Z - this.cfg.elvenCastle.anchor.z;
+      this.stampStructureIntoChunk(vox, cx, cy, cz, this.cfg.elvenCastle, worldX, worldY, worldZ);
+    }
 
     return vox;
   }

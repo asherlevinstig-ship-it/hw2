@@ -222,12 +222,16 @@ const EVENT_ROOM_NAMES = [
 export class MyRoom extends Room<any> {
   state!: MyRoomState;
 
-  // Added for Hub Forwarding functionality
   private activeEventRoomId: string | null = null;
   private activeEventEndTime: number = 0;
 
   private readonly chunkSize = 32; 
   private readonly baseHeight = 12;
+
+  // --- NEW: Elven Kingdom Coordinates ---
+  private readonly ELVEN_CENTER_X = 500;
+  private readonly ELVEN_CENTER_Z = -500;
+  private elvenCastle: BlockStructure | null = null;
 
   private readonly AIR_ID = 0;
   private readonly GRASS_ID = 1;
@@ -465,14 +469,13 @@ export class MyRoom extends Room<any> {
       const closed = new Set<string>();
 
       let iter = 0;
-      const MAX_ITER = 80; // Limit to prevent server CPU spikes
+      const MAX_ITER = 80; 
       
       let bestNode = startNode;
       let bestDist = Infinity;
 
       while (open.length > 0 && iter < MAX_ITER) {
           iter++;
-          // Sort to get lowest f (A simple array sort is fast enough for < 80 nodes)
           open.sort((a, b) => a.f - b.f);
           const current = open.shift();
 
@@ -486,12 +489,11 @@ export class MyRoom extends Room<any> {
               bestNode = current;
           }
 
-          if (distToTarget <= 1) { // Found it or close enough
+          if (distToTarget <= 1) { 
               bestNode = current;
               break; 
           }
 
-          // Check 4 horizontal neighbors
           const dirs = [ [1,0], [-1,0], [0,1], [0,-1] ];
           for (const d of dirs) {
               const nx = current.x + d[0];
@@ -504,12 +506,10 @@ export class MyRoom extends Room<any> {
               const headBlock = this.getBlockAt(nx, ny + 1, nz);
 
               if (footBlock === this.AIR_ID && headBlock === this.AIR_ID) {
-                  // Air ahead. Need to find a floor.
                   const floorBlock = this.getBlockAt(nx, ny - 1, nz);
                   if (floorBlock !== this.AIR_ID) {
-                      canMove = true; // Normal walk on flat ground
+                      canMove = true; 
                   } else {
-                      // Drop down (max 3 blocks safely)
                       for(let drop = 2; drop <= 3; drop++) {
                           if (this.getBlockAt(nx, ny - drop, nz) !== this.AIR_ID) {
                               ny = ny - (drop - 1);
@@ -519,7 +519,6 @@ export class MyRoom extends Room<any> {
                       }
                   }
               } else if (footBlock !== this.AIR_ID && headBlock === this.AIR_ID) {
-                  // Try stepping up 1 block (like stairs)
                   const aboveHeadBlock = this.getBlockAt(nx, ny + 2, nz);
                   if (aboveHeadBlock === this.AIR_ID) {
                       ny = ny + 1;
@@ -541,7 +540,6 @@ export class MyRoom extends Room<any> {
       const path: Vec3[] = [];
       let curr = bestNode;
       while (curr && curr.parent) {
-          // Push center of blocks for smooth walking
           path.unshift({ x: curr.x + 0.5, y: curr.y, z: curr.z + 0.5 });
           curr = curr.parent;
       }
@@ -576,6 +574,8 @@ export class MyRoom extends Room<any> {
         this.townHall = this.buildMassiveTownHall();
       }
       
+      this.elvenCastle = this.buildElvenCastle();
+
       const townY = this.baseHeight + 2;
       const baseY = townY + 1;
       const anchorX = this.townHall?.anchor.x ?? Math.floor(51 / 2);
@@ -593,6 +593,10 @@ export class MyRoom extends Room<any> {
       registerSign(6, 1, 15, "House Rules: 1. No weapons drawn. 2. All bets are final.");
       registerSign(34, 1, 15, "[Market District] Trade your hard-earned ores here!");
       registerSign(44, 1, 15, "Market Stall Available! Contact the Warden to rent.");
+      
+      // NEW: Directional Signs to the Elven Kingdom
+      registerSign(25, 1, -2, "North-East -> Wilderness.");
+      registerSign(27, 1, -2, `Elven Kingdom -> (Follow the mossy path to X:${this.ELVEN_CENTER_X} Z:${this.ELVEN_CENTER_Z})`);
 
     } catch (e) {
       console.error("[STRUCT] FATAL: TownHall failed to generate!", (e as Error).message);
@@ -611,6 +615,12 @@ export class MyRoom extends Room<any> {
         TOWN_PATH_HALF_W: this.TOWN_PATH_HALF_W,
         TOWN_CLEAR_HEIGHT: this.TOWN_CLEAR_HEIGHT,
         townHall: this.townHall,
+        
+        // NEW: Elven Parameters Passed to World Gen
+        ELVEN_CENTER_X: this.ELVEN_CENTER_X,
+        ELVEN_CENTER_Z: this.ELVEN_CENTER_Z,
+        elvenCastle: this.elvenCastle,
+
         AIR_ID: this.AIR_ID,
         GRASS_ID: this.GRASS_ID,
         DIRT_ID: this.DIRT_ID,
@@ -754,7 +764,6 @@ export class MyRoom extends Room<any> {
 
         const target = mob.targetId ? this.players.get(mob.targetId) : null;
 
-        // Golem special slam attack
         if (mob.type === "golem" && mob.stuckAccumulator > 3000 && target && mob.attackCooldown <= 0) {
             const pdx = target.x - c.pos.x;
             const pdz = target.z - c.pos.z;
@@ -777,17 +786,14 @@ export class MyRoom extends Room<any> {
             mob.yaw = Math.atan2(targetDx, targetDz);
             c.yaw = mob.yaw;
 
-            // Skeleton Ranged Logic
             if (mob.type === "skeleton" && intentDist <= 10.0) {
                 if (mob.attackCooldown <= 0) {
                     this.spawnProjectile(mob.id, c.pos.x, c.pos.y + 1.5, c.pos.z, target.x, target.y + 1.0, target.z);
                     this.broadcast("playerSwing", { id: mob.id, attackId: "SHOOT" });
                     mob.attackCooldown = 2000;
                 }
-                // Don't move closer if already in range
                 if (intentDist > 3.0) intentDist = 0; 
             } 
-            // Melee Logic
             else if (intentDist <= 1.8 && mob.attackCooldown <= 0) {
                if (c.state.canStartAttack()) {
                  this.combat.requestAttack(mob.id, { attackId: "UNARMED" });
@@ -796,7 +802,6 @@ export class MyRoom extends Room<any> {
                intentDist = 0;
             }
         } else {
-            // Return to spawn point if no target
             targetDx = mob.spawnX - c.pos.x;
             targetDz = mob.spawnZ - c.pos.z;
             intentDist = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
@@ -811,7 +816,6 @@ export class MyRoom extends Room<any> {
 
         // 4. Pathfinding Execution
         if (intentDist > 0) {
-            // Periodically refresh A* path
             if (now - mob.lastPathCalcTime > 1000 || mob.waypoints.length === 0) {
                 let tx = c.pos.x + targetDx;
                 let ty = target ? target.y : mob.spawnY;
@@ -831,14 +835,13 @@ export class MyRoom extends Room<any> {
                 const wDist = Math.sqrt(wdx * wdx + wdz * wdz);
 
                 if (wDist < 0.4) {
-                    mob.waypoints.shift(); // Reached waypoint
+                    mob.waypoints.shift(); 
                 } else {
                     const speed = 0.08 * c.moveSpeedMul;
                     moveX = (wdx / wDist) * speed;
                     moveZ = (wdz / wDist) * speed;
                 }
             } else {
-                // Fallback direct steering if A* failed to find a path
                 const speed = 0.08 * c.moveSpeedMul;
                 moveX = (targetDx / intentDist) * speed;
                 moveZ = (targetDz / intentDist) * speed;
@@ -857,7 +860,7 @@ export class MyRoom extends Room<any> {
               const blockAboveHead = this.getBlockAt(nextCx, Math.floor(c.pos.y + 2.1), nextCz);
               
               if (grounded && blockAtNextFoot !== this.AIR_ID && blockAtNextHead === this.AIR_ID && blockAboveHead === this.AIR_ID) {
-                mob.vy = 0.35; // Jump
+                mob.vy = 0.35; 
                 c.pos.y += mob.vy;
                 c.pos.x = nextX;
                 c.pos.z = nextZ;
@@ -888,7 +891,6 @@ export class MyRoom extends Room<any> {
 
     // SPAWNER LOOP
     this.clock.setInterval(() => {
-      // 1. Despawn distant mobs (Memory Leak Fix)
       const toDespawn: string[] = [];
       for (const [mobId, m] of this.mobs.entries()) {
         if (m.type === "npc") continue;
@@ -912,7 +914,6 @@ export class MyRoom extends Room<any> {
         this.broadcast("playerLeft", { id });
       }
 
-      // 2. Spawn new mobs
       for (const [chunkKey, playerIds] of this.spatialGrid.entries()) {
         if (playerIds.size === 0) continue;
         const [cxStr, czStr] = chunkKey.split(',');
@@ -933,15 +934,12 @@ export class MyRoom extends Room<any> {
            const pId = Array.from(playerIds)[0];
            const p = this.players.get(pId);
            if (p) {
-               // FIX: Give the spawner 3 attempts to find a valid spot in a radial ring
                for (let attempt = 0; attempt < 3; attempt++) {
-                   // Spawn between 16 and 40 blocks away from the player
                    const angle = Math.random() * Math.PI * 2;
                    const dist = 16 + Math.random() * 24; 
                    const spawnX = p.x + Math.cos(angle) * dist;
                    const spawnZ = p.z + Math.sin(angle) * dist;
                    
-                   // Ensure the spot isn't inside the Town Safe Zone
                    if (!this.isInSafeZoneXZ(spawnX, spawnZ)) {
                        const spawnY = this.heightAt(spawnX, spawnZ) + 1;
                        
@@ -950,11 +948,8 @@ export class MyRoom extends Room<any> {
                        if (r < 0.2) mobType = "golem";
                        else if (r < 0.5) mobType = "skeleton";
 
-                       // FIX: Prefix the ID with "mob_" so the client UI recognizes it!
                        const id = `mob_${mobType}_${Date.now().toString(16)}_${Math.floor(Math.random()*1000)}`;
                        this.spawnMob(mobType, id, spawnX, spawnY, spawnZ);
-                       
-                       // Successfully spawned, stop looping attempts
                        break; 
                    }
                }
@@ -1517,6 +1512,101 @@ export class MyRoom extends Room<any> {
     this.onMessage("ping", (client: Client, payload: unknown) => client.send("pong", payload));
   }
 
+  // --- NEW: Procedural Elven Castle Builder ---
+  private buildElvenCastle(): BlockStructure {
+      const blocks: Array<{ x: number; y: number; z: number; id: number }> = [];
+      const w = 45;
+      const d = 45;
+      const h = 40;
+
+      const add = (x: number, y: number, z: number, id: number) => {
+        if (x>=0 && x<w && y>=0 && y<h && z>=0 && z<d) {
+          blocks.push({ x, y, z, id });
+        }
+      };
+
+      // Foundation
+      for (let x=0; x<w; x++) {
+        for (let z=0; z<d; z++) {
+          add(x, 0, z, this.DEEPSLATE_ID);
+          add(x, 1, z, this.STONE_BRICKS_ID);
+        }
+      }
+
+      // Elven Corner Pillars
+      const buildPillar = (px: number, pz: number, ph: number) => {
+        for (let y=1; y<=ph; y++) {
+          add(px, y, pz, this.STONE_BRICKS_ID);
+          add(px+1, y, pz, this.STONE_BRICKS_ID);
+          add(px-1, y, pz, this.STONE_BRICKS_ID);
+          add(px, y, pz+1, this.STONE_BRICKS_ID);
+          add(px, y, pz-1, this.STONE_BRICKS_ID);
+        }
+        add(px, ph+1, pz, this.CRYSTAL_ID);
+      };
+
+      buildPillar(4, 4, 18);
+      buildPillar(w-5, 4, 18);
+      buildPillar(4, d-5, 18);
+      buildPillar(w-5, d-5, 18);
+
+      // Central Mother Tree
+      const cx = Math.floor(w/2);
+      const cz = Math.floor(d/2);
+      for(let y=2; y<25; y++) {
+        for(let dx=-2; dx<=2; dx++) {
+          for(let dz=-2; dz<=2; dz++) {
+            if (dx*dx + dz*dz <= 4) {
+               add(cx+dx, y, cz+dz, this.WOOD_ID);
+            }
+          }
+        }
+        if (y % 4 === 0) {
+           add(cx+2, y, cz, this.GLOW_SHROOM_ID);
+           add(cx-2, y, cz, this.GLOW_SHROOM_ID);
+           add(cx, y, cz+2, this.GLOW_SHROOM_ID);
+           add(cx, y, cz-2, this.GLOW_SHROOM_ID);
+        }
+      }
+
+      // Crystal Canopy
+      for(let y=20; y<38; y++) {
+        const r = 12 - Math.abs(y - 28);
+        if (r > 0) {
+          for(let dx=-r; dx<=r; dx++) {
+            for(let dz=-r; dz<=r; dz++) {
+              if (dx*dx + dz*dz <= r*r) {
+                 if (dx*dx + dz*dz > (r-2)*(r-2) && Math.random() < 0.1) {
+                    add(cx+dx, y, cz+dz, this.CRYSTAL_ID);
+                 } else {
+                    add(cx+dx, y, cz+dz, this.LEAVES_ID);
+                 }
+              }
+            }
+          }
+        }
+      }
+
+      // Mossy Courtyard paths
+      for (let x=5; x<w-5; x++) {
+         add(x, 2, cz, this.MOSS_ID);
+         add(x, 2, cz+1, this.MOSS_ID);
+         add(x, 2, cz-1, this.MOSS_ID);
+      }
+      for (let z=5; z<d-5; z++) {
+         add(cx, 2, z, this.MOSS_ID);
+         add(cx+1, 2, z, this.MOSS_ID);
+         add(cx-1, 2, z, this.MOSS_ID);
+      }
+
+      return {
+        name: "elven_castle",
+        size: { w, h, d },
+        anchor: { x: cx, y: 0, z: cz }, // Center anchor so it spawns perfectly at the coords
+        blocks
+      };
+  }
+
   onJoin(client: Client, options: any) {
     const userId = safeUserId(options.userId || client.sessionId);
     
@@ -1557,7 +1647,6 @@ export class MyRoom extends Room<any> {
     this.broadcast("playerJoined", { id: client.sessionId, x: pl.x, y: pl.y, z: pl.z, hp: pl.hp, maxHp: pl.maxHp }, { except: client });
     this.drops.forEach(drop => client.send("dropSpawn", drop));
 
-    // --- NEW: Forward late-joiners or missing-token reconnects to the active event ---
     if (this.activeEventRoomId && Date.now() < this.activeEventEndTime) {
         matchMaker.query({ roomId: this.activeEventRoomId }).then(async (rooms) => {
             if (rooms.length > 0) {
