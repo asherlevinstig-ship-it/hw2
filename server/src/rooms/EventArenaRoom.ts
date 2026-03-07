@@ -118,8 +118,49 @@ export class EventArenaRoom extends BaseEventRoom {
     });
   }
 
-  onLeave(client: Client) {
+  async onLeave(client: Client, code?: number) {
+    // Code 1000 means standard expected disconnect (i.e. we called room.leave())
+    const consented = (code === 1000);
+
+    // Save their state before removing them from the active pool
+    const playerState = this.arenaPlayers.get(client.sessionId);
+    
+    // Temporarily remove them so their body disappears for other players
     this.arenaPlayers.delete(client.sessionId);
     this.broadcast("playerLeft", { id: client.sessionId });
+
+    // If the disconnect wasn't intentional (like a refresh or network drop)
+    if (!consented) {
+        try {
+            // Wait up to 30 seconds for the client to reconnect
+            const reconnectedClient = await this.allowReconnection(client, 30);
+            
+            console.log(`[Arena] Player ${reconnectedClient.sessionId} reconnected!`);
+            
+            // Restore their state in the arena
+            if (playerState) {
+                this.arenaPlayers.set(reconnectedClient.sessionId, playerState);
+            }
+            
+            // Resend the initialization packets so their client HUD updates
+            const remaining = Math.max(0, this.durationMs - (Date.now() - this.startedAt));
+            reconnectedClient.send("safeZone", { cx: this.ARENA_OFFSET, cz: this.ARENA_OFFSET, r: 0, name: "The Arena" }); 
+            reconnectedClient.send("worldTime", { time: 0.5 });
+            reconnectedClient.send("statsUpdate", { hp: playerState?.hp || 20, maxHp: 20, mana: 50, maxMana: 50 });
+            reconnectedClient.send("eventStart", { 
+                mode: "arena", 
+                rules: "Survive the arena! Last player standing wins.", 
+                timer: remaining 
+            });
+            reconnectedClient.send("youJoined", { 
+                x: playerState?.x || this.ARENA_OFFSET, 
+                y: playerState?.y || 40, 
+                z: playerState?.z || this.ARENA_OFFSET 
+            });
+
+        } catch (e) {
+            console.log(`[Arena] Player ${client.sessionId} failed to reconnect in time.`);
+        }
+    }
   }
 }

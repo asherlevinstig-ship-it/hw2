@@ -2128,8 +2128,25 @@ async function connectToHub() {
       classOverlay.style.display = "flex";
     }
 
-    room = await colyseus.joinOrCreate("my_room", { userId });
+    const token = sessionStorage.getItem("reconnectionToken");
+    if (token) {
+        try {
+            room = await colyseus.reconnect(token);
+            console.log("[Client] Successfully reconnected to previous room!");
+        } catch (e) {
+            console.log("[Client] Reconnection failed, joining Hub normally...");
+            sessionStorage.removeItem("reconnectionToken");
+            room = await colyseus.joinOrCreate("my_room", { userId });
+        }
+    } else {
+        room = await colyseus.joinOrCreate("my_room", { userId });
+    }
+
     (globalThis as any).room = room;
+    
+    if (room) {
+        sessionStorage.setItem("reconnectionToken", room.reconnectionToken);
+    }
 
     if (savedClass && room) {
       room.send("selectClass", { classId: savedClass });
@@ -2139,7 +2156,7 @@ async function connectToHub() {
       room.send("worldDataNeeded", req);
     }
 
-    bindRoomHandlers(room);
+    bindRoomHandlers(room!);
     updateOverlay();
 
   } catch (e) {
@@ -2544,7 +2561,6 @@ function bindRoomHandlers(r: Room) {
         updateOverlay();
     });
 
-    // CRITICAL FIX: The listener that was completely missing!
     r.onMessage("syncEventTimer", (msg: any) => {
         currentEventTimer = Date.now() + msg.remainingMs;
         nextEventAt = 0; 
@@ -2574,7 +2590,6 @@ function bindRoomHandlers(r: Room) {
                 await room.leave();
             }
             
-            // CRITICAL FIX: Clear the old room's state completely so Hub ghosts don't haunt the Arena!
             pendingChunks.clear();
             queuedRequests.clear();
             netTransforms.clear();
@@ -2589,6 +2604,10 @@ function bindRoomHandlers(r: Room) {
             console.log("[Client] Connecting to new room...");
             room = await colyseus.consumeSeatReservation(reservation);
             (globalThis as any).room = room;
+            
+            if (room) {
+                sessionStorage.setItem("reconnectionToken", room.reconnectionToken);
+            }
             
             bindRoomHandlers(room);
             updateOverlay(`<span style="color: #00ff00;">Joined Event Arena!</span>`);
@@ -2609,7 +2628,6 @@ function bindRoomHandlers(r: Room) {
                 await room.leave();
             }
             
-            // CRITICAL FIX: Clear the old room's state completely so Arena ghosts don't haunt the Hub!
             pendingChunks.clear();
             queuedRequests.clear();
             netTransforms.clear();
@@ -2627,10 +2645,14 @@ function bindRoomHandlers(r: Room) {
             room = await colyseus.joinOrCreate("my_room", { userId });
             (globalThis as any).room = room;
             
-            const savedClass = localStorage.getItem("noa_player_class");
-            if (savedClass) room.send("selectClass", { classId: savedClass });
+            if (room) {
+                sessionStorage.setItem("reconnectionToken", room.reconnectionToken);
+            }
             
-            bindRoomHandlers(room);
+            const savedClass = localStorage.getItem("noa_player_class");
+            if (savedClass) room!.send("selectClass", { classId: savedClass });
+            
+            bindRoomHandlers(room!);
             updateOverlay(`<span style="color: #00ff00;">Returned to Hub.</span>`);
             console.log("[Client] Successfully returned to Hub!");
         } catch(e) {

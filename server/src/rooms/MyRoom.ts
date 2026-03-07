@@ -217,6 +217,10 @@ const EVENT_ROOM_NAMES = [
 export class MyRoom extends Room<any> {
   state!: MyRoomState;
 
+  // Added for Hub Forwarding functionality
+  private activeEventRoomId: string | null = null;
+  private activeEventEndTime: number = 0;
+
   private readonly chunkSize = 32; 
   private readonly baseHeight = 12;
 
@@ -551,8 +555,8 @@ export class MyRoom extends Room<any> {
 
     this.spawnDummy("target_dummy_1", -77, 18, -2);
     
-    const townY = this.baseHeight + 2;
-    this.spawnStaticNPC("npc_giant_warden", 0, townY, -35);
+    const townY2 = this.baseHeight + 2;
+    this.spawnStaticNPC("npc_giant_warden", 0, townY2, -35);
 
     let lastCombatTick = Date.now();
     this.clock.setInterval(() => {
@@ -747,6 +751,32 @@ export class MyRoom extends Room<any> {
     }, 1000);
 
     this.clock.setInterval(() => {
+      // 1. Despawn distant mobs (Memory Leak Fix)
+      const toDespawn: string[] = [];
+      for (const [mobId, m] of this.mobs.entries()) {
+        if (mobId.startsWith("npc_")) continue;
+        
+        let closestPlayerDistSq = Infinity;
+        for (const p of this.players.values()) {
+          const dx = p.x - m.x;
+          const dz = p.z - m.z;
+          const distSq = dx * dx + dz * dz;
+          if (distSq < closestPlayerDistSq) closestPlayerDistSq = distSq;
+        }
+        
+        // If further than ~100 blocks from any active player, despawn
+        if (closestPlayerDistSq > 100 * 100) {
+          toDespawn.push(mobId);
+        }
+      }
+
+      for (const id of toDespawn) {
+        this.mobs.delete(id);
+        this.combatants.delete(id);
+        this.broadcast("playerLeft", { id });
+      }
+
+      // 2. Spawn new mobs
       for (const [chunkKey, playerIds] of this.spatialGrid.entries()) {
         if (playerIds.size === 0) continue;
         const [cxStr, czStr] = chunkKey.split(',');
@@ -1374,6 +1404,21 @@ export class MyRoom extends Room<any> {
 
     this.broadcast("playerJoined", { id: client.sessionId, x: pl.x, y: pl.y, z: pl.z, hp: pl.hp, maxHp: pl.maxHp }, { except: client });
     this.drops.forEach(drop => client.send("dropSpawn", drop));
+
+    // --- NEW: Forward late-joiners or missing-token reconnects to the active event ---
+    if (this.activeEventRoomId && Date.now() < this.activeEventEndTime) {
+        matchMaker.query({ roomId: this.activeEventRoomId }).then(async (rooms) => {
+            if (rooms.length > 0) {
+                console.log(`[Hub] Forwarding late-joiner ${client.sessionId} to active event.`);
+                const reservation = await matchMaker.reserveSeatFor(rooms[0], { userId: pl.userId });
+                client.send("joinEvent", reservation);
+            } else {
+                this.activeEventRoomId = null; // Event room was disposed
+            }
+        }).catch(() => {
+            this.activeEventRoomId = null;
+        });
+    }
   }
 
   onLeave(client: Client, code?: number) {
@@ -1411,6 +1456,10 @@ export class MyRoom extends Room<any> {
       this.clock.setTimeout(async () => {
           try {
             const eventRoom = await matchMaker.createRoom(randomEvent, {});
+
+            // NEW: Track the active event globally for late-joiners
+            this.activeEventRoomId = eventRoom.roomId;
+            this.activeEventEndTime = Date.now() + 60_000; // 60 seconds
 
             for (const client of this.clients) {
               const pl = this.players.get(client.sessionId);
